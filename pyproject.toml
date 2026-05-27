@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gausser"
+version = "0.1.0"
+description = "3D Gaussian Splatting toolchain — sammer, colmapper, brusher"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "rich>=13.0",
+    "numpy",
+    "Pillow",
+    "torch",
+]
+
+[project.scripts]
+sammer = "sammer.cli:main"
+colmapper = "colmapper.cli:main"
+brusher = "brusher.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["gausser*", "sammer*", "colmapper*", "brusher*"]
