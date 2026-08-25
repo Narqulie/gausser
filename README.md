@@ -1,9 +1,10 @@
 # gausser
 
-Three CLI tools that turn photos into 3D Gaussian Splatting `.ply` files.
+Scene-owned CLI stages that turn photos into 3D Gaussian Splatting `.ply` files.
 
 ```
-sammer → colmapper → brusher
+sharpframes (optional) → sammer → colmapper → brusher
+                                      └→ msplatter (experimental, unmasked)
 ```
 
 I built this because the existing pipelines were monolithic scripts that did
@@ -25,6 +26,13 @@ if COLMAP finds multiple (which happens more than you'd think).
 
 **brusher** — runs Brush 3DGS training on the COLMAP output. Writes `.ply`
 checkpoints every N iterations so you can stop early and still have a result.
+
+**sharpframes** — optional pre-processing that selects frames from a video or
+image source into `images/` transactionally before the reconstruction stages.
+
+**msplatter** — an experimental Apple-Silicon Msplat backend. It creates an
+isolated run with a PLY export and checkpoint, but is deliberately **not** a
+replacement for Brush: upstream Msplat has no mask-input support.
 
 Each one has a progress bar that actually shows what's happening, not just a
 spinning cursor.
@@ -53,17 +61,37 @@ hangs on MPS.
 
 ## What you need installed
 
-- Python 3.9+ with torch
+- Python 3.10+ with torch
 - COLMAP on PATH (`brew install colmap` or download from the website)
 - Brush on PATH (needs a Rust toolchain: `cargo build --release` in the brush
   repo)
 - SAM3 for sammer (`pip install
   git+https://github.com/facebookresearch/sam3.git@d7a33bb3a6a023db88a9` then
   `huggingface-cli login`)
+- Optional Sharp Frames (`pip install sharp-frames`) plus `ffmpeg` and
+  `ffprobe` on PATH
+- Optional Msplat (`pip install msplat`) on Apple Silicon running macOS 14+;
+  it requires COLMAP **binary** sparse output
 
 The pinned SAM3 commit avoids a triton dependency issue on macOS. The latest
 commit tries to import triton (CUDA-only) at module load time and crashes on
 Apple Silicon.
+
+## Textual control surface
+
+Install the optional UI and launch it from the scene root:
+
+```bash
+pip install -e '.[tui]'
+cd ~/scenes/my_fountain
+gausser
+```
+
+The terminal UI shows scene/tool readiness and can run SAM3, COLMAP, Brush, or
+an ordered pipeline. Enter the SAM3 prompt, then press a stage action twice to
+confirm it. `Esc` requests cancellation and waits for the shared runner to
+clean up the complete process tree. `r` refreshes readiness and `q` quits. The
+same scene-owned CLI commands remain available for headless use.
 
 ## Directory layout the tools expect
 
@@ -72,16 +100,19 @@ my_scene/
 ├── images/              ← put your photos here
 ├── masks/               ← created by sammer for Brush
 ├── colmap/
-│   ├── masks/           ← created by sammer for COLMAP
-│   ├── database.db
-│   └── sparse/
-│       └── 0/
+│   └── masks/           ← created by sammer for COLMAP
+├── database.db          ← created by colmapper
+├── sparse/
+│   └── 0/
 │           ├── cameras.bin
 │           ├── images.bin
 │           └── points3D.bin
-└── exports/             ← created by brusher
-    ├── export_05000.ply
-    └── ...
+├── runs/
+│   ├── brush/<run-id>/exports/  ← created by brusher
+│   └── msplat/<run-id>/          ← experimental PLY export + checkpoint
+└── .gausser/
+    ├── manifest.json
+    └── staging/         ← incomplete work; never consumed
 ```
 
 Each tool reads from this structure and writes to it. You cd into the scene
@@ -90,18 +121,23 @@ folder and run the commands. No config files, no yaml, no pipeline state.
 ## CLI reference
 
 ```
-sammer --prompt "fountain" [--path ./images/] [--output .]
+sammer --prompt "fountain" [--scene SCENE] [--path ./images/]
        [--score-threshold 0.5] [--device auto]
        [--dilation 8] [--feather 12] [--all-instances] [--force]
 
-colmapper [--path ./images/] [--output ./sparse/]
-          --matcher sequential|exhaustive|vocab_tree
-          [--no-gpu] [--mask-path DIR]
+colmapper [--scene SCENE] [--path ./images/] [--output ./sparse/]
+          --matcher sequential|exhaustive|vocab_tree [--vocab-tree FILE]
+          [--existing error|resume|replace] [--no-gpu] [--mask-path DIR]
 
 brusher [SCENE] [--total-train-iters 30000] [--export-every 5000]
         [--eval-every 1000] [--refine-every 200]
         [--max-splats N] [--max-resolution N] [--eval-split-every N]
         [--export-path DIR]
+
+sharpframes SOURCE [--scene SCENE] [--force] [SHARP-FRAMES OPTIONS]
+
+msplatter [SCENE] [--iterations 7000] [--num-downscales 0] [--no-eval]
+           --allow-unmasked
 ```
 
 ## Why the name
@@ -137,3 +173,7 @@ supersplat or play with in the brush viewer.
   at startup.
 - Brush's `--export-every` must be less than `--total-train-iters`. It
   iterates 0..N-1 so exporting at step N produces nothing.
+- Msplat cannot consume `masks/` or `colmap/masks/`. `msplatter` requires
+  `--allow-unmasked`, including on scenes that contain SAM masks, so that this
+  semantic difference is never implicit. It supports only upstream binary
+  COLMAP models, not text sparse models.

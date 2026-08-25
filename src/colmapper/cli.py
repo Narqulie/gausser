@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import struct
 import sys
 import time
 from pathlib import Path
@@ -24,6 +23,8 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from gausser.colmap_model import read_model_stats
+from gausser.scene import SceneError, ScenePaths
 from gausser.ui import console, count_images, make_summary_table
 
 from .pipeline import ColmapError, feature_extraction, feature_matching, sparse_reconstruction
@@ -41,20 +42,32 @@ STEPS = [
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
+def resolve_gpu(*, no_gpu: bool) -> bool:
+    """COLMAP's Homebrew build on macOS has no CUDA implementation."""
+    return not no_gpu and sys.platform != "darwin"
+
+
+def _prepare_artifacts(database_path: Path, output_path: Path, policy: str) -> None:
+    existing = database_path.exists() or output_path.exists()
+    if not existing or policy == "resume":
+        return
+    if policy == "replace":
+        database_path.unlink(missing_ok=True)
+        shutil.rmtree(output_path, ignore_errors=True)
+        return
+    raise ColmapError(
+        "COLMAP artifacts already exist. Choose --existing resume to keep them "
+        "or --existing replace to delete and rebuild them."
+    )
+
+
 def _read_model_stats(model_dir: Path) -> tuple[int, int]:
     """Read registered images and 3D points from a COLMAP sparse model dir.
 
     Returns (num_images, num_points), or (0, 0) if the model can't be read.
     """
-    img_bin = model_dir / "images.bin"
-    pt_bin = model_dir / "points3D.bin"
-    n_imgs = 0
-    n_pts = 0
-    if img_bin.exists():
-        n_imgs = struct.unpack("Q", img_bin.read_bytes()[:8])[0]
-    if pt_bin.exists():
-        n_pts = struct.unpack("Q", pt_bin.read_bytes()[:8])[0]
-    return n_imgs, n_pts
+    stats = read_model_stats(model_dir)
+    return (stats.images, stats.points) if stats is not None else (0, 0)
 
 
 def _pick_best_model(output_path: Path) -> Path | None:
@@ -151,8 +164,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         description="Run COLMAP automatic SfM reconstruction.",
     )
     parser.add_argument(
+        "--scene", metavar="DIR", default=None,
+        help="Scene root that owns the COLMAP database and sparse model (default: cwd)",
+    )
+    parser.add_argument(
         "--path", metavar="DIR", default=None,
-        help="Path to the image folder (default: ./images/ inside cwd)",
+        help="Path to the image folder (default: <scene>/images/)",
     )
     parser.add_argument(
         "--matcher", choices=["exhaustive", "sequential", "vocab_tree"], default="exhaustive",
@@ -160,6 +177,10 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
     parser.add_argument(
         "--no-gpu", action="store_true", help="Disable GPU acceleration",
+    )
+    parser.add_argument(
+        "--existing", choices=["error", "resume", "replace"], default="error",
+        help="Policy for existing database/sparse artifacts (default: error)",
     )
     parser.add_argument(
         "--colmap", metavar="BIN", default="colmap", help="Path to the colmap binary",
@@ -171,21 +192,27 @@ def main(argv: Optional[list[str]] = None) -> None:
         "--mask-path", metavar="DIR", default=None,
         help="Path to COLMAP feature masks (auto-detected: <project>/colmap/masks/)",
     )
+    parser.add_argument(
+        "--vocab-tree", metavar="FILE", default=None,
+        help="Vocabulary tree required by --matcher vocab_tree",
+    )
 
     args = parser.parse_args(argv)
 
     # ── Resolve paths ──────────────────────────────────────────────────────────
-    project_root = Path.cwd()
-    image_path = Path(args.path).expanduser().resolve() if args.path else project_root / "images"
-    output_path = Path(args.output).resolve() if args.output else project_root / "sparse"
-    database_path = project_root / "database.db"
+    scene_paths = ScenePaths.from_root(args.scene or Path.cwd())
+    project_root = scene_paths.root
+    image_path = Path(args.path).expanduser().resolve() if args.path else scene_paths.images
+    output_path = Path(args.output).resolve() if args.output else scene_paths.sparse
+    database_path = scene_paths.database
 
-    use_gpu = not args.no_gpu
+    use_gpu = resolve_gpu(no_gpu=args.no_gpu)
     matcher = args.matcher
     colmap_bin = args.colmap
+    vocab_tree_path = Path(args.vocab_tree).expanduser().resolve() if args.vocab_tree else None
 
     # Auto-detect colmap masks
-    auto_mask_path = project_root / "colmap" / "masks"
+    auto_mask_path = scene_paths.colmap_masks
     mask_path: Path | None = (
         Path(args.mask_path).resolve() if args.mask_path
         else auto_mask_path if auto_mask_path.is_dir()
@@ -204,10 +231,26 @@ def main(argv: Optional[list[str]] = None) -> None:
         console.print("Create an [bold]images/[/bold] folder, or pass [bold]--path DIR[/bold].")
         sys.exit(1)
 
-    n_images = count_images(image_path)
+    try:
+        n_images = len(scene_paths.image_files()) if image_path == scene_paths.images else count_images(image_path)
+    except SceneError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
     if n_images == 0:
         console.print(f"[bold red]Error:[/bold red] No images found in {image_path}")
         sys.exit(1)
+    if matcher == "vocab_tree" and (vocab_tree_path is None or not vocab_tree_path.is_file()):
+        console.print("[bold red]Error:[/bold red] --matcher vocab_tree requires --vocab-tree FILE.")
+        sys.exit(1)
+
+    try:
+        _prepare_artifacts(database_path, output_path, args.existing)
+    except ColmapError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
+
+    if not use_gpu and not args.no_gpu and sys.platform == "darwin":
+        console.print("[dim]COLMAP GPU acceleration disabled: macOS builds do not provide CUDA.[/dim]")
 
     # ── Matcher suggestion ─────────────────────────────────────────────────────
     if matcher == "exhaustive" and n_images > 200:
@@ -262,7 +305,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                 elif i == 1:
                     output_lines = _run_step(
                         progress, task_id, feature_matching,
-                        colmap_bin, database_path, matcher=matcher, use_gpu=use_gpu,
+                        colmap_bin, database_path, matcher=matcher, use_gpu=use_gpu, vocab_tree_path=vocab_tree_path,
                     )
                 elif i == 2:
                     output_lines = _run_step(
@@ -285,8 +328,14 @@ def main(argv: Optional[list[str]] = None) -> None:
             progress.update(task_id, description=f"[green]{cfg['name']}[/green]")
             step_results.append((cfg["name"], elapsed, status))
 
-    # ── Select best model & show reconstruction stats ──────────────────────
+    # ── Select and validate a usable model before declaring success ─────────
     model_path = _pick_best_model(output_path)
+    stats = read_model_stats(model_path) if model_path is not None else None
+    if stats is None or stats.images == 0:
+        step_results[-1] = (STEPS[2][0], step_results[-1][1], "✗")
+        console.print("\n[bold red]COLMAP completed without a valid sparse model.[/bold red]")
+        _print_summary(step_results, time.monotonic() - overall_start)
+        sys.exit(1)
     _print_summary(step_results, time.monotonic() - overall_start, n_images, model_path)
 
 

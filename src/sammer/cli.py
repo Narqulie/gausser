@@ -6,7 +6,9 @@ import argparse
 import os
 import sys
 import time
+import shutil
 from pathlib import Path
+from uuid import uuid4
 from threading import Lock
 from typing import Optional
 
@@ -31,7 +33,9 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from gausser.ui import console, count_images, list_images, make_summary_table
+from gausser.manifest import fingerprint_inputs, record_stage
+from gausser.scene import SceneError, ScenePaths
+from gausser.ui import console, list_images, make_summary_table
 
 from .engine import (
     ImageResult,
@@ -40,6 +44,41 @@ from .engine import (
     save_brush_mask,
     save_colmap_mask,
 )
+
+
+def _publish_masks(
+    staged_brush: Path,
+    staged_colmap: Path,
+    brush_masks: Path,
+    colmap_masks: Path,
+) -> None:
+    """Replace both mask sets with a completed staged attempt."""
+    destinations = ((Path(staged_brush), Path(brush_masks)), (Path(staged_colmap), Path(colmap_masks)))
+    backups: list[tuple[Path, Path]] = []
+    published: list[tuple[Path, Path]] = []
+    token = uuid4().hex
+    try:
+        for staged, destination in destinations:
+            if not staged.is_dir():
+                raise ValueError(f"staged mask directory does not exist: {staged}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                backup = destination.with_name(f".{destination.name}.backup-{token}")
+                destination.replace(backup)
+                backups.append((backup, destination))
+            staged.replace(destination)
+            published.append((staged, destination))
+    except Exception:
+        for staged, destination in reversed(published):
+            if destination.exists():
+                destination.replace(staged)
+        for backup, destination in reversed(backups):
+            if backup.exists():
+                backup.replace(destination)
+        raise
+    else:
+        for backup, _ in backups:
+            shutil.rmtree(backup, ignore_errors=True)
 
 
 # ── UI helpers ──────────────────────────────────────────────────────────────────
@@ -138,8 +177,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         help="Path to image folder (default: ./images/)",
     )
     parser.add_argument(
+        "--scene", metavar="DIR", default=None,
+        help="Scene root that owns managed artifacts (default: cwd)",
+    )
+    parser.add_argument(
         "--output", metavar="DIR", default=None,
-        help="Output root directory (default: cwd)",
+        help="Deprecated alias for --scene",
     )
     parser.add_argument(
         "--score-threshold", type=float, default=0.5,
@@ -173,10 +216,13 @@ def main(argv: Optional[list[str]] = None) -> None:
     args = parser.parse_args(argv)
 
     # ── Resolve paths ──────────────────────────────────────────────────────────
-    project_root = Path(args.output).resolve() if args.output else Path.cwd()
-    image_path = Path(args.path).expanduser().resolve() if args.path else project_root / "images"
-    brush_mask_dir = project_root / "masks"
-    colmap_mask_dir = project_root / "colmap" / "masks"
+    if args.scene and args.output:
+        parser.error("--scene and --output cannot be used together")
+    scene_paths = ScenePaths.from_root(args.scene or args.output or Path.cwd())
+    project_root = scene_paths.root
+    image_path = Path(args.path).expanduser().resolve() if args.path else scene_paths.images
+    brush_mask_dir = scene_paths.brush_masks
+    colmap_mask_dir = scene_paths.colmap_masks
 
     # ── Validate ───────────────────────────────────────────────────────────────
     if not image_path.is_dir():
@@ -184,18 +230,33 @@ def main(argv: Optional[list[str]] = None) -> None:
         console.print("Create an [bold]images/[/bold] folder, or pass [bold]--path DIR[/bold].")
         sys.exit(1)
 
-    n_images = count_images(image_path)
+    try:
+        image_files = scene_paths.image_files() if image_path == scene_paths.images else list_images(image_path)
+    except SceneError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
+    n_images = len(image_files)
     if n_images == 0:
         console.print(f"[bold red]Error:[/bold red] No images found in {image_path}")
         sys.exit(1)
 
     # Check for existing masks
-    existing_brush = list(brush_mask_dir.glob("*.png")) if brush_mask_dir.is_dir() else []
-    existing_colmap = list(colmap_mask_dir.glob("*.png")) if colmap_mask_dir.is_dir() else []
-    if existing_brush and existing_colmap and not args.force:
-        console.print(f"[yellow]Masks already exist[/yellow] ({len(existing_brush)} brush, {len(existing_colmap)} colmap)")
-        console.print("Pass [bold]--force[/bold] to re-run masking.")
-        sys.exit(0)
+    expected_brush = {f"{image.stem}.png" for image in image_files}
+    expected_colmap = {f"{image.name}.png" for image in image_files}
+    existing_brush = {path.name for path in brush_mask_dir.glob("*.png")} if brush_mask_dir.is_dir() else set()
+    existing_colmap = {path.name for path in colmap_mask_dir.glob("*.png")} if colmap_mask_dir.is_dir() else set()
+    if (existing_brush or existing_colmap) and not args.force:
+        if existing_brush == expected_brush and existing_colmap == expected_colmap:
+            console.print(f"[yellow]Masks already exist[/yellow] ({len(existing_brush)} brush, {len(existing_colmap)} colmap)")
+            console.print("Pass [bold]--force[/bold] to re-run masking.")
+            sys.exit(0)
+        console.print("[bold red]Error:[/bold red] Existing masks are incomplete or do not match images/.")
+        console.print("Pass [bold]--force[/bold] to replace them transactionally.")
+        sys.exit(1)
+
+    attempt_dir = scene_paths.staging_attempt("sammer", scene_paths.new_run_id())
+    staged_brush_dir = attempt_dir / "masks"
+    staged_colmap_dir = attempt_dir / "colmap-masks"
 
     # ── Device ─────────────────────────────────────────────────────────────────
     device = resolve_device(args.device)
@@ -204,7 +265,6 @@ def main(argv: Optional[list[str]] = None) -> None:
     console.print(_header(image_path, n_images, args.prompt, device, args.score_threshold, args.checkpoint))
     console.print()
 
-    image_files = list_images(image_path)
     console.print(f"[dim]Found {n_images} images, loading SAM3 model...[/dim]")
 
     # ── Load model ─────────────────────────────────────────────────────────────
@@ -248,8 +308,8 @@ def main(argv: Optional[list[str]] = None) -> None:
                 max_conf = max(r.score for r in seg_results)
                 assert merged is not None
 
-                save_brush_mask(merged, img_path, brush_mask_dir, dilation_px=args.dilation, feather_px=args.feather)
-                save_colmap_mask(merged, img_path, colmap_mask_dir)
+                save_brush_mask(merged, img_path, staged_brush_dir, dilation_px=args.dilation, feather_px=args.feather)
+                save_colmap_mask(merged, img_path, staged_colmap_dir)
 
                 with lock:
                     hit_count += 1
@@ -273,7 +333,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     failures = [r for r in results if not r.success]
     failures_path: Path | None = None
     if failures:
-        failures_path = project_root / "sammer_failures.txt"
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        failures_path = attempt_dir / "failures.txt"
         with open(failures_path, "w") as f:
             for r in failures:
                 f.write(f"{r.image_name}")
@@ -281,5 +342,38 @@ def main(argv: Optional[list[str]] = None) -> None:
                     f.write(f"  # {r.error}")
                 f.write("\n")
 
-    _print_summary(results, n_images, elapsed, failures_path, brush_mask_dir, colmap_mask_dir)
-    sys.exit(1 if len(failures) == n_images else 0)
+    if failures:
+        console.print("[yellow]Masks were not published because one or more images failed.[/yellow]")
+        console.print(f"[dim]Staged attempt retained at: {attempt_dir}[/dim]")
+        _print_summary(results, n_images, elapsed, failures_path, staged_brush_dir, staged_colmap_dir)
+        sys.exit(1)
+
+    try:
+        _publish_masks(staged_brush_dir, staged_colmap_dir, brush_mask_dir, colmap_mask_dir)
+        record_stage(
+            scene_paths,
+            "sammer",
+            {
+                "inputs": fingerprint_inputs(image_files),
+                "parameters": {
+                    "prompt": args.prompt,
+                    "score_threshold": args.score_threshold,
+                    "all_instances": args.all_instances,
+                    "dilation": args.dilation,
+                    "feather": args.feather,
+                    "device": device,
+                    "checkpoint": args.checkpoint,
+                },
+                "outputs": {
+                    "brush_masks": str(scene_paths.relative_path(brush_mask_dir)),
+                    "colmap_masks": str(scene_paths.relative_path(colmap_mask_dir)),
+                },
+            },
+        )
+        shutil.rmtree(attempt_dir, ignore_errors=True)
+    except Exception as exc:
+        console.print(f"[bold red]Error publishing masks:[/bold red] {exc}")
+        sys.exit(1)
+
+    _print_summary(results, n_images, elapsed, None, brush_mask_dir, colmap_mask_dir)
+    sys.exit(0)

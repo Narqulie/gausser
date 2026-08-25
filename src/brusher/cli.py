@@ -22,6 +22,8 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from gausser.manifest import fingerprint_inputs, record_stage
+from gausser.scene import ScenePaths
 from gausser.ui import console, IMAGE_EXTENSIONS, make_summary_table
 
 from .runner import TrainProgress, run_brush
@@ -104,9 +106,21 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     args = parser.parse_args(argv)
 
+    if args.total_train_iters <= 0:
+        parser.error("--total-train-iters must be positive")
+    if not 0 < args.export_every < args.total_train_iters:
+        parser.error("--export-every must be positive and less than --total-train-iters")
+    if args.eval_every <= 0 or args.refine_every <= 0:
+        parser.error("--eval-every and --refine-every must be positive")
+
     # ── Resolve paths ──────────────────────────────────────────────────────────
     scene_path = Path(args.path).expanduser().resolve() if args.path else Path.cwd()
-    export_path = Path(args.export_path).expanduser().resolve() if args.export_path else Path.cwd() / "exports"
+    scene_paths = ScenePaths.from_root(scene_path)
+    export_path = (
+        Path(args.export_path).expanduser().resolve()
+        if args.export_path
+        else scene_paths.training_run("brush", scene_paths.new_run_id()) / "exports"
+    )
 
     brush_bin = args.brush
     total_iters = args.total_train_iters
@@ -154,7 +168,6 @@ def main(argv: Optional[list[str]] = None) -> None:
     overall_start = time.monotonic()
     final_state = TrainProgress(total=total_iters)
     lock = Lock()
-    rc_holder: list[int] = []
     _prev: dict = {"iter": 0, "t": None}
 
     def on_progress(p: TrainProgress) -> None:
@@ -198,24 +211,44 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     with progress:
         progress.update(task_id, completed=0)
-        import threading as _threading
-
-        def _train() -> None:
-            rc = run_brush(cmd, on_progress=on_progress, total_iters=total_iters)
-            rc_holder.append(rc)
-            if rc == 0:
-                progress.update(task_id, completed=total_iters)
-
-        t = _threading.Thread(target=_train, daemon=True)
-        t.start()
-        t.join()
+        result = run_brush(cmd, cwd=scene_path, on_progress=on_progress, total_iters=total_iters)
+        if result.succeeded:
+            progress.update(task_id, completed=total_iters)
 
     elapsed = time.monotonic() - overall_start
-    rc = rc_holder[0] if rc_holder else 1
-    success = rc == 0
+    success = result is not None and result.succeeded
+    exports = sorted(export_path.rglob("*.ply")) if success and export_path.is_dir() else []
+    if success and not exports:
+        success = False
+        console.print("\n[bold red]Brush completed without creating any .ply export.[/bold red]")
 
     if not success:
+        rc = result.returncode if result is not None else 1
         console.print(f"\n[bold red]Brush exited with code {rc}.[/bold red]")
+        if result and result.output_tail:
+            console.print("[bold]Last Brush output:[/bold]")
+            console.print("\n".join(result.output_tail[-20:]))
 
+    if success:
+        record_stage(
+            scene_paths,
+            "brush",
+            {
+                "inputs": fingerprint_inputs(scene_paths.image_files()),
+                "parameters": {
+                    "total_train_iters": total_iters,
+                    "export_every": args.export_every,
+                    "eval_every": args.eval_every,
+                    "refine_every": args.refine_every,
+                    "max_splats": args.max_splats,
+                    "max_resolution": args.max_resolution,
+                    "eval_split_every": args.eval_split_every,
+                },
+                "outputs": {
+                    "run": str(scene_paths.relative_path(export_path.parent)),
+                    "exports": [str(scene_paths.relative_path(path)) for path in exports],
+                },
+            },
+        )
     _print_summary(elapsed, final_state, export_path, success)
     sys.exit(0 if success else 1)

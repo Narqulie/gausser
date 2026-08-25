@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import re
-import subprocess
-import threading
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+
+from gausser.process import CommandResult, run_command
 
 
 @dataclass
@@ -33,34 +33,26 @@ _LOADED_PAT = re.compile(r"Completed loading")
 
 def run_brush(
     cmd: list[str],
+    *,
+    cwd: Path,
     on_progress: Optional[ProgressCallback] = None,
     on_line: Optional[LineCallback] = None,
     total_iters: int = 30000,
-) -> int:
-    env = os.environ.copy()
-    env["RUST_LOG"] = "info"
-    env["NO_COLOR"] = "1"
-
-    process = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        text=True, bufsize=1, errors="replace", env=env,
-    )
-
+) -> CommandResult:
     state = TrainProgress(total=total_iters)
 
-    def _read() -> None:
-        for raw_line in process.stdout:
-            line = raw_line.rstrip()
-            if on_line:
-                on_line(line)
-            if on_progress:
-                _parse_and_emit(line, state, on_progress)
+    def handle_line(line: str) -> None:
+        if on_line:
+            on_line(line)
+        if on_progress:
+            _parse_and_emit(line, state, on_progress)
 
-    t = threading.Thread(target=_read, daemon=True)
-    t.start()
-    process.wait()
-    t.join(timeout=5)
-    return process.returncode
+    return run_command(
+        cmd,
+        cwd=cwd,
+        on_line=handle_line,
+        env={"RUST_LOG": "info", "NO_COLOR": "1"},
+    )
 
 
 def _parse_and_emit(line: str, state: TrainProgress, callback: ProgressCallback) -> None:

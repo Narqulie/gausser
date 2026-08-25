@@ -4,3 +4,12 @@ __pycache__/
 dist/
 build/
 .venv/
+
+# Scene data and generated pipeline artifacts
+/.gausser/
+/images/
+/masks/
+/colmap/
+/database.db
+/sparse/
+/runs/
