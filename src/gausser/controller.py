@@ -12,7 +12,7 @@ from .process import CommandResult, LineCallback, run_command
 from .scene import ScenePaths
 
 
-Stage = Literal["sammer", "colmap", "brush"]
+Stage = Literal["sammer", "colmap", "brush", "msplat"]
 _STAGE_ORDER: tuple[Stage, ...] = ("sammer", "colmap", "brush")
 
 
@@ -48,6 +48,8 @@ class SceneController:
             return ["colmapper", "--scene", str(self.scene.root), *request.arguments]
         if request.stage == "brush":
             return ["brusher", str(self.scene.root), *request.arguments]
+        if request.stage == "msplat":
+            return ["msplatter", str(self.scene.root), "--allow-unmasked", *request.arguments]
         raise ValueError(f"unknown stage: {request.stage}")
 
     def run(

@@ -49,6 +49,7 @@ def create_app(scene: ScenePaths):
                     yield Button("Run SAM3", id="sammer", variant="primary")
                     yield Button("Run COLMAP", id="colmap")
                     yield Button("Run Brush", id="brush")
+                    yield Button("Run Msplat (unmasked)", id="msplat", variant="warning")
                     yield Button("Run pipeline", id="pipeline", variant="success")
                     yield Button("Cancel", id="cancel", variant="error")
                 yield RichLog(id="log", wrap=True, highlight=False)
@@ -68,7 +69,7 @@ def create_app(scene: ScenePaths):
             )
             states = {item.stage: item.state for item in scene_status}
             tools = {item.stage: item.state for item in tool_status}
-            for stage in ("sammer", "colmap", "brush"):
+            for stage in ("sammer", "colmap", "brush", "msplat"):
                 self.query_one(f"#{stage}", Button).disabled = states[stage] != "ready" or tools[stage] != "ready"
             self.query_one("#pipeline", Button).disabled = states["sammer"] != "ready" or any(
                 tools[stage] != "ready" for stage in ("sammer", "colmap", "brush")
@@ -102,7 +103,7 @@ def create_app(scene: ScenePaths):
                 self.pending_request = None
                 self.start_pipeline(prompt)
                 return
-            if stage not in {"sammer", "colmap", "brush"}:
+            if stage not in {"sammer", "colmap", "brush", "msplat"}:
                 return
             arguments: tuple[str, ...] = ()
             if stage == "sammer":
@@ -114,9 +115,13 @@ def create_app(scene: ScenePaths):
             request = StageRequest(stage, arguments)
             if request != self.pending_request:
                 self.pending_request = request
-                self.query_one("#log", RichLog).write(
-                    f"Ready to run {stage}. Press its button again to confirm. Esc cancels a running stage."
+                message = (
+                    "Msplat does not consume SAM masks and will train unmasked. "
+                    "Press Run Msplat (unmasked) again to acknowledge and start."
+                    if stage == "msplat"
+                    else f"Ready to run {stage}. Press its button again to confirm. Esc cancels a running stage."
                 )
+                self.query_one("#log", RichLog).write(message)
                 return
             self.pending_request = None
             self.start_stage(request)

@@ -87,11 +87,13 @@ cd ~/scenes/my_fountain
 gausser
 ```
 
-The terminal UI shows scene/tool readiness and can run SAM3, COLMAP, Brush, or
-an ordered pipeline. Enter the SAM3 prompt, then press a stage action twice to
-confirm it. `Esc` requests cancellation and waits for the shared runner to
-clean up the complete process tree. `r` refreshes readiness and `q` quits. The
-same scene-owned CLI commands remain available for headless use.
+The terminal UI shows scene/tool readiness and can run SAM3, COLMAP, Brush, an
+ordered pipeline, or experimental Msplat. Enter the SAM3 prompt, then press a
+stage action twice to confirm it. Msplat requires its own second confirmation:
+it does not consume SAM masks and therefore deliberately trains unmasked. `Esc`
+requests cancellation and waits for the shared runner to clean up the complete
+process tree. `r` refreshes readiness and `q` quits. The same scene-owned CLI
+commands remain available for headless use.
 
 ## Directory layout the tools expect
 

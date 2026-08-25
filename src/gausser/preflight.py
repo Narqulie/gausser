@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib.util
 from pathlib import Path
 import shutil
 
@@ -30,17 +31,28 @@ def inspect_scene(paths: ScenePaths) -> list[Readiness]:
         Readiness("colmap", "completed", f"{model.images} registered images, {model.points} points")
         if model else Readiness("colmap", "ready" if images else "unavailable", "No valid sparse/0 model")
     )
+    msplat_ready = bool(images) and model is not None and model.format == "binary"
+    msplat_detail = "Experimental unmasked training; valid binary COLMAP model required"
+    if model is not None and model.format != "binary":
+        msplat_detail = "Msplat upstream requires binary COLMAP output"
     return [
         image_state,
         Readiness("sammer", "ready" if images else "unavailable", "SAM3 required"),
         colmap_state,
         Readiness("brush", "ready" if model else "unavailable", "Brush requires a valid COLMAP model"),
+        Readiness("msplat", "ready" if msplat_ready else "unavailable", msplat_detail),
     ]
 
 
 def inspect_tools() -> list[Readiness]:
-    tools = (("sammer", "sam3"), ("colmap", "colmap"), ("brush", "brush"))
-    return [
+    tools = (("sammer", "sam3"), ("colmap", "colmap"), ("brush", "brush"), ("msplat", "msplatter"))
+    readiness = [
         Readiness(stage, "ready" if shutil.which(binary) else "unavailable", binary)
         for stage, binary in tools
     ]
+    if importlib.util.find_spec("msplat") is None:
+        return [
+            Readiness(item.stage, "unavailable", "Install with `pip install msplat`") if item.stage == "msplat" else item
+            for item in readiness
+        ]
+    return readiness

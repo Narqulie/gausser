@@ -27,6 +27,14 @@ def test_controller_uses_scene_owned_command_and_cancellation(scene: Path):
     assert calls[0][1]["cancel_event"] is cancel
 
 
+def test_controller_builds_explicit_unmasked_msplat_command(scene: Path):
+    controller = SceneController(ScenePaths.from_root(scene))
+
+    assert controller.command_for(StageRequest("msplat")) == [
+        "msplatter", str(scene), "--allow-unmasked"
+    ]
+
+
 def test_controller_gates_brush_without_a_valid_colmap_model(scene: Path):
     controller = SceneController(ScenePaths.from_root(scene))
 
