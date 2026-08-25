@@ -16,17 +16,19 @@ IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", 
 # ── Convenience imports ─────────────────────────────────────────────────────────
 
 
+def is_image_file(path: Path) -> bool:
+    """Return whether a real image, excluding macOS AppleDouble sidecars."""
+    return path.is_file() and not path.name.startswith("._") and path.suffix.lower() in IMAGE_EXTENSIONS
+
+
 def count_images(path: Path) -> int:
-    """Count image files in *path*."""
-    return sum(1 for f in path.iterdir() if f.suffix.lower() in IMAGE_EXTENSIONS)
+    """Count real image files in *path*."""
+    return sum(1 for file in path.iterdir() if is_image_file(file))
 
 
 def list_images(path: Path) -> list[Path]:
-    """Return sorted list of image files in *path*."""
-    return sorted(
-        f for f in path.iterdir()
-        if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
-    )
+    """Return sorted real image files in *path*."""
+    return sorted(file for file in path.iterdir() if is_image_file(file))
 
 
 # ── Common table / formatting helpers ────────────────────────────────────────────

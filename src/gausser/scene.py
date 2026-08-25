@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from .ui import IMAGE_EXTENSIONS
+from .ui import is_image_file
 
 
 class SceneError(ValueError):
@@ -92,10 +92,7 @@ class ScenePaths:
         if nested_files:
             raise SceneError("images/ must be flat; nested image paths are not supported")
 
-        files = sorted(
-            path for path in self.images.iterdir()
-            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-        )
+        files = sorted(path for path in self.images.iterdir() if is_image_file(path))
         stems: set[str] = set()
         for path in files:
             if path.stem in stems:

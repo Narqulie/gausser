@@ -175,6 +175,8 @@ supersplat or play with in the brush viewer.
   at startup.
 - Brush's `--export-every` must be less than `--total-train-iters`. It
   iterates 0..N-1 so exporting at step N produces nothing.
+- macOS external volumes may contain `._*` AppleDouble metadata sidecars. Gausser
+  ignores them when counting or processing images; raw file counts do not.
 - Msplat cannot consume `masks/` or `colmap/masks/`. `msplatter` requires
   `--allow-unmasked`, including on scenes that contain SAM masks, so that this
   semantic difference is never implicit. It supports only upstream binary

@@ -6,6 +6,7 @@ import pytest
 from PIL import Image
 
 from gausser.scene import SceneError, ScenePaths
+from gausser.ui import count_images, list_images
 
 
 def test_paths_are_derived_only_from_explicit_scene(scene, monkeypatch, tmp_path: Path):
@@ -19,6 +20,17 @@ def test_paths_are_derived_only_from_explicit_scene(scene, monkeypatch, tmp_path
     assert paths.sparse == scene / "sparse"
     assert paths.manifest == scene / ".gausser" / "manifest.json"
     assert paths.training_run("brush", "run-1") == scene / "runs" / "brush" / "run-1"
+
+
+def test_images_ignore_macos_appledouble_sidecars(scene):
+    sidecar = scene / "images" / "._frame_0001.jpg"
+    sidecar.write_bytes(b"AppleDouble metadata")
+
+    images = ScenePaths.from_root(scene).image_files()
+
+    assert images == [scene / "images" / "frame_0001.jpg"]
+    assert list_images(scene / "images") == images
+    assert count_images(scene / "images") == 1
 
 
 def test_images_reject_duplicate_stems(scene):
