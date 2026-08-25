@@ -50,6 +50,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("scene", nargs="?", default=Path.cwd(), type=Path, help="Scene root (default: current directory)")
     parser.add_argument("--iterations", type=int, default=7000, help="Training iterations (default: 7000)")
     parser.add_argument("--num-downscales", type=int, default=0, help="Msplat downscale passes (default: 0)")
+    parser.add_argument(
+        "--downscale-factor", type=float, default=1.0, metavar="N",
+        help="Load source images at 1/N resolution; N must be at least 1 (default: 1)",
+    )
     parser.add_argument("--no-eval", action="store_true", help="Skip final Msplat evaluation")
     parser.add_argument(
         "--allow-unmasked",
@@ -59,6 +63,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.iterations <= 0 or args.num_downscales < 0:
         parser.error("--iterations must be positive and --num-downscales cannot be negative")
+    if args.downscale_factor < 1:
+        parser.error("--downscale-factor must be at least 1")
 
     paths = ScenePaths.from_root(args.scene)
     try:
@@ -94,7 +100,9 @@ def main(argv: list[str] | None = None) -> None:
     dataset_path = _prepare_dataset(paths, run_dir, images)
 
     try:
-        dataset = msplat.load_dataset(str(dataset_path), eval_mode=not args.no_eval)
+        dataset = msplat.load_dataset(
+            str(dataset_path), downscale_factor=args.downscale_factor, eval_mode=not args.no_eval
+        )
         config = msplat.TrainingConfig(iterations=args.iterations, num_downscales=args.num_downscales)
         trainer = msplat.GaussianTrainer(dataset, config)
 
@@ -116,7 +124,12 @@ def main(argv: list[str] | None = None) -> None:
         "msplat",
         {
             "inputs": fingerprint_inputs(images),
-            "parameters": {"iterations": args.iterations, "num_downscales": args.num_downscales, "masked": False},
+            "parameters": {
+                "iterations": args.iterations,
+                "num_downscales": args.num_downscales,
+                "downscale_factor": args.downscale_factor,
+                "masked": False,
+            },
             "outputs": {
                 "run": str(paths.relative_path(run_dir)),
                 "dataset": str(paths.relative_path(dataset_path)),

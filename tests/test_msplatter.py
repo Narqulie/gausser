@@ -57,20 +57,27 @@ def test_msplat_writes_isolated_export_and_manifest(monkeypatch, scene):
         struct.pack("<Q", 1) + struct.pack("<Q3d3BdQ", 1, 0.0, 0.0, 1.0, 255, 255, 255, 0.1, 0)
     )
 
+    load_calls: list[object] = []
+
+    def load_dataset(path, *, downscale_factor, eval_mode):
+        load_calls.extend([path, downscale_factor, eval_mode])
+        return (path, downscale_factor, eval_mode)
+
     fake_msplat = SimpleNamespace(
-        load_dataset=lambda path, eval_mode: (path, eval_mode),
+        load_dataset=load_dataset,
         TrainingConfig=lambda **kwargs: kwargs,
         GaussianTrainer=Trainer,
     )
     monkeypatch.setitem(sys.modules, "msplat", fake_msplat)
     monkeypatch.setattr(ScenePaths, "new_run_id", lambda _: "test-run")
 
-    cli.main([str(scene), "--iterations", "10", "--allow-unmasked"])
+    cli.main([str(scene), "--iterations", "10", "--downscale-factor", "4", "--allow-unmasked"])
 
     assert (scene / "runs" / "msplat" / "test-run" / "exports" / "scene.ply").is_file()
     run_dir = scene / "runs" / "msplat" / "test-run"
     assert (run_dir / "exports" / "scene.ply").is_file()
     assert (run_dir / "checkpoint.msplat").is_file()
     assert calls[0][0] == str(run_dir / "dataset")
+    assert load_calls == [str(run_dir / "dataset"), 4.0, True]
     assert (run_dir / "dataset" / "frame_0001.jpg").exists()
     assert calls[1]["iterations"] == 10

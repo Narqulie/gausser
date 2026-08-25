@@ -138,8 +138,8 @@ brusher [SCENE] [--total-train-iters 30000] [--export-every 5000]
 
 sharpframes SOURCE [--scene SCENE] [--force] [SHARP-FRAMES OPTIONS]
 
-msplatter [SCENE] [--iterations 7000] [--num-downscales 0] [--no-eval]
-           --allow-unmasked
+msplatter [SCENE] [--iterations 7000] [--num-downscales 0]
+           [--downscale-factor N] [--no-eval] --allow-unmasked
 ```
 
 ## Why the name
@@ -180,4 +180,6 @@ supersplat or play with in the brush viewer.
 - Msplat cannot consume `masks/` or `colmap/masks/`. `msplatter` requires
   `--allow-unmasked`, including on scenes that contain SAM masks, so that this
   semantic difference is never implicit. It supports only upstream binary
-  COLMAP models, not text sparse models.
+  COLMAP models, not text sparse models. Msplat loads all source images into
+  shared GPU memory; for large scenes use `--downscale-factor N` to load at
+  one-Nth linear resolution (for example, `4` for quarter-resolution inputs).
