@@ -3,7 +3,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-from gausser.colmap_model import read_model_stats
+from gausser.colmap_model import read_camera_positions, read_model_stats
 
 
 def write_binary_model(path: Path, *, images: int = 3, points: int = 7) -> None:
@@ -49,6 +49,22 @@ def test_read_model_stats_reads_text_model(tmp_path: Path):
     assert stats is not None
     assert stats.format == "text"
     assert (stats.images, stats.points) == (2, 2)
+
+
+def test_read_camera_positions_converts_colmap_world_to_camera_pose(tmp_path: Path):
+    write_binary_model(tmp_path, images=1)
+    # Rewrite the one image with an identity rotation and translation (1, 2, 3).
+    (tmp_path / "images.bin").write_bytes(
+        struct.pack("<Q", 1)
+        + struct.pack("<I7dI", 1, 1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 1)
+        + b"frame.jpg\0" + struct.pack("<Q", 0)
+    )
+
+    cameras = read_camera_positions(tmp_path)
+
+    assert cameras is not None
+    assert cameras[0].name == "frame.jpg"
+    assert (cameras[0].x, cameras[0].y, cameras[0].z) == (-1.0, -2.0, -3.0)
 
 
 def test_read_model_stats_rejects_partial_binary_output(tmp_path: Path):

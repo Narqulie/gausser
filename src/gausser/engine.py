@@ -19,6 +19,7 @@ from typing import Any, Callable, TextIO
 from uuid import uuid4
 
 from .artifacts import list_artifacts
+from .colmap_model import read_camera_positions
 from .controller import SceneController, Stage, StageRequest
 from .ingest import ingest_photo_directory
 from .manifest import record_run_finished, record_run_started
@@ -123,6 +124,10 @@ class GausserEngine:
             elif method == "artifacts":
                 scene = self._scene_from_params(params)
                 emit({"id": request_id, "result": {"artifacts": [asdict(item) for item in list_artifacts(scene)]}})
+            elif method == "reconstruction":
+                scene = self._scene_from_params(params)
+                cameras = read_camera_positions(scene.sparse / "0")
+                emit({"id": request_id, "result": {"cameras": [] if cameras is None else [asdict(camera) for camera in cameras]}})
             elif method == "ingest_photos":
                 scene = self._scene_from_params(params)
                 with self._scene_mutation(scene):

@@ -51,6 +51,10 @@ final class EngineClient {
         send(method: "artifacts", params: ["scene": .string(scene.path)], completion: completion)
     }
 
+    func reconstruction(scene: URL, completion: @escaping (Result<EngineMessage, Error>) -> Void) {
+        send(method: "reconstruction", params: ["scene": .string(scene.path)], completion: completion)
+    }
+
     func status(completion: @escaping (Result<EngineMessage, Error>) -> Void) {
         send(method: "status", params: [:], completion: completion)
     }

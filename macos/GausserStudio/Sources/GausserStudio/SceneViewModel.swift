@@ -31,6 +31,19 @@ private struct ArtifactResponse: Decodable {
     let artifacts: [ArtifactSummary]
 }
 
+struct ReconstructionCamera: Decodable, Identifiable, Equatable {
+    let name: String
+    let x: Double
+    let y: Double
+    let z: Double
+
+    var id: String { name }
+}
+
+private struct ReconstructionResponse: Decodable {
+    let cameras: [ReconstructionCamera]
+}
+
 private struct StatusResponse: Decodable {
     let activeRuns: [EngineRun]
 
@@ -74,6 +87,7 @@ final class SceneViewModel {
     private(set) var sceneReadiness: [StageReadiness] = []
     private(set) var toolReadiness: [StageReadiness] = []
     private(set) var artifacts: [ArtifactSummary] = []
+    private(set) var reconstructionCameras: [ReconstructionCamera] = []
     private(set) var stageCatalog: [String: StageDefinition] = [:]
     private(set) var activeRun: EngineRun?
     private(set) var activeRunStartedAt: Date?
@@ -151,6 +165,19 @@ final class SceneViewModel {
             case .success(let message):
                 do {
                     self.artifacts = try self.decodeArtifacts(message).artifacts
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                }
+            case .failure(let error):
+                self.errorMessage = error.localizedDescription
+            }
+        }
+        engine.reconstruction(scene: scene) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let message):
+                do {
+                    self.reconstructionCameras = try self.decodeReconstruction(message).cameras
                 } catch {
                     self.errorMessage = error.localizedDescription
                 }
@@ -351,6 +378,10 @@ final class SceneViewModel {
 
     private func decodeArtifacts(_ message: EngineMessage) throws -> ArtifactResponse {
         try decodeResult(message, as: ArtifactResponse.self)
+    }
+
+    private func decodeReconstruction(_ message: EngineMessage) throws -> ReconstructionResponse {
+        try decodeResult(message, as: ReconstructionResponse.self)
     }
 
     private func decodeStatus(_ message: EngineMessage) throws -> StatusResponse {

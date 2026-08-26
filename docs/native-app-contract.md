@@ -57,14 +57,17 @@ Requests:
 {"id":"req-1","method":"initialize","params":{"scene":"/absolute/empty-folder"}}
 {"id":"req-2","method":"preflight","params":{"scene":"/absolute/scene"}}
 {"id":"req-3","method":"artifacts","params":{"scene":"/absolute/scene"}}
-{"id":"req-4","method":"ingest_photos","params":{"scene":"/absolute/scene","source":"/absolute/photos","policy":"copy"}}
-{"id":"req-5","method":"reimport_supersplat","params":{"scene":"/absolute/scene","source":"runs/brush/run/exports/scene.ply","edited":"/absolute/edited.ply"}}
-{"id":"req-6","method":"resolve_stage","params":{"scene":"/absolute/scene","stage":"sharpframes","options":{"source":"/absolute/clips","fps":2}}}
-{"id":"req-7","method":"start","params":{"scene":"/absolute/scene","stage":"sharpframes","options":{"source":"/absolute/clips","fps":2}}}
-{"id":"req-8","method":"start","params":{"scene":"/absolute/scene","stage":"colmap","arguments":["--matcher","sequential"]}}
-{"id":"req-9","method":"cancel","params":{"run_id":"run-123"}}
-{"id":"req-10","method":"status","params":{}}
+{"id":"req-4","method":"reconstruction","params":{"scene":"/absolute/scene"}}
+{"id":"req-5","method":"ingest_photos","params":{"scene":"/absolute/scene","source":"/absolute/photos","policy":"copy"}}
+{"id":"req-6","method":"reimport_supersplat","params":{"scene":"/absolute/scene","source":"runs/brush/run/exports/scene.ply","edited":"/absolute/edited.ply"}}
+{"id":"req-7","method":"resolve_stage","params":{"scene":"/absolute/scene","stage":"sharpframes","options":{"source":"/absolute/clips","fps":2}}}
+{"id":"req-8","method":"start","params":{"scene":"/absolute/scene","stage":"sharpframes","options":{"source":"/absolute/clips","fps":2}}}
+{"id":"req-9","method":"start","params":{"scene":"/absolute/scene","stage":"colmap","arguments":["--matcher","sequential"]}}
+{"id":"req-10","method":"cancel","params":{"run_id":"run-123"}}
+{"id":"req-11","method":"status","params":{}}
 ```
+
+`reconstruction` returns only a structurally validated completed `sparse/0` model's camera centres. It is intentionally not a claim of live COLMAP mapping: COLMAP writes stable poses when the mapper publishes its model.
 
 Synchronous responses use `{ "id": ..., "result": ... }` or
 `{ "id": ..., "error": { "code": ..., "message": ... } }`.

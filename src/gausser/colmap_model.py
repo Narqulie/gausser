@@ -18,6 +18,16 @@ class ModelStats:
     points: int
 
 
+@dataclass(frozen=True)
+class CameraPosition:
+    """One COLMAP camera centre in the reconstruction coordinate system."""
+
+    name: str
+    x: float
+    y: float
+    z: float
+
+
 _REQUIRED = ("cameras", "images", "points3D")
 # COLMAP's CameraModelId enum. Unknown model IDs are rejected: their variable
 # parameter count prevents a safe structural validation of cameras.bin.
@@ -116,6 +126,66 @@ def _text_image_count(path: Path) -> int | None:
             continue
         count += 1
     return count
+
+
+def read_camera_positions(model_dir: Path) -> list[CameraPosition] | None:
+    """Read complete-model camera centres without invoking an external COLMAP tool."""
+    if read_model_stats(model_dir) is None:
+        return None
+    directory = Path(model_dir)
+    fmt = model_format(directory)
+    if fmt == "binary":
+        try:
+            data = (directory / "images.bin").read_bytes()
+            (count,) = struct.unpack_from("<Q", data)
+        except (OSError, struct.error):
+            return None
+        positions: list[CameraPosition] = []
+        offset = 8
+        try:
+            for _ in range(count):
+                _, qw, qx, qy, qz, tx, ty, tz, _ = struct.unpack_from("<I7dI", data, offset)
+                offset += 64
+                end = data.index(b"\0", offset)
+                name = data[offset:end].decode("utf-8")
+                offset = end + 1
+                (points2d,) = struct.unpack_from("<Q", data, offset)
+                offset += 8 + points2d * 24
+                positions.append(_camera_center(name, qw, qx, qy, qz, tx, ty, tz))
+        except (ValueError, UnicodeDecodeError, struct.error):
+            return None
+        return positions if offset == len(data) else None
+    if fmt == "text":
+        lines = _text_data_lines(directory / "images.txt")
+        if lines is None:
+            return None
+        positions = []
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 10:
+                continue
+            try:
+                int(fields[0])
+                values = [float(value) for value in fields[1:8]]
+            except ValueError:
+                continue
+            positions.append(_camera_center(fields[9], *values))
+        return positions
+    return None
+
+
+def _camera_center(name: str, qw: float, qx: float, qy: float, qz: float, tx: float, ty: float, tz: float) -> CameraPosition:
+    """Convert COLMAP world-to-camera qvec/tvec to a world-space camera centre."""
+    # C = -R(q)^T t, expanded to avoid an optional numerical dependency.
+    xx, yy, zz = qx * qx, qy * qy, qz * qz
+    xy, xz, yz = qx * qy, qx * qz, qy * qz
+    wx, wy, wz = qw * qx, qw * qy, qw * qz
+    return CameraPosition(
+        name,
+        -((1 - 2 * (yy + zz)) * tx + 2 * (xy + wz) * ty + 2 * (xz - wy) * tz),
+        -(2 * (xy - wz) * tx + (1 - 2 * (xx + zz)) * ty + 2 * (yz + wx) * tz),
+        -(2 * (xz + wy) * tx + 2 * (yz - wx) * ty + (1 - 2 * (xx + yy)) * tz),
+    )
 
 
 def read_model_stats(model_dir: Path) -> ModelStats | None:

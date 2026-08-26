@@ -151,6 +151,7 @@ private struct SceneDashboard: View {
                 header
                 sourceImport
                 pipeline
+                ReconstructionPreview(cameras: model.reconstructionCameras)
                 artifacts
                 viewerSection
                 if let activeRun = model.activeRun {

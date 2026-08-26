@@ -302,6 +302,17 @@ def test_engine_lists_scene_owned_artifacts(scene: Path):
     }]}}]
 
 
+def test_engine_returns_camera_positions_for_completed_reconstruction(scene: Path, monkeypatch):
+    from gausser.colmap_model import CameraPosition
+    from gausser.engine import GausserEngine
+
+    monkeypatch.setattr("gausser.engine.read_camera_positions", lambda _: [CameraPosition("frame.jpg", 1.0, 2.0, 3.0)])
+    emitted: list[dict] = []
+    GausserEngine().dispatch({"id": "reconstruction", "method": "reconstruction", "params": {"scene": str(scene)}}, emitted.append)
+
+    assert emitted == [{"id": "reconstruction", "result": {"cameras": [{"name": "frame.jpg", "x": 1.0, "y": 2.0, "z": 3.0}]}}]
+
+
 def test_engine_rejects_malformed_requests_without_stopping(scene: Path):
     from gausser.engine import GausserEngine
 
