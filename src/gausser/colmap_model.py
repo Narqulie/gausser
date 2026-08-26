@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import hashlib
 import struct
 from typing import Literal
 
@@ -26,6 +27,28 @@ class CameraPosition:
     x: float
     y: float
     z: float
+
+
+@dataclass(frozen=True)
+class SparsePoint:
+    """One colour-bearing point from COLMAP's authoritative sparse model."""
+
+    x: float
+    y: float
+    z: float
+    red: int
+    green: int
+    blue: int
+
+
+@dataclass(frozen=True)
+class ReconstructionPreview:
+    """A stable, bounded, view-only snapshot of a completed sparse model."""
+
+    cameras: list[CameraPosition]
+    points: list[SparsePoint]
+    camera_count: int
+    point_count: int
 
 
 _REQUIRED = ("cameras", "images", "points3D")
@@ -111,27 +134,64 @@ def _text_data_lines(path: Path) -> list[str] | None:
         return None
 
 
-def _text_image_count(path: Path) -> int | None:
-    lines = _text_data_lines(path)
-    if lines is None:
+def _text_image_records(path: Path) -> list[list[str]] | None:
+    """Parse COLMAP's two-line text-image grammar without mistaking points2D for images."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
         return None
-    count = 0
-    for line in lines:
+
+    records: list[list[str]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line or line.startswith("#"):
+            index += 1
+            continue
         fields = line.split()
         if len(fields) < 10:
-            continue
+            return None
         try:
             int(fields[0])
+            _ = [float(value) for value in fields[1:8]]
+            int(fields[8])
         except ValueError:
-            continue
-        count += 1
-    return count
+            return None
+        records.append(fields)
+        # Every image record is followed by exactly one points2D row. It may be
+        # empty, but it must never be reinterpreted as another image record.
+        index += 1
+        if index >= len(lines):
+            return None
+        observations = lines[index].strip()
+        if observations:
+            values = observations.split()
+            if len(values) % 3:
+                return None
+            try:
+                for point_index in range(0, len(values), 3):
+                    float(values[point_index])
+                    float(values[point_index + 1])
+                    int(values[point_index + 2])
+            except ValueError:
+                return None
+        index += 1
+    return records
 
 
-def read_camera_positions(model_dir: Path) -> list[CameraPosition] | None:
+def _text_image_count(path: Path) -> int | None:
+    records = _text_image_records(path)
+    return None if records is None else len(records)
+
+
+def read_camera_positions(model_dir: Path, *, maximum: int | None = None) -> list[CameraPosition] | None:
     """Read complete-model camera centres without invoking an external COLMAP tool."""
-    if read_model_stats(model_dir) is None:
+    if maximum is not None and maximum < 1:
+        raise ValueError("maximum must be positive")
+    stats = read_model_stats(model_dir)
+    if stats is None:
         return None
+    stride = 1 if maximum is None else max(1, (stats.images + maximum - 1) // maximum)
     directory = Path(model_dir)
     fmt = model_format(directory)
     if fmt == "binary":
@@ -143,7 +203,7 @@ def read_camera_positions(model_dir: Path) -> list[CameraPosition] | None:
         positions: list[CameraPosition] = []
         offset = 8
         try:
-            for _ in range(count):
+            for index in range(count):
                 _, qw, qx, qy, qz, tx, ty, tz, _ = struct.unpack_from("<I7dI", data, offset)
                 offset += 64
                 end = data.index(b"\0", offset)
@@ -151,27 +211,125 @@ def read_camera_positions(model_dir: Path) -> list[CameraPosition] | None:
                 offset = end + 1
                 (points2d,) = struct.unpack_from("<Q", data, offset)
                 offset += 8 + points2d * 24
-                positions.append(_camera_center(name, qw, qx, qy, qz, tx, ty, tz))
+                if index % stride == 0:
+                    positions.append(_camera_center(name, qw, qx, qy, qz, tx, ty, tz))
         except (ValueError, UnicodeDecodeError, struct.error):
             return None
         return positions if offset == len(data) else None
     if fmt == "text":
-        lines = _text_data_lines(directory / "images.txt")
-        if lines is None:
+        records = _text_image_records(directory / "images.txt")
+        if records is None or len(records) != stats.images:
             return None
         positions = []
-        for line in lines:
-            fields = line.split()
-            if len(fields) < 10:
-                continue
+        for index, fields in enumerate(records):
             try:
-                int(fields[0])
                 values = [float(value) for value in fields[1:8]]
             except ValueError:
-                continue
-            positions.append(_camera_center(fields[9], *values))
+                return None
+            if index % stride == 0:
+                positions.append(_camera_center(fields[9], *values))
         return positions
     return None
+
+
+def read_sparse_points(model_dir: Path, *, maximum: int = 15_000) -> list[SparsePoint] | None:
+    """Read a deterministic bounded sample of the completed sparse point cloud.
+
+    The native preview consumes this *view-only* sample rather than generating a
+    duplicate PLY artifact. Sampling is evenly distributed over COLMAP's stable
+    point-record order, keeping the JSON-lines response bounded for large scenes.
+    """
+    if maximum < 1:
+        raise ValueError("maximum must be positive")
+    stats = read_model_stats(model_dir)
+    if stats is None:
+        return None
+    directory = Path(model_dir)
+    stride = max(1, (stats.points + maximum - 1) // maximum)
+    if stats.format == "binary":
+        try:
+            data = (directory / "points3D.bin").read_bytes()
+            (count,) = struct.unpack_from("<Q", data)
+        except (OSError, struct.error):
+            return None
+        if count != stats.points:
+            return None
+        points: list[SparsePoint] = []
+        offset = 8
+        try:
+            for index in range(count):
+                _, x, y, z, red, green, blue, _, track_length = struct.unpack_from("<Q3d3BdQ", data, offset)
+                offset += 51 + track_length * 8
+                if offset > len(data):
+                    return None
+                if index % stride == 0:
+                    points.append(SparsePoint(x, y, z, red, green, blue))
+        except struct.error:
+            return None
+        return points if offset == len(data) else None
+
+    lines = _text_data_lines(directory / "points3D.txt")
+    if lines is None or len(lines) != stats.points:
+        return None
+    points = []
+    for index, line in enumerate(lines):
+        fields = line.split()
+        if len(fields) < 7:
+            return None
+        try:
+            _, x, y, z = fields[:4]
+            red, green, blue = (int(value) for value in fields[4:7])
+            if not all(0 <= value <= 255 for value in (red, green, blue)):
+                return None
+            point = SparsePoint(float(x), float(y), float(z), red, green, blue)
+        except ValueError:
+            return None
+        if index % stride == 0:
+            points.append(point)
+    return points
+
+
+def _model_fingerprint(model_dir: Path) -> tuple[tuple[str, int, int, str], ...] | None:
+    """Return file identity data sufficient to reject a changing COLMAP publish."""
+    fmt = model_format(model_dir)
+    if fmt is None:
+        return None
+    suffix = ".bin" if fmt == "binary" else ".txt"
+    try:
+        entries = []
+        for name in _REQUIRED:
+            path = model_dir / f"{name}{suffix}"
+            metadata = path.stat()
+            digest = hashlib.blake2b(digest_size=16)
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1_048_576), b""):
+                    digest.update(chunk)
+            entries.append((name, metadata.st_size, metadata.st_mtime_ns, digest.hexdigest()))
+        return tuple(entries)
+    except OSError:
+        return None
+
+
+def read_reconstruction_preview(
+    model_dir: Path,
+    *,
+    maximum_cameras: int = 750,
+    maximum_points: int = 4_000,
+) -> ReconstructionPreview | None:
+    """Read one stable bounded snapshot suitable for responsive interactive preview."""
+    if maximum_cameras < 1 or maximum_points < 1:
+        raise ValueError("preview maxima must be positive")
+    directory = Path(model_dir)
+    before = _model_fingerprint(directory)
+    if before is None:
+        return None
+    stats = read_model_stats(directory)
+    cameras = read_camera_positions(directory, maximum=maximum_cameras) if stats is not None else None
+    points = read_sparse_points(directory, maximum=maximum_points) if stats is not None else None
+    after = _model_fingerprint(directory)
+    if before != after or stats is None or cameras is None or points is None:
+        return None
+    return ReconstructionPreview(cameras, points, stats.images, stats.points)
 
 
 def _camera_center(name: str, qw: float, qx: float, qy: float, qz: float, tx: float, ty: float, tz: float) -> CameraPosition:

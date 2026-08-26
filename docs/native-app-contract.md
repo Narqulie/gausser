@@ -67,7 +67,7 @@ Requests:
 {"id":"req-11","method":"status","params":{}}
 ```
 
-`reconstruction` returns only a structurally validated completed `sparse/0` model's camera centres. It is intentionally not a claim of live COLMAP mapping: COLMAP writes stable poses when the mapper publishes its model.
+`reconstruction` returns a fingerprint-stable, structurally validated completed `sparse/0` model's camera centres plus deterministic bounded samples of cameras (750 maximum) and coloured `points3D` geometry (4,000 maximum), alongside the full counts. This is view-only preview data—not a generated PLY artifact—and is intentionally not a claim of live COLMAP mapping: COLMAP writes stable geometry and poses when the mapper publishes its model.
 
 Synchronous responses use `{ "id": ..., "result": ... }` or
 `{ "id": ..., "error": { "code": ..., "message": ... } }`.

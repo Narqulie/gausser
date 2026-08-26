@@ -77,6 +77,19 @@ import Testing
     #expect(stage.fields[1].visibleWhen?.equals == .string("vocab_tree"))
 }
 
+@Test func reconstructionResponseDecodesSampledSparseModel() throws {
+    let data = Data("""
+    {"cameras":[{"name":"frame.jpg","x":1,"y":2,"z":3}],"points":[{"x":4,"y":5,"z":6,"red":10,"green":20,"blue":30}],"camera_count":7,"point_count":123}
+    """.utf8)
+
+    let reconstruction = try JSONDecoder().decode(ReconstructionResponse.self, from: data)
+
+    #expect(reconstruction.cameras.count == 1)
+    #expect(reconstruction.points == [ReconstructionPoint(x: 4, y: 5, z: 6, red: 10, green: 20, blue: 30)])
+    #expect(reconstruction.cameraCount == 7)
+    #expect(reconstruction.pointCount == 123)
+}
+
 @Test func engineMessageDecodesLogEvent() throws {
     let data = Data("""
     {"event":"log","run_id":"run-1","line":"iteration 5000"}

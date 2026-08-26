@@ -149,7 +149,12 @@ struct SceneNavigator: View {
                         ForEach(SceneStep.allCases.filter { $0 != .overview }) { pipelineStepCard($0) }
                     }
                 }
-                ReconstructionPreview(cameras: model.reconstructionCameras)
+                ReconstructionPreview(
+                    cameras: model.reconstructionCameras,
+                    points: model.reconstructionPoints,
+                    cameraCount: model.reconstructionCameraCount,
+                    pointCount: model.reconstructionPointCount
+                )
                 artifactsSummary
                 viewerSection
             }

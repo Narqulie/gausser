@@ -3,7 +3,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-from gausser.colmap_model import read_camera_positions, read_model_stats
+from gausser.colmap_model import read_camera_positions, read_model_stats, read_reconstruction_preview, read_sparse_points
 
 
 def write_binary_model(path: Path, *, images: int = 3, points: int = 7) -> None:
@@ -51,6 +51,35 @@ def test_read_model_stats_reads_text_model(tmp_path: Path):
     assert (stats.images, stats.points) == (2, 2)
 
 
+def test_text_model_parser_does_not_treat_points2d_rows_as_camera_records(tmp_path: Path):
+    (tmp_path / "cameras.txt").write_text("# Camera list\n1 PINHOLE 1 1 1 1 1 1 1\n")
+    (tmp_path / "images.txt").write_text(
+        "# Image list\n"
+        "1 1 0 0 0 0 0 0 1 frame-one.jpg\n"
+        "1 100 -1 2 200 -1 3 300 -1 4 400 -1\n"
+        "2 1 0 0 0 0 0 0 1 frame-two.jpg\n"
+        "5 500 -1 6 600 -1 7 700 -1 8 800 -1\n"
+    )
+    (tmp_path / "points3D.txt").write_text("# Points\n1 0 0 0 1 2 3 0.1 1 1\n")
+
+    stats = read_model_stats(tmp_path)
+    cameras = read_camera_positions(tmp_path)
+
+    assert stats is not None and stats.images == 2
+    assert cameras is not None and [camera.name for camera in cameras] == ["frame-one.jpg", "frame-two.jpg"]
+
+
+def test_text_model_requires_a_well_formed_points2d_row_for_every_image(tmp_path: Path):
+    (tmp_path / "cameras.txt").write_text("# Camera list\n1 PINHOLE 1 1 1 1 1 1 1\n")
+    (tmp_path / "points3D.txt").write_text("# Points\n")
+
+    (tmp_path / "images.txt").write_text("1 1 0 0 0 0 0 0 1 frame.jpg\n")
+    assert read_model_stats(tmp_path) is None
+
+    (tmp_path / "images.txt").write_text("1 1 0 0 0 0 0 0 1 frame.jpg\n100 200 -1 trailing\n")
+    assert read_model_stats(tmp_path) is None
+
+
 def test_read_camera_positions_converts_colmap_world_to_camera_pose(tmp_path: Path):
     write_binary_model(tmp_path, images=1)
     # Rewrite the one image with an identity rotation and translation (1, 2, 3).
@@ -65,6 +94,56 @@ def test_read_camera_positions_converts_colmap_world_to_camera_pose(tmp_path: Pa
     assert cameras is not None
     assert cameras[0].name == "frame.jpg"
     assert (cameras[0].x, cameras[0].y, cameras[0].z) == (-1.0, -2.0, -3.0)
+
+
+def test_read_reconstruction_preview_returns_a_bounded_stable_model_snapshot(tmp_path: Path):
+    write_binary_model(tmp_path, images=3, points=7)
+
+    preview = read_reconstruction_preview(tmp_path, maximum_cameras=2, maximum_points=2)
+
+    assert preview is not None
+    assert preview.camera_count == 3
+    assert preview.point_count == 7
+    assert len(preview.cameras) == 2
+    assert len(preview.points) == 2
+
+
+def test_read_reconstruction_preview_rejects_a_model_that_changes_during_read(tmp_path: Path, monkeypatch):
+    import gausser.colmap_model as colmap_model
+
+    write_binary_model(tmp_path)
+    fingerprints = iter([(("before", 1),), (("after", 2),)])
+    monkeypatch.setattr(colmap_model, "_model_fingerprint", lambda _: next(fingerprints))
+
+    assert read_reconstruction_preview(tmp_path) is None
+
+
+def test_read_sparse_points_reads_colmap_xyz_and_rgb_with_bounded_sampling(tmp_path: Path):
+    write_binary_model(tmp_path, points=5)
+    records = b"".join(
+        struct.pack("<Q3d3BdQ", index, float(index), float(index + 1), float(index + 2), index, index + 1, index + 2, 0.1, 0)
+        for index in range(1, 6)
+    )
+    (tmp_path / "points3D.bin").write_bytes(struct.pack("<Q", 5) + records)
+
+    points = read_sparse_points(tmp_path, maximum=2)
+
+    assert points is not None
+    assert [(point.x, point.y, point.z, point.red, point.green, point.blue) for point in points] == [
+        (1.0, 2.0, 3.0, 1, 2, 3),
+        (4.0, 5.0, 6.0, 4, 5, 6),
+    ]
+
+
+def test_read_sparse_points_reads_text_model(tmp_path: Path):
+    (tmp_path / "cameras.txt").write_text("# Camera list\n1 PINHOLE 1 1 1 1 1 1 1\n")
+    (tmp_path / "images.txt").write_text("# Image list\n1 1 0 0 0 0 0 0 1 frame.jpg\n\n")
+    (tmp_path / "points3D.txt").write_text("# Points\n1 1 2 3 10 20 30 0.1 1 2\n")
+
+    points = read_sparse_points(tmp_path)
+
+    assert points is not None
+    assert [(point.x, point.y, point.z, point.red, point.green, point.blue) for point in points] == [(1.0, 2.0, 3.0, 10, 20, 30)]
 
 
 def test_read_model_stats_rejects_partial_binary_output(tmp_path: Path):

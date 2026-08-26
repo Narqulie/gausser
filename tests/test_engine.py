@@ -302,15 +302,28 @@ def test_engine_lists_scene_owned_artifacts(scene: Path):
     }]}}]
 
 
-def test_engine_returns_camera_positions_for_completed_reconstruction(scene: Path, monkeypatch):
-    from gausser.colmap_model import CameraPosition
+def test_engine_returns_sampled_sparse_model_for_completed_reconstruction(scene: Path, monkeypatch):
+    from gausser.colmap_model import CameraPosition, ReconstructionPreview, SparsePoint
     from gausser.engine import GausserEngine
 
-    monkeypatch.setattr("gausser.engine.read_camera_positions", lambda _: [CameraPosition("frame.jpg", 1.0, 2.0, 3.0)])
+    monkeypatch.setattr(
+        "gausser.engine.read_reconstruction_preview",
+        lambda _: ReconstructionPreview(
+            [CameraPosition("frame.jpg", 1.0, 2.0, 3.0)],
+            [SparsePoint(4.0, 5.0, 6.0, 10, 20, 30)],
+            1,
+            100,
+        ),
+    )
     emitted: list[dict] = []
     GausserEngine().dispatch({"id": "reconstruction", "method": "reconstruction", "params": {"scene": str(scene)}}, emitted.append)
 
-    assert emitted == [{"id": "reconstruction", "result": {"cameras": [{"name": "frame.jpg", "x": 1.0, "y": 2.0, "z": 3.0}]}}]
+    assert emitted == [{"id": "reconstruction", "result": {
+        "cameras": [{"name": "frame.jpg", "x": 1.0, "y": 2.0, "z": 3.0}],
+        "points": [{"x": 4.0, "y": 5.0, "z": 6.0, "red": 10, "green": 20, "blue": 30}],
+        "camera_count": 1,
+        "point_count": 100,
+    }}]
 
 
 def test_engine_rejects_malformed_requests_without_stopping(scene: Path):

@@ -40,8 +40,30 @@ struct ReconstructionCamera: Decodable, Identifiable, Equatable {
     var id: String { name }
 }
 
-private struct ReconstructionResponse: Decodable {
+/// A bounded colour-bearing sample from COLMAP's canonical sparse/0 point cloud.
+/// It is preview data only; the engine never writes a duplicate PLY for the UI.
+struct ReconstructionPoint: Decodable, Identifiable, Equatable {
+    let x: Double
+    let y: Double
+    let z: Double
+    let red: Int
+    let green: Int
+    let blue: Int
+
+    var id: String { "\(x):\(y):\(z):\(red):\(green):\(blue)" }
+}
+
+struct ReconstructionResponse: Decodable {
     let cameras: [ReconstructionCamera]
+    let points: [ReconstructionPoint]
+    let cameraCount: Int
+    let pointCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case cameras, points
+        case cameraCount = "camera_count"
+        case pointCount = "point_count"
+    }
 }
 
 private struct StatusResponse: Decodable {
@@ -88,6 +110,9 @@ final class SceneViewModel {
     private(set) var toolReadiness: [StageReadiness] = []
     private(set) var artifacts: [ArtifactSummary] = []
     private(set) var reconstructionCameras: [ReconstructionCamera] = []
+    private(set) var reconstructionPoints: [ReconstructionPoint] = []
+    private(set) var reconstructionCameraCount = 0
+    private(set) var reconstructionPointCount = 0
     private(set) var stageCatalog: [String: StageDefinition] = [:]
     private(set) var activeRun: EngineRun?
     private(set) var activeRunStartedAt: Date?
@@ -191,7 +216,11 @@ final class SceneViewModel {
             switch result {
             case .success(let message):
                 do {
-                    self.reconstructionCameras = try self.decodeReconstruction(message).cameras
+                    let reconstruction = try self.decodeReconstruction(message)
+                    self.reconstructionCameras = reconstruction.cameras
+                    self.reconstructionPoints = reconstruction.points
+                    self.reconstructionCameraCount = reconstruction.cameraCount
+                    self.reconstructionPointCount = reconstruction.pointCount
                 } catch {
                     self.errorMessage = error.localizedDescription
                 }

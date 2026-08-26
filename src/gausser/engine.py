@@ -19,7 +19,7 @@ from typing import Any, Callable, TextIO
 from uuid import uuid4
 
 from .artifacts import list_artifacts
-from .colmap_model import read_camera_positions
+from .colmap_model import read_reconstruction_preview
 from .controller import SceneController, Stage, StageRequest
 from .ingest import ingest_photo_directory
 from .manifest import record_run_finished, record_run_started
@@ -126,8 +126,18 @@ class GausserEngine:
                 emit({"id": request_id, "result": {"artifacts": [asdict(item) for item in list_artifacts(scene)]}})
             elif method == "reconstruction":
                 scene = self._scene_from_params(params)
-                cameras = read_camera_positions(scene.sparse / "0")
-                emit({"id": request_id, "result": {"cameras": [] if cameras is None else [asdict(camera) for camera in cameras]}})
+                preview = read_reconstruction_preview(scene.sparse / "0")
+                if preview is None:
+                    emit({"id": request_id, "result": {
+                        "cameras": [], "points": [], "camera_count": 0, "point_count": 0,
+                    }})
+                else:
+                    emit({"id": request_id, "result": {
+                        "cameras": [asdict(camera) for camera in preview.cameras],
+                        "points": [asdict(point) for point in preview.points],
+                        "camera_count": preview.camera_count,
+                        "point_count": preview.point_count,
+                    }})
             elif method == "ingest_photos":
                 scene = self._scene_from_params(params)
                 with self._scene_mutation(scene):
