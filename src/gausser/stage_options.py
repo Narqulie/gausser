@@ -21,6 +21,14 @@ class ResolvedStageOptions:
     arguments: tuple[str, ...]
 
 
+_LOD_DEFAULTS: dict[str, Any] = {
+    "source": "",
+    "chunk_count": 512,
+    "chunk_extent": 16.0,
+    "lod_percentages": "100,50,25",
+}
+
+
 _MSPLAT_DEFAULTS: dict[str, Any] = {
     "iterations": 30000,
     "num_downscales": 0,
@@ -93,6 +101,7 @@ def catalog() -> dict[str, dict[str, Any]]:
         "colmap": _colmap_definition(),
         "brush": _brush_definition(),
         "msplat": _msplat_definition(),
+        "lod": _lod_definition(),
         "sharpframes": {
             "version": 1,
             "title": "Sharp Frames",
@@ -140,6 +149,8 @@ def catalog() -> dict[str, dict[str, Any]]:
 
 def resolve_options(stage: str, options: Mapping[str, object]) -> ResolvedStageOptions:
     """Validate Studio options and produce deterministic CLI arguments."""
+    if stage == "lod":
+        return _resolve_lod(options)
     if stage == "msplat":
         return _resolve_msplat(options)
     if stage == "brush":
@@ -151,6 +162,58 @@ def resolve_options(stage: str, options: Mapping[str, object]) -> ResolvedStageO
     if stage == "sharpframes":
         return _resolve_sharpframes(options)
     raise StageOptionError(f"typed options are not available for {stage}")
+
+
+def _lod_definition() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "title": "Streamed LOD",
+        "description": "Create a validated PlayCanvas streamed LOD tree from one exact scene-owned PLY or SOG export.",
+        "preset": "web-streaming",
+        "groups": [
+            {"id": "source", "title": "Source export", "description": "The selected training export is never modified."},
+            {"id": "streaming", "title": "Streaming layout", "description": "Chunk and spatial partition sizing."},
+        ],
+        "presets": [
+            {"recommended": True, "id": "web-streaming", "title": "Web streaming", "description": "Validated 100% / 50% / 25% tree with splat-transform's standard 512K chunks.", "values": _LOD_DEFAULTS},
+        ],
+        "fields": [
+            _field("source", "Source export", "path", "", required=True, read_only=True, group="source", help="Explicit PLY or SOG artifact selected from this scene."),
+            _field("lod_percentages", "LOD percentages", "text", "100,50,25", group="streaming", help="Strictly descending retained-splat percentages beginning with 100."),
+            _field("chunk_count", "Chunk size (K splats)", "integer", 512, minimum=1, group="streaming", help="Approximate splats per streamed chunk in thousands."),
+            _field("chunk_extent", "Chunk extent (metres)", "decimal", 16.0, minimum=0, group="streaming", help="Approximate spatial extent of a chunk."),
+        ],
+    }
+
+
+def _resolve_lod(options: Mapping[str, object]) -> ResolvedStageOptions:
+    unexpected = sorted(set(options) - set(_LOD_DEFAULTS))
+    if unexpected:
+        raise StageOptionError(f"unsupported lod options: {', '.join(unexpected)}")
+    values: dict[str, Any] = dict(_LOD_DEFAULTS)
+    values.update(options)
+    if not isinstance(values["source"], str) or not values["source"].strip():
+        raise StageOptionError("source must be a non-empty scene-owned export path")
+    source_path = values["source"].replace("\\", "/")
+    if source_path.startswith("/") or ".." in source_path.split("/") or not source_path.lower().endswith((".ply", ".sog")):
+        raise StageOptionError("source must be a relative scene-owned .ply or .sog export path")
+    _positive_integer(values, "chunk_count", minimum=1)
+    extent = values["chunk_extent"]
+    if isinstance(extent, bool) or not isinstance(extent, (int, float)) or extent <= 0:
+        raise StageOptionError("chunk_extent must be greater than 0")
+    raw = values["lod_percentages"]
+    if not isinstance(raw, str):
+        raise StageOptionError("lod_percentages must be comma-separated integers")
+    try:
+        percentages = [int(value) for value in raw.split(",")]
+    except ValueError as exc:
+        raise StageOptionError("lod_percentages must be comma-separated integers") from exc
+    if len(percentages) < 2 or percentages[0] != 100 or any(not 0 < value <= 100 for value in percentages) or any(later >= earlier for earlier, later in zip(percentages, percentages[1:])):
+        raise StageOptionError("lod_percentages must be strictly descending values in 1..100 beginning with 100")
+    arguments = (values["source"], "--chunk-count", str(values["chunk_count"]), "--chunk-extent", str(values["chunk_extent"]), "--lod-percentages", values["lod_percentages"])
+    default_values = {**_LOD_DEFAULTS, "source": values["source"]}
+    preset = "web-streaming" if values == default_values else "custom"
+    return ResolvedStageOptions("lod", 1, preset, values, arguments)
 
 
 def _msplat_definition() -> dict[str, Any]:

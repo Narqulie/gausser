@@ -128,11 +128,11 @@ private struct SceneDashboard: View {
 
     @State private var model: SceneViewModel
     @State private var requestedStage: StageReadiness?
-    @State private var requestedArguments: [String] = []
     @State private var requestedOptions: [String: JSONValue]?
     @State private var sharpFramesSource: URL?
     @State private var presentsSharpFramesWorkspace = false
     @State private var workspaceStage: String?
+    @State private var workspaceSeededValues: [String: JSONValue] = [:]
     @State private var presentsStageWorkspace = false
     @State private var ingestPolicy = "copy"
     @State private var reimportSource: ArtifactSummary?
@@ -150,7 +150,6 @@ private struct SceneDashboard: View {
             VStack(alignment: .leading, spacing: 24) {
                 header
                 sourceImport
-                settings
                 pipeline
                 artifacts
                 viewerSection
@@ -184,6 +183,7 @@ private struct SceneDashboard: View {
             if let stage = workspaceStage, let definition = model.stageCatalog[stage] {
                 StageWorkspace(
                     definition: definition,
+                    seededValues: workspaceSeededValues,
                     onResolve: { options, completion in model.resolve(stage: stage, options: options, completion: completion) }
                 ) { options in
                     requestedOptions = options
@@ -262,14 +262,6 @@ private struct SceneDashboard: View {
         }
     }
 
-    private var settings: some View {
-        GroupBox("Run settings") {
-            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
-            }
-            .padding(.top, 4)
-        }
-    }
-
     private var pipeline: some View {
         GroupBox("Pipeline") {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 14)], spacing: 14) {
@@ -298,9 +290,9 @@ private struct SceneDashboard: View {
             Button(model.stageCatalog[stage.stage] == nil ? "Run \(stage.stage.capitalized)" : "Configure \(stage.stage.capitalized)") {
                 if model.stageCatalog[stage.stage] != nil {
                     workspaceStage = stage.stage
+                    workspaceSeededValues = [:]
                     presentsStageWorkspace = true
                 } else {
-                    requestedArguments = []
                     requestedOptions = nil
                     requestedStage = stage
                 }
@@ -349,9 +341,9 @@ private struct SceneDashboard: View {
                         }
                         if artifact.format == "ply" || artifact.format == "sog" {
                             Button("Create LOD") {
-                                requestedArguments = [artifact.relativePath]
-                                requestedOptions = nil
-                                requestedStage = StageReadiness(stage: "lod", state: "ready", detail: artifact.relativePath)
+                                workspaceStage = "lod"
+                                workspaceSeededValues = ["source": .string(artifact.relativePath)]
+                                presentsStageWorkspace = true
                             }
                             .disabled(model.activeRun != nil || !model.toolAvailable(for: "lod"))
                         }
@@ -485,10 +477,8 @@ private struct SceneDashboard: View {
 
     private func startRequestedStage() {
         guard let stage = requestedStage else { return }
-        let arguments = requestedArguments
         let options = requestedOptions
         requestedStage = nil
-        requestedArguments = []
         requestedOptions = nil
         switch stage.stage {
         case "sharpframes":
@@ -522,7 +512,11 @@ private struct SceneDashboard: View {
             }
             model.start(stage: stage.stage, options: options)
         case "lod":
-            model.start(stage: stage.stage, arguments: arguments)
+            guard let options else {
+                model.errorMessage = "Validate streamed LOD settings before launching."
+                return
+            }
+            model.start(stage: stage.stage, options: options)
         default:
             model.errorMessage = "This stage requires a source or artifact selected in its dedicated workspace."
         }

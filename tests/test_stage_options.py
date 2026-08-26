@@ -5,6 +5,17 @@ import pytest
 from gausser.stage_options import StageOptionError, catalog, resolve_options
 
 
+def test_lod_options_resolve_a_validated_scene_owned_export():
+    resolved = resolve_options("lod", {"source": "runs/brush/run-1/exports/export_30000.ply"})
+    assert resolved.preset == "web-streaming"
+    assert resolved.arguments == ("runs/brush/run-1/exports/export_30000.ply", "--chunk-count", "512", "--chunk-extent", "16.0", "--lod-percentages", "100,50,25")
+
+
+def test_lod_options_reject_non_descending_percentages():
+    with pytest.raises(StageOptionError, match="strictly descending"):
+        resolve_options("lod", {"source": "runs/brush/export.ply", "lod_percentages": "100,50,50"})
+
+
 def test_msplat_options_require_an_explicit_unmasked_acknowledgement():
     with pytest.raises(StageOptionError, match="acknowledge_unmasked must be true"):
         resolve_options("msplat", {})
