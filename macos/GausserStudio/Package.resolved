@@ -1,0 +1,32 @@
+{
+  "originHash" : "4e766dd93062012e3ecb37413bea51c1bf915d4aea48f4974d1d9c0415d1e752",
+  "pins" : [
+    {
+      "identity" : "metalsplatter",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/scier/MetalSplatter.git",
+      "state" : {
+        "revision" : "2b965de1934de38dda1c71cf90bf798aa948a14c"
+      }
+    },
+    {
+      "identity" : "spz-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/scier/spz-swift.git",
+      "state" : {
+        "revision" : "e2410c91bceba2539c11157ad92e488ef6e16416",
+        "version" : "2.1.0"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser",
+      "state" : {
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
+      }
+    }
+  ],
+  "version" : 3
+}
