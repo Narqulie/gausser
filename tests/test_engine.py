@@ -280,6 +280,46 @@ def test_engine_rejects_photo_ingest_while_a_stage_owns_the_scene(scene: Path):
     assert events[2] == {"id": "ingest", "error": {"code": "scene_busy", "message": f"a run is already active for {scene}"}}
 
 
+def test_engine_lists_paginated_scene_dataset_images(scene: Path):
+    from PIL import Image
+    from gausser.engine import GausserEngine
+
+    Image.new("RGB", (2, 2)).save(scene / "images" / "second.png")
+    emitted: list[dict] = []
+
+    GausserEngine().dispatch(
+        {"id": "dataset-1", "method": "dataset_images", "params": {"scene": str(scene), "offset": 1, "limit": 1}},
+        emitted.append,
+    )
+
+    assert emitted[0]["id"] == "dataset-1"
+    assert emitted[0]["result"] == {
+        "images": [{"relative_path": "images/second.png", "name": "second.png", "size_bytes": (scene / "images" / "second.png").stat().st_size}],
+        "image_count": 2,
+        "next_offset": None,
+        "revision": emitted[0]["result"]["revision"],
+    }
+    assert emitted[0]["result"]["revision"]
+
+
+def test_engine_resets_stale_dataset_continuations(scene: Path):
+    from gausser.engine import GausserEngine
+
+    first: list[dict] = []
+    engine = GausserEngine()
+    engine.dispatch({"id": "first", "method": "dataset_images", "params": {"scene": str(scene), "limit": 1}}, first.append)
+    revision = first[0]["result"]["revision"]
+    (scene / "images" / "changed.jpg").write_bytes(b"not-a-real-image-but-discovery-is-extension-based")
+
+    continuation: list[dict] = []
+    engine.dispatch(
+        {"id": "next", "method": "dataset_images", "params": {"scene": str(scene), "offset": 1, "limit": 1, "revision": revision}},
+        continuation.append,
+    )
+
+    assert continuation == [{"id": "next", "error": {"code": "dataset_changed", "message": "dataset changed; reload the first page"}}]
+
+
 def test_engine_lists_scene_owned_artifacts(scene: Path):
     from gausser.engine import GausserEngine
 

@@ -31,6 +31,33 @@ private struct ArtifactResponse: Decodable {
     let artifacts: [ArtifactSummary]
 }
 
+struct DatasetImageSummary: Decodable, Identifiable, Equatable {
+    let relativePath: String
+    let name: String
+    let sizeBytes: Int
+
+    var id: String { relativePath }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case relativePath = "relative_path"
+        case sizeBytes = "size_bytes"
+    }
+}
+
+struct DatasetImageResponse: Decodable {
+    let images: [DatasetImageSummary]
+    let imageCount: Int
+    let nextOffset: Int?
+    let revision: String
+
+    enum CodingKeys: String, CodingKey {
+        case images, revision
+        case imageCount = "image_count"
+        case nextOffset = "next_offset"
+    }
+}
+
 struct ReconstructionCamera: Decodable, Identifiable, Equatable {
     let name: String
     let x: Double
@@ -109,6 +136,10 @@ final class SceneViewModel {
     private(set) var sceneReadiness: [StageReadiness] = []
     private(set) var toolReadiness: [StageReadiness] = []
     private(set) var artifacts: [ArtifactSummary] = []
+    private(set) var datasetImages: [DatasetImageSummary] = []
+    private(set) var datasetImageCount = 0
+    private(set) var nextDatasetImageOffset: Int?
+    private(set) var datasetRevision: String?
     private(set) var reconstructionCameras: [ReconstructionCamera] = []
     private(set) var reconstructionPoints: [ReconstructionPoint] = []
     private(set) var reconstructionCameraCount = 0
@@ -123,6 +154,8 @@ final class SceneViewModel {
     private(set) var isStartingStage = false
     private(set) var isRefreshing = false
     private(set) var isIngesting = false
+    private(set) var isLoadingDatasetImages = false
+    private var datasetRequestGeneration = 0
     private(set) var isReimporting = false
     var errorMessage: String?
 
@@ -211,6 +244,7 @@ final class SceneViewModel {
                 self.errorMessage = error.localizedDescription
             }
         }
+        loadDatasetImages(reset: true)
         engine.reconstruction(scene: scene) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -268,6 +302,50 @@ final class SceneViewModel {
             case .failure(let error):
                 self?.errorMessage = error.localizedDescription
                 completion(.failure(error))
+            }
+        }
+    }
+
+    func loadMoreDatasetImages() {
+        loadDatasetImages(reset: false)
+    }
+
+    private func loadDatasetImages(reset: Bool) {
+        guard reset || (!isLoadingDatasetImages && nextDatasetImageOffset != nil) else { return }
+        if reset { datasetRequestGeneration += 1 }
+        let generation = datasetRequestGeneration
+        isLoadingDatasetImages = true
+        let offset = reset ? 0 : nextDatasetImageOffset ?? 0
+        let revision = reset ? nil : datasetRevision
+        engine.datasetImages(scene: scene, offset: offset, revision: revision) { [weak self] result in
+            guard let self, generation == self.datasetRequestGeneration else { return }
+            self.isLoadingDatasetImages = false
+            switch result {
+            case .success(let message):
+                do {
+                    let response = try self.decodeDatasetImages(message)
+                    let images = try self.validateDatasetImages(response.images)
+                    if !reset && (response.revision != self.datasetRevision || response.imageCount != self.datasetImageCount || images.contains(where: { candidate in self.datasetImages.contains(where: { $0.id == candidate.id }) })) {
+                        self.datasetRevision = nil
+                        self.nextDatasetImageOffset = nil
+                        self.loadDatasetImages(reset: true)
+                        return
+                    }
+                    self.datasetImages = reset ? images : self.datasetImages + images
+                    self.datasetImageCount = response.imageCount
+                    self.nextDatasetImageOffset = response.nextOffset
+                    self.datasetRevision = response.revision
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                }
+            case .failure(let error):
+                if (error as? EngineClientError)?.code == "dataset_changed" {
+                    self.datasetRevision = nil
+                    self.nextDatasetImageOffset = nil
+                    self.loadDatasetImages(reset: true)
+                } else {
+                    self.errorMessage = error.localizedDescription
+                }
             }
         }
     }
@@ -458,6 +536,30 @@ final class SceneViewModel {
 
     private func decodeReconstruction(_ message: EngineMessage) throws -> ReconstructionResponse {
         try decodeResult(message, as: ReconstructionResponse.self)
+    }
+
+    private func decodeDatasetImages(_ message: EngineMessage) throws -> DatasetImageResponse {
+        try decodeResult(message, as: DatasetImageResponse.self)
+    }
+
+    func validateDatasetImages(_ images: [DatasetImageSummary]) throws -> [DatasetImageSummary] {
+        let imageDirectory = scene.appending(path: "images", directoryHint: .isDirectory).standardizedFileURL
+        return try images.map { image in
+            let components = image.relativePath.split(separator: "/", omittingEmptySubsequences: false)
+            guard components.count == 2,
+                  components[0] == "images",
+                  !components[1].isEmpty,
+                  components[1] == Substring(image.name),
+                  image.name != ".", image.name != "..",
+                  !image.name.contains("/") else {
+                throw EngineClientError(message: "The engine returned an invalid dataset image path.")
+            }
+            let url = scene.appending(path: image.relativePath).standardizedFileURL
+            guard url.deletingLastPathComponent() == imageDirectory else {
+                throw EngineClientError(message: "The engine returned a dataset image outside this scene.")
+            }
+            return image
+        }
     }
 
     private func decodeStatus(_ message: EngineMessage) throws -> StatusResponse {

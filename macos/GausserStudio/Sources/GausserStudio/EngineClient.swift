@@ -3,6 +3,12 @@ import Observation
 
 struct EngineClientError: LocalizedError {
     let message: String
+    let code: String?
+
+    init(message: String, code: String? = nil) {
+        self.message = message
+        self.code = code
+    }
 
     var errorDescription: String? { message }
 }
@@ -57,6 +63,18 @@ final class EngineClient {
 
     func reconstruction(scene: URL, completion: @escaping (Result<EngineMessage, Error>) -> Void) {
         send(method: "reconstruction", params: ["scene": .string(scene.path)], completion: completion)
+    }
+
+    func datasetImages(
+        scene: URL,
+        offset: Int,
+        revision: String? = nil,
+        limit: Int = 200,
+        completion: @escaping (Result<EngineMessage, Error>) -> Void
+    ) {
+        var params: [String: JSONValue] = ["scene": .string(scene.path), "offset": .number(Double(offset)), "limit": .number(Double(limit))]
+        if let revision { params["revision"] = .string(revision) }
+        send(method: "dataset_images", params: params, completion: completion)
     }
 
     func status(completion: @escaping (Result<EngineMessage, Error>) -> Void) {
@@ -265,7 +283,7 @@ final class EngineClient {
             guard let message = try? JSONDecoder().decode(EngineMessage.self, from: line) else { continue }
             if let id = message.id, let completion = pending.removeValue(forKey: id) {
                 if let error = message.error {
-                    completion(.failure(EngineClientError(message: error.message)))
+                    completion(.failure(EngineClientError(message: error.message, code: error.code)))
                 } else {
                     completion(.success(message))
                 }

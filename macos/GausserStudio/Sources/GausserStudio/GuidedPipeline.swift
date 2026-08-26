@@ -236,6 +236,15 @@ struct SceneNavigator: View {
                         .disabled(!model.canConfigureStages)
                         .studioGlassButton()
                     }
+                    DatasetImageBrowser(
+                        scene: scene,
+                        images: model.datasetImages,
+                        revision: model.datasetRevision ?? "unversioned",
+                        imageCount: model.datasetImageCount,
+                        hasMore: model.nextDatasetImageOffset != nil,
+                        isLoading: model.isLoadingDatasetImages,
+                        onLoadMore: model.loadMoreDatasetImages
+                    )
                     StepNavigation(next: .sammer) { step = $0 }
                 }
             }

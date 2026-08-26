@@ -100,6 +100,19 @@ func sceneConfigurationRemainsAvailableUntilAStageStarts() {
 }
 
 @Test @MainActor
+func sceneViewModelRejectsDatasetPathsOutsideItsImagesDirectory() throws {
+    let scene = URL(fileURLWithPath: "/tmp/scene-a")
+    let model = SceneViewModel(scene: scene, engine: EngineClient())
+    let valid = DatasetImageSummary(relativePath: "images/frame.jpg", name: "frame.jpg", sizeBytes: 1)
+    let escaping = DatasetImageSummary(relativePath: "images/../../outside.jpg", name: "outside.jpg", sizeBytes: 1)
+
+    #expect(try model.validateDatasetImages([valid]) == [valid])
+    #expect(throws: EngineClientError.self) {
+        try model.validateDatasetImages([escaping])
+    }
+}
+
+@Test @MainActor
 func sceneViewModelAcceptsEventsForItsCanonicalScene() {
     let engine = EngineClient()
     let selected = URL(fileURLWithPath: "/tmp/scene-a")

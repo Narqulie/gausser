@@ -21,6 +21,7 @@ from uuid import uuid4
 from .artifacts import list_artifacts
 from .colmap_model import read_reconstruction_preview
 from .controller import SceneController, Stage, StageRequest
+from .dataset import DatasetChangedError, list_dataset_images
 from .ingest import ingest_photo_directory
 from .manifest import record_run_finished, record_run_started
 from .preflight import inspect_scene, inspect_tools
@@ -124,6 +125,23 @@ class GausserEngine:
             elif method == "artifacts":
                 scene = self._scene_from_params(params)
                 emit({"id": request_id, "result": {"artifacts": [asdict(item) for item in list_artifacts(scene)]}})
+            elif method == "dataset_images":
+                scene = self._scene_from_params(params)
+                revision = params.get("revision")
+                if revision is not None and (not isinstance(revision, str) or not revision):
+                    raise RequestError("revision must be a non-empty string when provided")
+                page = list_dataset_images(
+                    scene,
+                    offset=self._integer(params, "offset", default=0, minimum=0),
+                    limit=self._integer(params, "limit", default=200, minimum=1, maximum=500),
+                    revision=revision,
+                )
+                emit({"id": request_id, "result": {
+                    "images": [asdict(image) for image in page.images],
+                    "image_count": page.total_count,
+                    "next_offset": page.next_offset,
+                    "revision": page.revision,
+                }})
             elif method == "reconstruction":
                 scene = self._scene_from_params(params)
                 preview = read_reconstruction_preview(scene.sparse / "0")
@@ -187,6 +205,8 @@ class GausserEngine:
                 emit({"id": request_id, "result": self._cancel(run_id)})
             else:
                 raise RequestError(f"unsupported method: {method}")
+        except DatasetChangedError as exc:
+            emit({"id": request_id, "error": {"code": "dataset_changed", "message": str(exc)}})
         except SceneLockError as exc:
             emit({"id": request_id, "error": {"code": "scene_busy", "message": str(exc)}})
         except SceneError as exc:
@@ -228,6 +248,21 @@ class GausserEngine:
         value = params.get(name)
         if not isinstance(value, str) or not value:
             raise RequestError(f"{name} must be a non-empty string")
+        return value
+
+    @staticmethod
+    def _integer(
+        params: dict[str, object],
+        name: str,
+        *,
+        default: int,
+        minimum: int,
+        maximum: int | None = None,
+    ) -> int:
+        value = params.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum or (maximum is not None and value > maximum):
+            upper = f" and at most {maximum}" if maximum is not None else ""
+            raise RequestError(f"{name} must be an integer at least {minimum}{upper}")
         return value
 
     @staticmethod

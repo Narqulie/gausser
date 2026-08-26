@@ -77,6 +77,19 @@ import Testing
     #expect(stage.fields[1].visibleWhen?.equals == .string("vocab_tree"))
 }
 
+@Test func datasetImageResponseDecodesEngineOwnedRelativePaths() throws {
+    let data = Data("""
+    {"images":[{"relative_path":"images/frame_0001.jpg","name":"frame_0001.jpg","size_bytes":1234}],"image_count":425,"next_offset":200,"revision":"dataset-v1"}
+    """.utf8)
+
+    let response = try JSONDecoder().decode(DatasetImageResponse.self, from: data)
+
+    #expect(response.images == [DatasetImageSummary(relativePath: "images/frame_0001.jpg", name: "frame_0001.jpg", sizeBytes: 1234)])
+    #expect(response.imageCount == 425)
+    #expect(response.nextOffset == 200)
+    #expect(response.revision == "dataset-v1")
+}
+
 @Test func reconstructionResponseDecodesSampledSparseModel() throws {
     let data = Data("""
     {"cameras":[{"name":"frame.jpg","x":1,"y":2,"z":3}],"points":[{"x":4,"y":5,"z":6,"red":10,"green":20,"blue":30}],"camera_count":7,"point_count":123}
