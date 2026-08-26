@@ -1,5 +1,59 @@
 import SwiftUI
 
+/// The consistent spatial rhythm for pages, sheets, cards, and persistent
+/// actions. macOS sheets have rounded edges; retaining this inset prevents
+/// content and controls from crowding those edges at every supported size.
+enum StudioLayout {
+    static let pageInset: CGFloat = 28
+    static let contentWidth: CGFloat = 860
+    static let wideContentWidth: CGFloat = 1_100
+    static let cardInset: CGFloat = 18
+    static let cardCornerRadius: CGFloat = 18
+}
+
+/// A scrollable desktop page with a single, deliberate content measure. It
+/// avoids every workflow screen independently choosing edge padding.
+struct StudioScrollPage<Content: View>: View {
+    let maxWidth: CGFloat
+    private let content: Content
+
+    init(maxWidth: CGFloat = StudioLayout.contentWidth, @ViewBuilder content: () -> Content) {
+        self.maxWidth = maxWidth
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView {
+            content
+                .frame(maxWidth: maxWidth, alignment: .leading)
+                .padding(StudioLayout.pageInset)
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+    }
+}
+
+/// A persistent, material-backed action area. Used with `safeAreaInset` so
+/// crucial controls stay above the scrollable content rather than being pushed
+/// below it by long forms or commands.
+struct StudioActionBar<Content: View>: View {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .frame(maxWidth: StudioLayout.contentWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, StudioLayout.pageInset)
+            .padding(.vertical, 16)
+            .background(.bar)
+            .overlay(alignment: .top) { Divider() }
+    }
+}
+
 /// Shared presentation primitives. The workflow engine remains the authority;
 /// this file only gives that information a consistent macOS-native hierarchy.
 struct StudioGlassActions<Content: View>: View {
@@ -80,9 +134,25 @@ struct StudioContentCard<Content: View>: View {
                 .font(.headline)
             content
         }
-        .padding(18)
+        .padding(StudioLayout.cardInset)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(.background, in: RoundedRectangle(cornerRadius: StudioLayout.cardCornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: StudioLayout.cardCornerRadius, style: .continuous)
+                .stroke(.quaternary, lineWidth: 1)
+        }
+    }
+}
+
+extension View {
+    /// Applies the same standard content surface to interactive cards without
+    /// using Liquid Glass as a content background.
+    func studioCardSurface(cornerRadius: CGFloat = StudioLayout.cardCornerRadius) -> some View {
+        background(.background, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(.quaternary, lineWidth: 1)
+            }
     }
 }
 

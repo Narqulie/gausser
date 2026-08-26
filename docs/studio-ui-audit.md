@@ -28,6 +28,32 @@ _Date: 2026-08-26_
 4. **Engine authority remains unchanged**: Python still resolves options and validates all prerequisites; the native client only enables a clearly structured route to that resolution.
 5. **Compatibility remains explicit**: native macOS 26 visual effects are availability-gated; existing macOS 15 functionality still uses system materials.
 
+## Follow-up consistency pass
+
+A second full pass aligned every workflow page and review screen with the same
+content measure, 28-point edge inset, 18-point card inset, and standard
+material card surface. It resolves the narrow-window defects identified during
+live use:
+
+- `StudioScrollPage` is the shared scroll/padding container for overview,
+  sources, training, publishing, and run review.
+- `StudioActionBar`, placed through `safeAreaInset`, keeps configuration and
+  review actions persistently visible above scrolled forms and long commands.
+  `ViewThatFits` changes the footer from horizontal to vertical before buttons
+  can compress or disappear in a split-view detail column.
+- Content cards, reconstruction output, stage cards, trainer choices, and
+  artifact rows now share a restrained standard-material surface. Liquid Glass
+  remains limited to the single primary action in a footer, with the existing
+  macOS 15 fallback.
+- The project list uses the standard sidebar style and full-row pipeline hit
+  targets. Native file panels, alerts, and confirmation dialogs remain system
+  presentation rather than custom modal imitations.
+
+These are presentation-only changes; no engine request, command, manifest, or
+stage-readiness semantics changed. Visual layout has no meaningful headless
+unit test, so Swift build/test plus source review are the deterministic gates;
+manual narrow-window exercise remains a release check.
+
 ## Verification requirements
 
 - Existing Python and Swift suites stay green.

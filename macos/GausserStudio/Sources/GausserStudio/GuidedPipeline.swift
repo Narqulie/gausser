@@ -139,7 +139,7 @@ struct SceneNavigator: View {
     }
 
     private var overview: some View {
-        ScrollView {
+        StudioScrollPage(maxWidth: StudioLayout.wideContentWidth) {
             VStack(alignment: .leading, spacing: 24) {
                 SceneHero(scene: scene, stages: model.stages)
                 StudioContentCard("Project flow", systemImage: "point.3.connected.trianglepath.dotted") {
@@ -153,9 +153,6 @@ struct SceneNavigator: View {
                 artifactsSummary
                 viewerSection
             }
-            .frame(maxWidth: 1_100, alignment: .leading)
-            .padding(28)
-            .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 
@@ -182,7 +179,7 @@ struct SceneNavigator: View {
             }
             .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
             .padding(14)
-            .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .studioCardSurface(cornerRadius: 16)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Open \(item.title) workspace")
@@ -196,7 +193,7 @@ struct SceneNavigator: View {
                 navigation.sharpFramesSource = nil
             }, next: .sammer)
         } else {
-            ScrollView {
+            StudioScrollPage {
                 VStack(alignment: .leading, spacing: 24) {
                     StepPageHeader(
                         step: .sources,
@@ -236,9 +233,6 @@ struct SceneNavigator: View {
                     }
                     StepNavigation(next: .sammer) { step = $0 }
                 }
-                .frame(maxWidth: 860, alignment: .leading)
-                .padding(28)
-                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
     }
@@ -248,7 +242,7 @@ struct SceneNavigator: View {
         if let trainer = navigation.selectedTrainer {
             configurationPage(stage: trainer.rawValue, onBack: { navigation.selectedTrainer = nil }, next: .publish)
         } else {
-            ScrollView {
+            StudioScrollPage {
                 VStack(alignment: .leading, spacing: 24) {
                     StepPageHeader(
                         step: .training,
@@ -273,9 +267,6 @@ struct SceneNavigator: View {
                     }
                     StepNavigation(previous: .colmap, next: .publish) { step = $0 }
                 }
-                .frame(maxWidth: 860, alignment: .leading)
-                .padding(28)
-                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
     }
@@ -287,7 +278,7 @@ struct SceneNavigator: View {
                 self.navigation.lodSource = nil
             })
         } else {
-            ScrollView {
+            StudioScrollPage {
                 VStack(alignment: .leading, spacing: 24) {
                     StepPageHeader(
                         step: .publish,
@@ -302,9 +293,6 @@ struct SceneNavigator: View {
                     }
                     StepNavigation(previous: .training) { step = $0 }
                 }
-                .frame(maxWidth: 860, alignment: .leading)
-                .padding(28)
-                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
     }
@@ -434,7 +422,7 @@ struct SceneNavigator: View {
                         }
                     }
                     .padding(14)
-                    .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .studioCardSurface(cornerRadius: 12)
                 }
             }
         }
@@ -575,8 +563,8 @@ private struct TrainerChoiceCard: View {
                 Text("Configure \(title) →").font(.callout.weight(.semibold))
             }
             .frame(maxWidth: .infinity, minHeight: 220, alignment: .leading)
-            .padding(18)
-            .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .padding(StudioLayout.cardInset)
+            .studioCardSurface()
         }
         .buttonStyle(.plain)
     }

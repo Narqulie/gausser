@@ -29,8 +29,10 @@ struct StudioView: View {
                                 Label(item.title, systemImage: item.symbol)
                             }
                             .buttonStyle(.plain)
+                            .contentShape(Rectangle())
                             .listRowBackground(navigation.step == item ? Color.accentColor.opacity(0.16) : Color.clear)
                             .accessibilityLabel("Open \(item.title) workspace")
+                            .accessibilityValue(navigation.step == item ? "Current step" : "")
                         }
                     }
                 }
@@ -52,6 +54,7 @@ struct StudioView: View {
                     }
                 }
             }
+            .listStyle(.sidebar)
             .navigationTitle("Gausser Studio")
             .toolbar {
                 Button("New Project", systemImage: "plus") {

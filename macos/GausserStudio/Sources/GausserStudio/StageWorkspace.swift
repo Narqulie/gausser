@@ -127,26 +127,22 @@ struct StageWorkspace: View {
     }
 
     private var workspaceContent: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    workspaceHero
-                    presetCard
-                    fieldGroups
-                    notices
-                    outputContext
-                    commandPreview
-                }
-                .frame(maxWidth: 860, alignment: .leading)
-                .padding(28)
-                .frame(maxWidth: .infinity, alignment: .center)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                workspaceHero
+                presetCard
+                fieldGroups
+                notices
+                outputContext
+                commandPreview
             }
-            .scrollBounceBehavior(.basedOnSize)
-            .disabled(model.isResolving)
-
-            Divider()
-            actionBar
+            .frame(maxWidth: StudioLayout.contentWidth, alignment: .leading)
+            .padding(StudioLayout.pageInset)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
+        .scrollBounceBehavior(.basedOnSize)
+        .disabled(model.isResolving)
+        .safeAreaInset(edge: .bottom, spacing: 0) { actionBar }
         .navigationTitle(definition.title)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -298,40 +294,61 @@ struct StageWorkspace: View {
     }
 
     private var actionBar: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                if model.isResolving {
-                    Label("Validating settings…", systemImage: "clock")
-                        .foregroundStyle(.secondary)
-                } else if model.resolution != nil {
-                    Label("Settings validated", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                } else {
-                    Text("Validate before running")
-                        .foregroundStyle(.secondary)
+        StudioActionBar {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    actionStatus
+                    Spacer()
+                    actionButtons
                 }
-            }
-            .font(.callout)
-            Spacer()
-            StudioGlassActions {
-                Button("Validate settings") { resolve() }
-                    .disabled(model.isResolving)
-                    .studioGlassButton()
-                Button("Review run") {
-                    guard let resolution = model.resolution else { return }
-                    onReviewRun(model.values, resolution)
-                }
-                .disabled(model.resolution == nil || model.isResolving)
-                .buttonStyle(.borderedProminent)
-                if let nextTitle, let onContinue {
-                    Button("Continue to \(nextTitle)", action: onContinue)
-                        .buttonStyle(.bordered)
+                VStack(alignment: .leading, spacing: 12) {
+                    actionStatus
+                    actionButtons
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
         }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 16)
-        .background(.bar)
+    }
+
+    @ViewBuilder
+    private var actionStatus: some View {
+        if model.isResolving {
+            Label("Validating settings…", systemImage: "clock")
+                .foregroundStyle(.secondary)
+        } else if model.resolution != nil {
+            Label("Settings validated", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        } else {
+            Text("Validate before running")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var actionButtons: some View {
+        StudioGlassActions {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { actionButtonSet }
+                VStack(alignment: .trailing, spacing: 8) { actionButtonSet }
+            }
+        }
+        .font(.callout)
+    }
+
+    @ViewBuilder
+    private var actionButtonSet: some View {
+        Button("Validate settings") { resolve() }
+            .disabled(model.isResolving)
+            .buttonStyle(.bordered)
+        Button("Review run") {
+            guard let resolution = model.resolution else { return }
+            onReviewRun(model.values, resolution)
+        }
+        .disabled(model.resolution == nil || model.isResolving)
+        .studioGlassButton()
+        if let nextTitle, let onContinue {
+            Button("Continue to \(nextTitle)", action: onContinue)
+                .buttonStyle(.bordered)
+        }
     }
 
     private var definitionStage: String {

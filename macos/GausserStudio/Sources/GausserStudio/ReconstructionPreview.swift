@@ -9,7 +9,7 @@ struct ReconstructionPreview: View {
     let cameras: [ReconstructionCamera]
 
     var body: some View {
-        GroupBox("Camera reconstruction") {
+        StudioContentCard("Camera reconstruction", systemImage: "camera.aperture") {
             if cameras.isEmpty {
                 ContentUnavailableView(
                     "No completed camera model",
@@ -21,7 +21,7 @@ struct ReconstructionPreview: View {
                 VStack(alignment: .leading, spacing: 8) {
                     CameraMap(cameras: cameras)
                         .frame(minHeight: 260)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     Text("Top-down X/Z camera centres · \(cameras.count) registered views")
                         .font(.caption)
                         .foregroundStyle(.secondary)
