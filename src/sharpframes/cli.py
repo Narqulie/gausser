@@ -19,6 +19,11 @@ def can_publish_into_scene(images: Path) -> bool:
     return not images.exists() or not any(images.iterdir())
 
 
+def sharp_frames_command(executable: str, source: Path, output: Path, extra: list[str]) -> list[str]:
+    """Build the current upstream Sharp Frames invocation."""
+    return [executable, str(source), str(output), "--force-overwrite", *extra]
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="sharpframes",
@@ -41,7 +46,7 @@ def main(argv: list[str] | None = None) -> None:
 
     attempt = scene.staging_attempt("sharpframes", scene.new_run_id())
     staged_images = attempt / "images"
-    cmd = [args.sharp_frames, str(source), str(staged_images), "--overwrite", *extra]
+    cmd = sharp_frames_command(args.sharp_frames, source, staged_images, extra)
     console.print(f"[bold]Sharp Frames[/bold] → {scene.images}")
     result = run_command(cmd, cwd=scene.root, on_line=console.print)
     if not result.succeeded:
