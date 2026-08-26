@@ -28,7 +28,9 @@ The first native vertical slice is:
 
 MetalSplatter is the built-in native viewer. It does not currently consume SOG
 or PlayCanvas LOD trees; the engine may later create an explicit, scene-owned
-viewer derivative. SuperSplat remains an explicit external editor handoff.
+viewer derivative. SuperSplat remains an explicit external editor handoff. Reimporting an edited
+export creates a fresh `runs/supersplat/<run-id>/` artifact with source and
+content-hash provenance; it never replaces the trainer's source export.
 
 ## Ownership
 
@@ -56,9 +58,10 @@ Requests:
 {"id":"req-2","method":"preflight","params":{"scene":"/absolute/scene"}}
 {"id":"req-3","method":"artifacts","params":{"scene":"/absolute/scene"}}
 {"id":"req-4","method":"ingest_photos","params":{"scene":"/absolute/scene","source":"/absolute/photos","policy":"copy"}}
-{"id":"req-5","method":"start","params":{"scene":"/absolute/scene","stage":"colmap","arguments":["--matcher","sequential"]}}
-{"id":"req-6","method":"cancel","params":{"run_id":"run-123"}}
-{"id":"req-7","method":"status","params":{}}
+{"id":"req-5","method":"reimport_supersplat","params":{"scene":"/absolute/scene","source":"runs/brush/run/exports/scene.ply","edited":"/absolute/edited.ply"}}
+{"id":"req-6","method":"start","params":{"scene":"/absolute/scene","stage":"colmap","arguments":["--matcher","sequential"]}}
+{"id":"req-7","method":"cancel","params":{"run_id":"run-123"}}
+{"id":"req-8","method":"status","params":{}}
 ```
 
 Synchronous responses use `{ "id": ..., "result": ... }` or

@@ -134,6 +134,63 @@ def test_engine_ingests_photo_directory_with_explicit_policy(scene: Path, tmp_pa
     assert (scene / "images" / "photo.jpg").is_file()
 
 
+def test_engine_reimports_edited_supersplat_export(scene: Path, tmp_path: Path):
+    from gausser.engine import GausserEngine
+
+    source = scene / "runs" / "brush" / "source-run" / "exports" / "scene.ply"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    edited = tmp_path / "edited.ply"
+    edited.write_bytes(b"edited")
+    emitted: list[dict] = []
+
+    GausserEngine().dispatch(
+        {
+            "id": "reimport",
+            "method": "reimport_supersplat",
+            "params": {"scene": str(scene), "source": "runs/brush/source-run/exports/scene.ply", "edited": str(edited)},
+        },
+        emitted.append,
+    )
+
+    output = scene / "runs" / "supersplat" / emitted[0]["result"]["run_id"] / "exports" / "edited.ply"
+    assert output.read_bytes() == b"edited"
+
+
+def test_engine_rejects_photo_ingest_while_a_stage_owns_the_scene(scene: Path):
+    from gausser.engine import GausserEngine
+
+    events: list[dict] = []
+    release = threading.Event()
+
+    class Controller:
+        def __init__(self, paths: ScenePaths) -> None:
+            self.scene = paths
+
+        def run(self, request, *, on_line, cancel_event):
+            release.wait(timeout=1)
+            return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
+
+    engine = GausserEngine(controller_factory=Controller)
+    engine.dispatch(
+        {"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "sharpframes"}},
+        events.append,
+    )
+    _wait_for(events, "started")
+    engine.dispatch(
+        {
+            "id": "ingest",
+            "method": "ingest_photos",
+            "params": {"scene": str(scene), "source": str(scene), "policy": "copy"},
+        },
+        events.append,
+    )
+    release.set()
+    _wait_for(events, "finished")
+
+    assert events[2] == {"id": "ingest", "error": {"code": "scene_busy", "message": f"a run is already active for {scene}"}}
+
+
 def test_engine_lists_scene_owned_artifacts(scene: Path):
     from gausser.engine import GausserEngine
 
@@ -193,6 +250,38 @@ def test_engine_rejects_a_second_active_run_for_the_same_scene(scene: Path):
     _wait_for(events, "finished")
 
     assert events[2] == {"id": "second", "error": {"code": "scene_busy", "message": f"a run is already active for {scene}"}}
+
+
+def test_engine_shutdown_cancels_active_work_and_releases_scene(scene: Path):
+    from gausser.engine import GausserEngine
+
+    events: list[dict] = []
+    observed_cancel = threading.Event()
+
+    class Controller:
+        def __init__(self, paths: ScenePaths) -> None:
+            self.scene = paths
+
+        def run(self, request, *, on_line, cancel_event):
+            assert cancel_event is not None
+            assert cancel_event.wait(timeout=1)
+            observed_cancel.set()
+            return CommandResult((request.stage,), self.scene.root, 130, 0.0, (), True)
+
+    engine = GausserEngine(controller_factory=Controller)
+    engine.dispatch(
+        {"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "sammer"}},
+        events.append,
+    )
+    _wait_for(events, "started")
+
+    engine.shutdown()
+
+    assert observed_cancel.is_set()
+    assert _wait_for(events, "finished")["run"]["state"] == "cancelled"
+    status: list[dict] = []
+    engine.dispatch({"id": "status", "method": "status", "params": {}}, status.append)
+    assert status == [{"id": "status", "result": {"active_runs": []}}]
 
 
 def test_engine_cancel_sets_the_stage_cancellation_event(scene: Path):

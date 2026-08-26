@@ -31,6 +31,14 @@ private struct ArtifactResponse: Decodable {
     let artifacts: [ArtifactSummary]
 }
 
+private struct StatusResponse: Decodable {
+    let activeRuns: [EngineRun]
+
+    enum CodingKeys: String, CodingKey {
+        case activeRuns = "active_runs"
+    }
+}
+
 private struct PreflightResponse: Decodable {
     let scene: String
     let sceneReadiness: [StageReadiness]
@@ -49,6 +57,7 @@ private struct PreflightResponse: Decodable {
 final class SceneViewModel {
     let scene: URL
     private let engine: EngineClient
+    private var eventSubscription: UUID?
 
     private(set) var sceneReadiness: [StageReadiness] = []
     private(set) var toolReadiness: [StageReadiness] = []
@@ -57,13 +66,21 @@ final class SceneViewModel {
     private(set) var logs: [String] = []
     private(set) var isRefreshing = false
     private(set) var isIngesting = false
+    private(set) var isReimporting = false
     var errorMessage: String?
 
     init(scene: URL, engine: EngineClient) {
         self.scene = scene
         self.engine = engine
-        engine.onEvent = { [weak self] message in
+        eventSubscription = engine.subscribeToEvents { [weak self] message in
             self?.receive(message)
+        }
+    }
+
+    func stopObservingEvents() {
+        if let eventSubscription {
+            engine.unsubscribeFromEvents(eventSubscription)
+            self.eventSubscription = nil
         }
     }
 
@@ -109,6 +126,24 @@ final class SceneViewModel {
                 self.errorMessage = error.localizedDescription
             }
         }
+        engine.status { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let message):
+                do {
+                    let active = try self.decodeStatus(message).activeRuns.first(where: { self.belongsToScene($0) })
+                    if let active {
+                        self.activeRun = active
+                    } else if self.activeRun?.state != "queued" {
+                        self.activeRun = nil
+                    }
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                }
+            case .failure(let error):
+                self.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func ingestPhotos(from source: URL, policy: String) {
@@ -120,6 +155,24 @@ final class SceneViewModel {
         engine.ingestPhotos(scene: scene, source: source, policy: policy) { [weak self] result in
             guard let self else { return }
             self.isIngesting = false
+            switch result {
+            case .success:
+                self.refresh()
+            case .failure(let error):
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func reimportSuperSplat(sourceRelativePath: String, edited: URL) {
+        guard !isReimporting, activeRun == nil else {
+            errorMessage = "Wait for the active operation to finish first."
+            return
+        }
+        isReimporting = true
+        engine.reimportSuperSplat(scene: scene, sourceRelativePath: sourceRelativePath, edited: edited) { [weak self] result in
+            guard let self else { return }
+            self.isReimporting = false
             switch result {
             case .success:
                 self.refresh()
@@ -159,21 +212,27 @@ final class SceneViewModel {
         }
     }
 
-    private func receive(_ message: EngineMessage) {
+    func receive(_ message: EngineMessage) {
         switch message.event {
         case "started":
-            activeRun = message.run
+            guard let run = message.run, belongsToScene(run) else { return }
+            activeRun = run
         case "log":
             guard message.runID == activeRun?.id, let line = message.line else { return }
             logs.append(line)
             if logs.count > 300 { logs.removeFirst(logs.count - 300) }
         case "finished":
-            guard message.run?.id == activeRun?.id else { return }
+            guard let run = message.run, belongsToScene(run), run.id == activeRun?.id else { return }
             activeRun = nil
             refresh()
         default:
             break
         }
+    }
+
+    private func belongsToScene(_ run: EngineRun) -> Bool {
+        URL(fileURLWithPath: run.scene).standardizedFileURL.resolvingSymlinksInPath()
+            == scene.standardizedFileURL.resolvingSymlinksInPath()
     }
 
     private func decodePreflight(_ message: EngineMessage) throws -> PreflightResponse {
@@ -182,6 +241,10 @@ final class SceneViewModel {
 
     private func decodeArtifacts(_ message: EngineMessage) throws -> ArtifactResponse {
         try decodeResult(message, as: ArtifactResponse.self)
+    }
+
+    private func decodeStatus(_ message: EngineMessage) throws -> StatusResponse {
+        try decodeResult(message, as: StatusResponse.self)
     }
 
     private func decodeResult<Result: Decodable>(_ message: EngineMessage, as type: Result.Type) throws -> Result {

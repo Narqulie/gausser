@@ -18,7 +18,17 @@ final class EngineClient {
 
     var isConnected = false
     var events: [EngineMessage] = []
-    var onEvent: ((EngineMessage) -> Void)?
+    private var eventSubscribers: [UUID: (EngineMessage) -> Void] = [:]
+
+    func subscribeToEvents(_ subscriber: @escaping (EngineMessage) -> Void) -> UUID {
+        let id = UUID()
+        eventSubscribers[id] = subscriber
+        return id
+    }
+
+    func unsubscribeFromEvents(_ id: UUID) {
+        eventSubscribers.removeValue(forKey: id)
+    }
 
     func initialize(scene: URL, completion: @escaping (Result<EngineMessage, Error>) -> Void) {
         send(method: "initialize", params: ["scene": .string(scene.path)], completion: completion)
@@ -32,6 +42,10 @@ final class EngineClient {
         send(method: "artifacts", params: ["scene": .string(scene.path)], completion: completion)
     }
 
+    func status(completion: @escaping (Result<EngineMessage, Error>) -> Void) {
+        send(method: "status", params: [:], completion: completion)
+    }
+
     func ingestPhotos(
         scene: URL,
         source: URL,
@@ -41,6 +55,23 @@ final class EngineClient {
         send(
             method: "ingest_photos",
             params: ["scene": .string(scene.path), "source": .string(source.path), "policy": .string(policy)],
+            completion: completion
+        )
+    }
+
+    func reimportSuperSplat(
+        scene: URL,
+        sourceRelativePath: String,
+        edited: URL,
+        completion: @escaping (Result<EngineMessage, Error>) -> Void
+    ) {
+        send(
+            method: "reimport_supersplat",
+            params: [
+                "scene": .string(scene.path),
+                "source": .string(sourceRelativePath),
+                "edited": .string(edited.path),
+            ],
             completion: completion
         )
     }
@@ -145,7 +176,7 @@ final class EngineClient {
                 }
             } else {
                 events.append(message)
-                onEvent?(message)
+                eventSubscribers.values.forEach { $0(message) }
             }
         }
     }

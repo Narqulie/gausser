@@ -98,7 +98,7 @@ public final class SplatViewerModel {
     }
 }
 
-private struct SplatViewerLoadRequest: Equatable {
+private struct SplatViewerLoadRequest: Equatable, Sendable {
     let id: Int
     let url: URL
 }
@@ -198,8 +198,10 @@ public struct SplatViewerHost: NSViewRepresentable {
 
             loadingTask = Task { @MainActor [weak self, weak model] in
                 do {
-                    let reader = try AutodetectSceneReader(request.url)
-                    let points = try await reader.readAll()
+                    let points = try await Task.detached(priority: .userInitiated) {
+                        let reader = try AutodetectSceneReader(request.url)
+                        return try await reader.readAll()
+                    }.value
                     try Task.checkCancellation()
                     guard !points.isEmpty else {
                         throw SplatViewerHostError.emptyScene

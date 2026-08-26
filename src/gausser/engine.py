@@ -22,6 +22,7 @@ from .ingest import ingest_photo_directory
 from .preflight import inspect_scene, inspect_tools
 from .process import CommandResult
 from .scene import SceneError, ScenePaths, initialize_scene
+from .supersplat import reimport_edited_export
 
 
 EventSink = Callable[[dict[str, Any]], None]
@@ -87,6 +88,7 @@ class GausserEngine:
                 emit({"id": request_id, "result": {"artifacts": [asdict(item) for item in list_artifacts(scene)]}})
             elif method == "ingest_photos":
                 scene = self._scene_from_params(params)
+                self._require_scene_idle(scene)
                 source = self._required_string(params, "source")
                 policy = self._required_string(params, "policy")
                 result = ingest_photo_directory(scene, source, policy=policy)
@@ -96,6 +98,20 @@ class GausserEngine:
                         "source": str(result.source),
                         "policy": result.policy.value,
                         "image_count": len(result.images),
+                    },
+                })
+            elif method == "reimport_supersplat":
+                scene = self._scene_from_params(params)
+                self._require_scene_idle(scene)
+                source = self._required_string(params, "source")
+                edited = self._required_string(params, "edited")
+                result = reimport_edited_export(scene, source, edited)
+                emit({
+                    "id": request_id,
+                    "result": {
+                        "run_id": result.run_id,
+                        "export": str(scene.relative_path(result.export)),
+                        "provenance": str(scene.relative_path(result.provenance)),
                     },
                 })
             elif method == "start":
@@ -159,6 +175,11 @@ class GausserEngine:
         if not scene.is_dir():
             raise RequestError(f"scene does not exist: {scene}")
         return ScenePaths.from_root(scene)
+
+    def _require_scene_idle(self, scene: ScenePaths) -> None:
+        with self._lock:
+            if scene.root in self._active_by_scene:
+                raise SceneBusyError(f"a run is already active for {scene.root}")
 
     def _reserve_run(self, params: dict[str, object]) -> ActiveRun:
         scene = self._scene_from_params(params)

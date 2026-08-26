@@ -136,6 +136,8 @@ private struct SceneDashboard: View {
     @State private var ingestPolicy = "copy"
     @State private var isChoosingPhotoSource = false
     @State private var isChoosingSharpSource = false
+    @State private var reimportSource: ArtifactSummary?
+    @State private var isChoosingEditedExport = false
     @State private var viewer = SplatViewerModel()
 
     init(scene: URL, engine: EngineClient) {
@@ -164,6 +166,7 @@ private struct SceneDashboard: View {
         }
         .navigationTitle(scene.lastPathComponent)
         .task { model.refresh() }
+        .onDisappear { model.stopObservingEvents() }
         .fileImporter(
             isPresented: $isChoosingPhotoSource,
             allowedContentTypes: [.folder],
@@ -182,6 +185,15 @@ private struct SceneDashboard: View {
                 requestedArguments = [source.path]
                 requestedStage = StageReadiness(stage: "sharpframes", state: "ready", detail: source.path)
             }
+        }
+        .fileImporter(
+            isPresented: $isChoosingEditedExport,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let edited = urls.first, let source = reimportSource else { return }
+            reimportSource = nil
+            model.reimportSuperSplat(sourceRelativePath: source.relativePath, edited: edited)
         }
         .toolbar {
             Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
@@ -332,6 +344,11 @@ private struct SceneDashboard: View {
                             Button("SuperSplat") {
                                 handoffToSuperSplat(artifact)
                             }
+                            Button("Reimport Edited") {
+                                reimportSource = artifact
+                                isChoosingEditedExport = true
+                            }
+                            .disabled(model.activeRun != nil || model.isReimporting)
                         }
                         if artifact.format == "ply" || artifact.format == "sog" {
                             Button("Create LOD") {
