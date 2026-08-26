@@ -132,8 +132,9 @@ private struct SceneDashboard: View {
     @State private var requestedOptions: [String: JSONValue]?
     @State private var sharpFramesSource: URL?
     @State private var presentsSharpFramesWorkspace = false
+    @State private var workspaceStage: String?
+    @State private var presentsStageWorkspace = false
     @State private var samPrompt = ""
-    @State private var matcher = "sequential"
     @State private var maxSplats = "1500000"
     @State private var msplatDownscale = "4"
     @State private var ingestPolicy = "copy"
@@ -180,6 +181,19 @@ private struct SceneDashboard: View {
                 }
             } else {
                 ContentUnavailableView("Sharp Frames settings unavailable", systemImage: "exclamationmark.triangle")
+            }
+        }
+        .sheet(isPresented: $presentsStageWorkspace) {
+            if let stage = workspaceStage, let definition = model.stageCatalog[stage] {
+                StageWorkspace(
+                    definition: definition,
+                    onResolve: { options, completion in model.resolve(stage: stage, options: options, completion: completion) }
+                ) { options in
+                    requestedOptions = options
+                    requestedStage = StageReadiness(stage: stage, state: "ready", detail: "Validated settings")
+                }
+            } else {
+                ContentUnavailableView("Stage settings unavailable", systemImage: "exclamationmark.triangle")
             }
         }
         .fileImporter(
@@ -260,14 +274,6 @@ private struct SceneDashboard: View {
                         .textFieldStyle(.roundedBorder)
                 }
                 GridRow {
-                    Text("COLMAP matcher")
-                    Picker("Matcher", selection: $matcher) {
-                        Text("Sequential").tag("sequential")
-                        Text("Exhaustive").tag("exhaustive")
-                    }
-                    .labelsHidden()
-                }
-                GridRow {
                     Text("Brush maximum splats")
                     TextField("1500000", text: $maxSplats)
                         .textFieldStyle(.roundedBorder)
@@ -307,10 +313,15 @@ private struct SceneDashboard: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Run \(stage.stage.capitalized)") {
-                requestedArguments = []
-                requestedOptions = nil
-                requestedStage = stage
+            Button(model.stageCatalog[stage.stage] == nil ? "Run \(stage.stage.capitalized)" : "Configure \(stage.stage.capitalized)") {
+                if model.stageCatalog[stage.stage] != nil {
+                    workspaceStage = stage.stage
+                    presentsStageWorkspace = true
+                } else {
+                    requestedArguments = []
+                    requestedOptions = nil
+                    requestedStage = stage
+                }
             }
             .disabled(!canRequest(stage))
         }
@@ -511,7 +522,11 @@ private struct SceneDashboard: View {
             }
             model.start(stage: stage.stage, arguments: ["--prompt", samPrompt])
         case "colmap":
-            model.start(stage: stage.stage, arguments: ["--matcher", matcher])
+            guard let options else {
+                model.errorMessage = "Validate COLMAP settings before launching."
+                return
+            }
+            model.start(stage: stage.stage, options: options)
         case "brush":
             guard let value = Int(maxSplats), value > 0 else {
                 model.errorMessage = "Brush maximum splats must be a positive integer."

@@ -21,6 +21,7 @@ from uuid import uuid4
 from .artifacts import list_artifacts
 from .controller import SceneController, Stage, StageRequest
 from .ingest import ingest_photo_directory
+from .manifest import record_run_finished, record_run_started
 from .preflight import inspect_scene, inspect_tools
 from .process import CommandResult
 from .scene import SceneError, ScenePaths, initialize_scene
@@ -161,7 +162,10 @@ class GausserEngine:
                     with self._lock:
                         self._active_by_id.pop(active.id, None)
                         self._active_by_scene.pop(active.scene.root, None)
-                    active.lock.release()
+                    try:
+                        record_run_finished(active.scene, active.id, "failed")
+                    finally:
+                        active.lock.release()
                     raise
             elif method == "cancel":
                 run_id = self._required_string(params, "run_id")
@@ -274,6 +278,7 @@ class GausserEngine:
                 cancel_event=threading.Event(),
                 lock=scene_lock,
             )
+            record_run_started(scene, active.id, active.stage, active.settings)
             with self._lock:
                 if scene.root in self._active_by_scene:
                     raise SceneBusyError(f"a run is already active for {scene.root}")
@@ -319,6 +324,8 @@ class GausserEngine:
                 **stage_event.data,
             })
 
+        state = "failed"
+        result_data: dict[str, Any] | None = None
         try:
             controller = self._controller_factory(active.scene)
             result = controller.run(
@@ -329,9 +336,10 @@ class GausserEngine:
                 inherited_fds=(active.lock.fileno(),),
             )
             state = "succeeded" if result.succeeded else "cancelled" if result.cancelled else "failed"
+            result_data = self._result_data(result)
             event: dict[str, Any] = {
                 "event": "finished",
-                "run": {**active.descriptor(), "state": state, "result": self._result_data(result)},
+                "run": {**active.descriptor(), "state": state, "result": result_data},
             }
         except Exception as exc:
             event = {
@@ -339,6 +347,13 @@ class GausserEngine:
                 "run": {**active.descriptor(), "state": "failed", "error": {"code": "stage_failed", "message": str(exc)}},
             }
         finally:
+            try:
+                record_run_finished(active.scene, active.id, state, result_data)
+            except Exception as exc:
+                event = {
+                    "event": "finished",
+                    "run": {**active.descriptor(), "state": "failed", "error": {"code": "manifest_failed", "message": str(exc)}},
+                }
             with self._lock:
                 self._active_by_id.pop(active.id, None)
                 self._active_by_scene.pop(active.scene.root, None)

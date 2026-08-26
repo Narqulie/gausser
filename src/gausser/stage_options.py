@@ -21,6 +21,20 @@ class ResolvedStageOptions:
     arguments: tuple[str, ...]
 
 
+_COLMAP_VIDEO_DEFAULTS: dict[str, Any] = {
+    "matcher": "sequential",
+    "use_gpu": True,
+    "existing": "error",
+    "mask_path": None,
+    "vocab_tree": None,
+}
+
+_COLMAP_PHOTO_DEFAULTS: dict[str, Any] = {
+    **_COLMAP_VIDEO_DEFAULTS,
+    "matcher": "exhaustive",
+}
+
+
 _SHARPFRAMES_DEFAULTS: dict[str, Any] = {
     "fps": 10,
     "num_frames": 300,
@@ -43,6 +57,7 @@ def catalog() -> dict[str, dict[str, Any]]:
     option defaults or command construction.
     """
     return {
+        "colmap": _colmap_definition(),
         "sharpframes": {
             "version": 1,
             "title": "Sharp Frames",
@@ -90,9 +105,73 @@ def catalog() -> dict[str, dict[str, Any]]:
 
 def resolve_options(stage: str, options: Mapping[str, object]) -> ResolvedStageOptions:
     """Validate Studio options and produce deterministic CLI arguments."""
-    if stage != "sharpframes":
-        raise StageOptionError(f"typed options are not available for {stage}")
-    return _resolve_sharpframes(options)
+    if stage == "colmap":
+        return _resolve_colmap(options)
+    if stage == "sharpframes":
+        return _resolve_sharpframes(options)
+    raise StageOptionError(f"typed options are not available for {stage}")
+
+
+def _colmap_definition() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "title": "COLMAP Reconstruction",
+        "description": "Build a scene-owned camera reconstruction from the published images.",
+        "preset": "video-sequence",
+        "groups": [
+            {"id": "matching", "title": "Matching", "description": "Choose the relationship between source images."},
+            {"id": "artifacts", "title": "Existing reconstruction", "description": "Choose how existing scene-owned COLMAP artifacts are handled.", "advanced": True},
+            {"id": "advanced", "title": "Advanced", "description": "Optional masks and large photo-collection support.", "advanced": True},
+        ],
+        "presets": [
+            {"recommended": True, "id": "video-sequence", "title": "Video sequence", "description": "Sequential matching for ordered frames or a camera walkaround.", "values": _COLMAP_VIDEO_DEFAULTS},
+            {"id": "photo-set", "title": "Small photo set", "description": "Exhaustive matching for an unordered, modest-sized photo set.", "values": _COLMAP_PHOTO_DEFAULTS},
+        ],
+        "warnings": [
+            {"level": "warning", "message": "Exhaustive matching grows quadratically. Large image sets should use sequential video matching or a supplied vocabulary tree."},
+            {"level": "warning", "message": "macOS COLMAP installations normally have no CUDA support; Automatic GPU uses the tool's platform-safe policy."},
+        ],
+        "fields": [
+            _field("matcher", "Matcher", "enum", "sequential", choices=["sequential", "exhaustive", "vocab_tree"], group="matching", help="Sequential is appropriate for ordered frames; exhaustive is for small unordered photo sets."),
+            _field("use_gpu", "GPU acceleration", "boolean", True, group="matching", help="Automatic platform policy; disable to force CPU execution."),
+            _field("existing", "Existing artifacts", "enum", "error", choices=["error", "resume", "replace"], group="artifacts", advanced=True, help="Error is safest. Resume only after inspecting partial reconstruction state."),
+            _field("mask_path", "Feature mask directory", "path", None, group="advanced", advanced=True, help="Optional explicit COLMAP mask directory. Leave empty to auto-detect scene masks."),
+            _field("vocab_tree", "Vocabulary tree", "path", None, group="advanced", advanced=True, visible_when={"key": "matcher", "equals": "vocab_tree"}, help="Required when using vocabulary-tree matching."),
+        ],
+    }
+
+
+def _resolve_colmap(options: Mapping[str, object]) -> ResolvedStageOptions:
+    allowed = set(_COLMAP_VIDEO_DEFAULTS)
+    unexpected = sorted(set(options) - allowed)
+    if unexpected:
+        raise StageOptionError(f"unsupported colmap options: {', '.join(unexpected)}")
+    values: dict[str, Any] = dict(_COLMAP_VIDEO_DEFAULTS)
+    values.update(options)
+    _enum(values, "matcher", ("sequential", "exhaustive", "vocab_tree"))
+    _enum(values, "existing", ("error", "resume", "replace"))
+    if not isinstance(values["use_gpu"], bool):
+        raise StageOptionError("use_gpu must be a boolean")
+    for key in ("mask_path", "vocab_tree"):
+        value = values[key]
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise StageOptionError(f"{key} must be a non-empty path or null")
+    if values["matcher"] == "vocab_tree" and values["vocab_tree"] is None:
+        raise StageOptionError("vocab_tree is required when matcher is vocab_tree")
+
+    arguments: list[str] = ["--matcher", values["matcher"], "--existing", values["existing"]]
+    if not values["use_gpu"]:
+        arguments.append("--no-gpu")
+    if values["mask_path"] is not None:
+        arguments.extend(["--mask-path", values["mask_path"]])
+    if values["vocab_tree"] is not None:
+        arguments.extend(["--vocab-tree", values["vocab_tree"]])
+    preset = (
+        "video-sequence" if values == _COLMAP_VIDEO_DEFAULTS
+        else "photo-set" if values == _COLMAP_PHOTO_DEFAULTS
+        else "custom"
+    )
+    return ResolvedStageOptions("colmap", 1, preset, values, tuple(arguments))
 
 
 def _resolve_sharpframes(options: Mapping[str, object]) -> ResolvedStageOptions:

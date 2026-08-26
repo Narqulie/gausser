@@ -5,6 +5,24 @@ import pytest
 from gausser.stage_options import StageOptionError, catalog, resolve_options
 
 
+def test_colmap_options_resolve_capture_aware_presets_and_safe_artifact_policy():
+    video = resolve_options("colmap", {})
+    assert video.preset == "video-sequence"
+    assert video.arguments == ("--matcher", "sequential", "--existing", "error")
+
+    photos = resolve_options("colmap", {"matcher": "exhaustive"})
+    assert photos.preset == "photo-set"
+    assert photos.arguments == ("--matcher", "exhaustive", "--existing", "error")
+
+    vocab = resolve_options("colmap", {"matcher": "vocab_tree", "vocab_tree": "/models/tree.bin", "use_gpu": False})
+    assert vocab.arguments == ("--matcher", "vocab_tree", "--existing", "error", "--no-gpu", "--vocab-tree", "/models/tree.bin")
+
+
+def test_colmap_options_reject_incomplete_vocabulary_tree_request():
+    with pytest.raises(StageOptionError, match="vocab_tree is required"):
+        resolve_options("colmap", {"matcher": "vocab_tree"})
+
+
 def test_sharpframes_catalog_exposes_complete_upstream_controls():
     definition = catalog()["sharpframes"]
 

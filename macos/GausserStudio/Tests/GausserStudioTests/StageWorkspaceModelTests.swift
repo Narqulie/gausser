@@ -18,6 +18,11 @@ import Testing
 
     model.set(.string("vocab_tree"), for: "matcher")
     #expect(model.isVisible(definition.fields[1]))
+
+    model.set(.string("/tmp/tree.bin"), for: "vocab_tree")
+    model.applyPreset(try #require(definition.presets.first))
+    #expect(model.values["matcher"] == .string("sequential"))
+    #expect(model.values["vocab_tree"] == .null)
 }
 
 @Test @MainActor func stageWorkspaceInvalidatesAResolvedCommandOnEdit() throws {

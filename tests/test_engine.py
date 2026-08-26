@@ -132,6 +132,26 @@ def test_engine_enriches_structured_stage_events_with_run_timing(scene: Path):
     assert progress["observed_elapsed_seconds"] >= 0
 
 
+def test_engine_records_immutable_resolved_settings_for_every_run(scene: Path):
+    from gausser.engine import GausserEngine
+
+    class Controller:
+        def __init__(self, paths): self.scene = paths
+        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
+            return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
+
+    engine = GausserEngine(controller_factory=Controller)
+    events: list[dict] = []
+    engine.dispatch({"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "colmap", "arguments": ["--matcher", "sequential"]}}, events.append)
+    finished = _wait_for(events, "finished")
+
+    manifest = json.loads((scene / ".gausser" / "manifest.json").read_text())
+    run = manifest["runs"][finished["run"]["id"]]
+    assert run["settings"] is None
+    assert run["state"] == "succeeded"
+    assert run["result"]["returncode"] == 0
+
+
 def test_engine_initializes_explicit_empty_scene(tmp_path: Path):
     from gausser.engine import GausserEngine
 

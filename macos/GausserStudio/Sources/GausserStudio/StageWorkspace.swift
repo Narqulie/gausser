@@ -17,6 +17,9 @@ final class StageWorkspaceModel {
 
     init(definition: StageDefinition, seededValues: [String: JSONValue] = [:]) {
         var initialValues = Dictionary(uniqueKeysWithValues: definition.fields.map { ($0.key, $0.defaultValue) })
+        if let preset = definition.presets.first(where: { $0.id == definition.preset }) {
+            initialValues.merge(preset.values) { _, presetValue in presetValue }
+        }
         initialValues.merge(seededValues) { _, seeded in seeded }
         self.definition = definition
         self.values = initialValues
@@ -32,7 +35,12 @@ final class StageWorkspaceModel {
     }
 
     func applyPreset(_ preset: StagePreset) {
-        values.merge(preset.values) { _, presetValue in presetValue }
+        var resetValues = Dictionary(uniqueKeysWithValues: definition.fields.map { ($0.key, $0.defaultValue) })
+        for field in definition.fields where field.readOnly == true {
+            resetValues[field.key] = values[field.key] ?? field.defaultValue
+        }
+        resetValues.merge(preset.values) { _, presetValue in presetValue }
+        values = resetValues
         selectedPreset = preset.id
         resolution = nil
         validationError = nil
