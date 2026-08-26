@@ -77,6 +77,21 @@ src/
 Pytest coverage lives in `tests/`; use `pytest -q`. There is no CI, linter, or
 type checker. Source changes take effect immediately after `pip install -e .`.
 
+## Native Gausser Studio
+
+`macos/GausserStudio/` is the SwiftUI macOS client. It must remain a client of
+`gausser-engine`; Python owns scene paths, manifests, command construction, and
+process cancellation. Run native checks from that directory:
+
+```bash
+swift test
+swift build -c release
+```
+
+The MetalSplatter viewer supports PLY/SPZ/`.splat` and requires macOS 15+.
+`macos/package-app.sh` creates an ad-hoc-signed local developer app using the
+active Python environment's `gausser-engine`; it is not a distributable bundle.
+
 ## External deps (must be on PATH)
 
 - `colmap` — `brew install colmap`
