@@ -3,6 +3,20 @@ import Testing
 @testable import GausserStudio
 
 @Test @MainActor
+func sceneViewModelSubscribesOnceAfterSwiftUIPersistsItsState() {
+    let engine = EngineClient()
+    let model = SceneViewModel(scene: URL(fileURLWithPath: "/tmp/scene-a"), engine: engine)
+
+    #expect(engine.eventSubscriberCount == 0)
+    model.beginObservingEvents()
+    model.beginObservingEvents()
+    #expect(engine.eventSubscriberCount == 1)
+
+    model.stopObservingEvents()
+    #expect(engine.eventSubscriberCount == 0)
+}
+
+@Test @MainActor
 func sceneViewModelIgnoresEventsForAnotherScene() {
     let engine = EngineClient()
     let selected = URL(fileURLWithPath: "/tmp/scene-a")

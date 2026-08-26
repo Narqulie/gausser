@@ -101,6 +101,13 @@ final class SceneViewModel {
     init(scene: URL, engine: EngineClient) {
         self.scene = scene
         self.engine = engine
+    }
+
+    /// Starts the one engine subscription for this persisted scene state.
+    /// SwiftUI may construct disposable view values repeatedly, so subscribing
+    /// from `init` would create an invalidation loop while a scene is visible.
+    func beginObservingEvents() {
+        guard eventSubscription == nil else { return }
         eventSubscription = engine.subscribeToEvents { [weak self] message in
             self?.receive(message)
         }

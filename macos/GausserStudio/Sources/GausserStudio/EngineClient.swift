@@ -21,6 +21,9 @@ final class EngineClient {
     var events: [EngineMessage] = []
     private var eventSubscribers: [UUID: (EngineMessage) -> Void] = [:]
 
+    /// Internal test seam for subscription-lifecycle regression coverage.
+    var eventSubscriberCount: Int { eventSubscribers.count }
+
     init(engineExecutable: String? = nil) {
         self.executableOverride = engineExecutable
     }

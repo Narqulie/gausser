@@ -156,7 +156,10 @@ private struct SceneDashboard: View {
             .padding(28)
         }
         .navigationTitle(scene.lastPathComponent)
-        .task { model.refresh() }
+        .task {
+            model.beginObservingEvents()
+            model.refresh()
+        }
         .onDisappear { model.stopObservingEvents() }
         .sheet(isPresented: $presentsSharpFramesWorkspace) {
             if let source = sharpFramesSource, let definition = sharpFramesDefinition {
