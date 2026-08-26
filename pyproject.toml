@@ -31,6 +31,7 @@ sharpframes = "sharpframes.cli:main"
 msplatter = "msplatter.cli:main"
 lodder = "lodder.cli:main"
 gausser = "gausser.tui:main"
+gausser-engine = "gausser.engine:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

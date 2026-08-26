@@ -23,10 +23,11 @@ async def test_tui_renders_preflight_and_requires_second_launch_press(monkeypatc
         assert "images" in str(overview.render())
         assert "brush" in str(overview.render())
         assert app.query_one("#brush").disabled
+        assert not app.query_one("#sammer").disabled
 
         prompt = app.query_one("#prompt")
         prompt.value = "statue"
-        await pilot.click("#sammer")
+        app.on_button_pressed(Button.Pressed(app.query_one("#sammer", Button)))
         assert app.pending_request is not None
         await pilot.press("escape")
         assert app.pending_request is None

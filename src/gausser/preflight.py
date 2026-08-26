@@ -37,17 +37,18 @@ def inspect_scene(paths: ScenePaths) -> list[Readiness]:
         msplat_detail = "Msplat upstream requires binary COLMAP output"
     return [
         image_state,
+        Readiness("sharpframes", "ready", "Provide a video or image-directory source"),
         Readiness("sammer", "ready" if images else "unavailable", "SAM3 required"),
         colmap_state,
         Readiness("brush", "ready" if model else "unavailable", "Brush requires a valid COLMAP model"),
         Readiness("msplat", "ready" if msplat_ready else "unavailable", msplat_detail),
-        Readiness("lod", "ready", "Provide an explicit scene-owned PLY export"),
+        Readiness("lod", "ready", "Provide an explicit scene-owned PLY or SOG export"),
     ]
 
 
 def inspect_tools() -> list[Readiness]:
     tools = (
-        ("sammer", "sam3"), ("colmap", "colmap"), ("brush", "brush"),
+        ("sharpframes", "sharp-frames"), ("sammer", "sam3"), ("colmap", "colmap"), ("brush", "brush"),
         ("msplat", "msplatter"), ("lod", "splat-transform"),
     )
     readiness = [

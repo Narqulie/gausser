@@ -12,7 +12,7 @@ from .process import CommandResult, LineCallback, run_command
 from .scene import ScenePaths
 
 
-Stage = Literal["sammer", "colmap", "brush", "msplat", "lod"]
+Stage = Literal["sharpframes", "sammer", "colmap", "brush", "msplat", "lod"]
 Trainer = Literal["brush", "msplat"]
 _PIPELINE_STAGES: tuple[Stage, Stage] = ("sammer", "colmap")
 
@@ -43,6 +43,8 @@ class SceneController:
         return {item.stage: item.state for item in inspect_scene(self.scene)}
 
     def command_for(self, request: StageRequest) -> list[str]:
+        if request.stage == "sharpframes":
+            return ["sharpframes", *request.arguments, "--scene", str(self.scene.root)]
         if request.stage == "sammer":
             return ["sammer", "--scene", str(self.scene.root), *request.arguments]
         if request.stage == "colmap":
