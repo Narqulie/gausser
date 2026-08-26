@@ -13,7 +13,8 @@ from .scene import ScenePaths
 
 
 Stage = Literal["sammer", "colmap", "brush", "msplat"]
-_STAGE_ORDER: tuple[Stage, ...] = ("sammer", "colmap", "brush")
+Trainer = Literal["brush", "msplat"]
+_PIPELINE_STAGES: tuple[Stage, Stage] = ("sammer", "colmap")
 
 
 class StageUnavailable(RuntimeError):
@@ -73,11 +74,13 @@ class SceneController:
         self,
         requests: dict[Stage, StageRequest],
         *,
+        trainer: Trainer = "brush",
         on_line: LineCallback | None = None,
         cancel_event: threading.Event | None = None,
     ) -> list[CommandResult]:
+        """Run SAM3, COLMAP, then the explicitly selected trainer."""
         results: list[CommandResult] = []
-        for stage in _STAGE_ORDER:
+        for stage in (*_PIPELINE_STAGES, trainer):
             result = self.run(requests[stage], on_line=on_line, cancel_event=cancel_event)
             results.append(result)
             if not result.succeeded:

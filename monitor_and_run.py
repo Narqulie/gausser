@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Monitor Metashape cameras export, then run brusher (with optional colmapper fallback)."""
+"""Monitor Metashape cameras export, then run an explicit trainer after COLMAP."""
 
 import argparse
 import os
@@ -8,8 +8,9 @@ import time
 import shutil
 from pathlib import Path
 
-from gausser.colmap_model import model_format, read_model_stats
+from gausser.colmap_model import model_format, read_model_stats as _read_model_stats
 from gausser.process import run_command
+from gausser.ui import is_image_file
 
 POLL_INTERVAL = 30        # check every 30s
 STABILITY_WINDOW = 90     # wait 90s of no new/changed files before declaring done
@@ -70,12 +71,11 @@ def get_mtime_snapshot(scene: Path) -> dict[Path, float]:
 
 
 def count_images(scene: Path) -> int:
-    """Count images in scene/images/."""
+    """Count real scene images, excluding AppleDouble metadata sidecars."""
     img_dir = scene / "images"
     if not img_dir.is_dir():
         return 0
-    exts = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
-    return sum(1 for f in img_dir.rglob("*") if f.suffix.lower() in exts)
+    return sum(1 for file in img_dir.rglob("*") if is_image_file(file))
 
 
 def scene_summary(scene: Path) -> str:
@@ -97,7 +97,7 @@ def scene_summary(scene: Path) -> str:
 
 def read_model_stats(model_dir: Path) -> tuple[int, int]:
     """Read registered images and 3D points from a COLMAP sparse model dir."""
-    stats = read_model_stats(model_dir)
+    stats = _read_model_stats(model_dir)
     return (stats.images, stats.points) if stats is not None else (0, 0)
 
 
@@ -234,12 +234,24 @@ def run(cmd: list[str], desc: str, *, cwd: Path) -> bool:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Wait for an optional Metashape export, validate COLMAP, then train with Brush.",
+        description="Wait for an optional Metashape export, validate COLMAP, then train with Brush or Msplat.",
     )
     parser.add_argument("scene", type=Path, help="Scene root containing images/")
     parser.add_argument("--no-wait", action="store_true", help="Fail instead of waiting for a missing export")
     parser.add_argument("--matcher", choices=["sequential", "exhaustive", "vocab_tree"], default="sequential")
+    parser.add_argument("--trainer", choices=["brush", "msplat"], default="brush", help="Trainer to run after COLMAP (default: brush)")
+    parser.add_argument("--msplat-iterations", type=int, default=30000, help="Msplat iterations when --trainer msplat (default: 30000)")
+    parser.add_argument(
+        "--msplat-downscale-factor", type=float, metavar="N",
+        help="Load Msplat source images at 1/N resolution; required for --trainer msplat",
+    )
     args = parser.parse_args(argv)
+    if args.msplat_iterations <= 0:
+        parser.error("--msplat-iterations must be positive")
+    if args.trainer == "msplat" and args.msplat_downscale_factor is None:
+        parser.error("--msplat-downscale-factor is required when --trainer msplat")
+    if args.msplat_downscale_factor is not None and args.msplat_downscale_factor < 1:
+        parser.error("--msplat-downscale-factor must be at least 1")
     scene = args.scene.expanduser().resolve()
 
     if not scene.is_dir():
@@ -274,9 +286,11 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     n_imgs = count_images(scene)
-    print(f"\n🖌️  Running brusher on {n_imgs} images...")
-    ok = run(
-        [
+    if args.trainer == "brush":
+        print(f"\n🖌️  Running Brush on {n_imgs} images...")
+        trainer_name = "Brush 3DGS Training"
+        run_dir = "brush"
+        trainer_cmd = [
             "brusher", str(scene),
             "--total-train-iters", "30000",
             "--export-every", "5000",
@@ -284,15 +298,25 @@ def main(argv: list[str] | None = None) -> None:
             "--refine-every", "200",
             "--max-resolution", "1600",
             "--max-splats", "2000000",
-        ],
-        "Brush 3DGS Training",
-        cwd=scene,
-    )
+        ]
+    else:
+        print(f"\n⚠️  Running unmasked Msplat on {n_imgs} images...")
+        print("   SAM masks are not consumed by Msplat.")
+        trainer_name = "Experimental unmasked Msplat training"
+        run_dir = "msplat"
+        trainer_cmd = [
+            "msplatter", str(scene),
+            "--iterations", str(args.msplat_iterations),
+            "--downscale-factor", str(args.msplat_downscale_factor),
+            "--allow-unmasked",
+        ]
+
+    ok = run(trainer_cmd, trainer_name, cwd=scene)
     if not ok:
-        print("\n❌ brusher failed. Check the scene directory for partial results.")
+        print(f"\n❌ {args.trainer} failed. Check the scene directory for partial results.")
         sys.exit(1)
 
-    print(f"\n🎉 Training completed. Run artifacts are under {scene / 'runs' / 'brush'}.")
+    print(f"\n🎉 Training completed. Run artifacts are under {scene / 'runs' / run_dir}.")
 
 
 if __name__ == "__main__":

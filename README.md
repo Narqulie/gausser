@@ -54,6 +54,22 @@ colmapper --matcher sequential
 brusher
 ```
 
+For a monitored, ordered workflow that selects its trainer explicitly:
+
+```bash
+# Brush is the default trainer.
+python ~/Developer/gausser/monitor_and_run.py . --matcher sequential
+
+# Msplat is experimental and unmasked. A safe image divisor is required.
+python ~/Developer/gausser/monitor_and_run.py . --matcher sequential \
+  --trainer msplat --msplat-downscale-factor 4
+```
+
+The monitor validates an existing COLMAP reconstruction or runs Colmapper, then
+runs exactly the selected trainer. Msplat never consumes SAM masks; `4` loads
+source images at quarter linear resolution and is appropriate for large scenes
+on Apple Silicon.
+
 If you're working with video frames (like I mostly am) the `--matcher
 sequential` flag is important — the default exhaustive matcher pairs every
 image with every other image and on 500 frames that's 125k pairs, which just
@@ -140,6 +156,10 @@ sharpframes SOURCE [--scene SCENE] [--force] [SHARP-FRAMES OPTIONS]
 
 msplatter [SCENE] [--iterations 7000] [--num-downscales 0]
            [--downscale-factor N] [--no-eval] --allow-unmasked
+
+python monitor_and_run.py SCENE [--no-wait] [--matcher sequential]
+       [--trainer brush|msplat]
+       [--msplat-iterations 30000] [--msplat-downscale-factor N]
 ```
 
 ## Why the name
