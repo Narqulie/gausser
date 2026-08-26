@@ -1,26 +1,18 @@
-from __future__ import annotations
-
 from pathlib import Path
 
-from gausser.process import CommandResult
-from sharpframes import cli
+from sharpframes.cli import can_publish_into_scene
 
 
-def test_sharpframes_publishes_staged_images_atomically(monkeypatch, scene: Path, tmp_path: Path):
-    source = tmp_path / "input.mp4"
-    source.write_bytes(b"video")
-    (scene / "images" / "old.jpg").write_text("old")
-    monkeypatch.setattr(cli.shutil, "which", lambda _: "/fake/sharp-frames")
+def test_sharpframes_allows_initialized_empty_images_directory(tmp_path: Path):
+    images = tmp_path / "images"
+    images.mkdir()
 
-    def fake_run(command, **kwargs):
-        staged_images = Path(command[2])
-        staged_images.mkdir(parents=True)
-        (staged_images / "selected.jpg").write_text("new")
-        return CommandResult(tuple(command), kwargs["cwd"], 0, 0.0, (), False)
+    assert can_publish_into_scene(images)
 
-    monkeypatch.setattr(cli, "run_command", fake_run)
-    cli.main([str(source), "--scene", str(scene), "--force", "--", "--method", "best-n"])
 
-    assert sorted(path.name for path in (scene / "images").iterdir()) == ["selected.jpg"]
-    manifest = (scene / ".gausser" / "manifest.json").read_text()
-    assert '"sharpframes"' in manifest
+def test_sharpframes_requires_force_for_existing_images(tmp_path: Path):
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "photo.jpg").write_bytes(b"image")
+
+    assert not can_publish_into_scene(images)

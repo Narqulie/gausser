@@ -14,6 +14,11 @@ from gausser.scene import SceneError, ScenePaths
 from gausser.ui import console
 
 
+def can_publish_into_scene(images: Path) -> bool:
+    """Whether Sharp Frames may publish without replacing existing scene images."""
+    return not images.exists() or not any(images.iterdir())
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="sharpframes",
@@ -29,8 +34,8 @@ def main(argv: list[str] | None = None) -> None:
     scene = ScenePaths.from_root(args.scene)
     if not source.exists():
         parser.error(f"source does not exist: {source}")
-    if scene.images.exists() and not args.force:
-        parser.error(f"{scene.images} already exists; pass --force to replace it")
+    if not can_publish_into_scene(scene.images) and not args.force:
+        parser.error(f"{scene.images} already contains images; pass --force to replace them")
     if not shutil.which(args.sharp_frames):
         parser.error(f"{args.sharp_frames!r} is not on PATH; install with: pip install sharp-frames")
 

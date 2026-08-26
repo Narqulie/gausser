@@ -135,6 +135,7 @@ private struct SceneDashboard: View {
     @State private var msplatDownscale = "4"
     @State private var ingestPolicy = "copy"
     @State private var isChoosingPhotoSource = false
+    @State private var isChoosingSharpSource = false
     @State private var viewer = SplatViewerModel()
 
     init(scene: URL, engine: EngineClient) {
@@ -170,6 +171,16 @@ private struct SceneDashboard: View {
         ) { result in
             if case .success(let urls) = result, let source = urls.first {
                 model.ingestPhotos(from: source, policy: ingestPolicy)
+            }
+        }
+        .fileImporter(
+            isPresented: $isChoosingSharpSource,
+            allowedContentTypes: [.movie, .folder],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let source = urls.first {
+                requestedArguments = [source.path]
+                requestedStage = StageReadiness(stage: "sharpframes", state: "ready", detail: source.path)
             }
         }
         .toolbar {
@@ -216,6 +227,10 @@ private struct SceneDashboard: View {
                     isChoosingPhotoSource = true
                 }
                 .disabled(model.isIngesting || model.activeRun != nil)
+                Button("Select Sharp Frames…", systemImage: "film") {
+                    isChoosingSharpSource = true
+                }
+                .disabled(model.activeRun != nil || !model.toolAvailable(for: "sharpframes"))
             }
             .padding(.top, 4)
         }
@@ -414,6 +429,8 @@ private struct SceneDashboard: View {
         requestedStage = nil
         requestedArguments = []
         switch stage.stage {
+        case "sharpframes":
+            model.start(stage: stage.stage, arguments: arguments)
         case "sammer":
             guard !samPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 model.errorMessage = "Enter a SAM3 prompt before starting masking."
