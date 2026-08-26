@@ -148,37 +148,21 @@ struct StageWorkspace: View {
                         Text(resolution.command.joined(separator: "\n"))
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
+                        Button("Confirm & Run", role: .destructive) {
+                            onRun(model.values)
+                            dismiss()
+                        }
+                    }
+                } else {
+                    Section {
+                        Button(model.isResolving ? "Validating…" : "Validate settings") { resolve() }
+                            .disabled(model.isResolving)
                     }
                 }
             }
             .disabled(model.isResolving)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                workspaceActions.disabled(model.isResolving)
-            }
             .navigationTitle(definition.title)
         }
-        .frame(minWidth: 560, idealWidth: 680, minHeight: 520, idealHeight: 760)
-    }
-
-    private var workspaceActions: some View {
-        HStack {
-            Button("Cancel") { dismiss() }
-            Spacer()
-            if model.resolution != nil {
-                Button("Confirm & Run", role: .destructive) {
-                    onRun(model.values)
-                    dismiss()
-                }
-            } else {
-                Button(model.isResolving ? "Validating…" : "Validate & Continue") {
-                    resolve()
-                }
-                .disabled(model.isResolving)
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding()
-        .background(.regularMaterial)
     }
 
     private var allGroups: [StageGroup] {
