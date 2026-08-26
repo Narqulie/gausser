@@ -134,8 +134,6 @@ private struct SceneDashboard: View {
     @State private var maxSplats = "1500000"
     @State private var msplatDownscale = "4"
     @State private var ingestPolicy = "copy"
-    @State private var isChoosingPhotoSource = false
-    @State private var isChoosingSharpSource = false
     @State private var reimportSource: ArtifactSummary?
     @State private var isChoosingEditedExport = false
     @State private var viewer = SplatViewerModel()
@@ -167,25 +165,6 @@ private struct SceneDashboard: View {
         .navigationTitle(scene.lastPathComponent)
         .task { model.refresh() }
         .onDisappear { model.stopObservingEvents() }
-        .fileImporter(
-            isPresented: $isChoosingPhotoSource,
-            allowedContentTypes: [.folder],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let source = urls.first {
-                model.ingestPhotos(from: source, policy: ingestPolicy)
-            }
-        }
-        .fileImporter(
-            isPresented: $isChoosingSharpSource,
-            allowedContentTypes: [.movie, .folder],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let source = urls.first {
-                requestedArguments = [source.path]
-                requestedStage = StageReadiness(stage: "sharpframes", state: "ready", detail: source.path)
-            }
-        }
         .fileImporter(
             isPresented: $isChoosingEditedExport,
             allowedContentTypes: [.data],
@@ -227,7 +206,7 @@ private struct SceneDashboard: View {
     private var sourceImport: some View {
         GroupBox("Sources") {
             HStack {
-                Text("Import a photo directory into this empty scene.")
+                Text("Import a photo folder, or select a video for Sharp Frames.")
                     .foregroundStyle(.secondary)
                 Spacer()
                 Picker("Import policy", selection: $ingestPolicy) {
@@ -235,12 +214,15 @@ private struct SceneDashboard: View {
                     Text("Link files").tag("link")
                 }
                 .labelsHidden()
-                Button("Import Photos", systemImage: "photo.on.rectangle") {
-                    isChoosingPhotoSource = true
+                Button("Import Photo Folder…", systemImage: "photo.on.rectangle") {
+                    guard let source = SourcePicker.choosePhotoDirectory() else { return }
+                    model.ingestPhotos(from: source, policy: ingestPolicy)
                 }
                 .disabled(model.isIngesting || model.activeRun != nil)
-                Button("Select Sharp Frames…", systemImage: "film") {
-                    isChoosingSharpSource = true
+                Button("Import Video / Sharp Frames…", systemImage: "film") {
+                    guard let source = SourcePicker.chooseSharpFramesSource() else { return }
+                    requestedArguments = [source.path]
+                    requestedStage = StageReadiness(stage: "sharpframes", state: "ready", detail: source.path)
                 }
                 .disabled(model.activeRun != nil || !model.toolAvailable(for: "sharpframes") || !model.stageReady(for: "sharpframes"))
             }

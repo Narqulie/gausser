@@ -52,8 +52,11 @@ def inspect_scene(paths: ScenePaths) -> list[Readiness]:
 
 
 def inspect_tools() -> list[Readiness]:
+    # Check the executable SceneController will actually launch.  Checking
+    # implementation modules such as ``sam3`` reports false negatives for the
+    # supported wrapper commands, which activate their own runtime environment.
     tools = (
-        ("sharpframes", "sharp-frames"), ("sammer", "sam3"), ("colmap", "colmap"), ("brush", "brush"),
+        ("sharpframes", "sharpframes"), ("sammer", "sammer"), ("colmap", "colmap"), ("brush", "brush"),
         ("msplat", "msplatter"), ("lod", "splat-transform"),
     )
     readiness = [

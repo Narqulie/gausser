@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gausser.preflight import inspect_scene
+from gausser.preflight import inspect_scene, inspect_tools
 from gausser.scene import ScenePaths
 
 
@@ -11,6 +11,16 @@ def test_preflight_blocks_sharpframes_when_images_are_already_owned(scene):
 
     assert statuses["sharpframes"].state == "unavailable"
     assert "replace" in statuses["sharpframes"].detail.lower()
+
+
+def test_tool_preflight_checks_the_actual_stage_commands(monkeypatch):
+    commands = {"sharpframes", "sammer", "colmap", "brush", "msplatter", "splat-transform"}
+    monkeypatch.setattr("gausser.preflight.shutil.which", lambda command: "/tools/" + command if command in commands else None)
+    monkeypatch.setattr("gausser.preflight.importlib.util.find_spec", lambda name: object() if name == "msplat" else None)
+
+    assert {item.stage: item.state for item in inspect_tools()} == {
+        "sharpframes": "ready", "sammer": "ready", "colmap": "ready", "brush": "ready", "msplat": "ready", "lod": "ready",
+    }
 
 
 def test_preflight_guides_a_scene_without_colmap(scene):

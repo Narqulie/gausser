@@ -141,6 +141,7 @@ final class EngineClient {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [engineExecutablePath]
+        process.environment = Self.launchEnvironment()
 
         let inputPipe = Pipe()
         let outputPipe = Pipe()
@@ -163,6 +164,24 @@ final class EngineClient {
         self.process = process
         input = inputPipe.fileHandleForWriting
         isConnected = true
+    }
+
+    static func launchEnvironment(
+        base: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [String: String] {
+        let standardToolPaths = [
+            home.appending(path: ".cargo/bin").path,
+            home.appending(path: ".pyenv/shims").path,
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+        ]
+        let existing = base["PATH"]?.split(separator: ":").map(String.init) ?? []
+        var seen = Set<String>()
+        let path = (standardToolPaths + existing).filter { seen.insert($0).inserted }.joined(separator: ":")
+        var environment = base
+        environment["PATH"] = path
+        return environment
     }
 
     private var engineExecutablePath: String {
