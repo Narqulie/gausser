@@ -120,8 +120,10 @@ private struct SceneDashboard: View {
     @State private var requestedStage: StageReadiness?
     @State private var requestedOptions: [String: JSONValue]?
     @State private var sharpFramesSource: URL?
+    @State private var sharpFramesDefinition: StageDefinition?
     @State private var presentsSharpFramesWorkspace = false
     @State private var workspaceStage: String?
+    @State private var workspaceDefinition: StageDefinition?
     @State private var workspaceSeededValues: [String: JSONValue] = [:]
     @State private var presentsStageWorkspace = false
     @State private var ingestPolicy = "copy"
@@ -157,7 +159,7 @@ private struct SceneDashboard: View {
         .task { model.refresh() }
         .onDisappear { model.stopObservingEvents() }
         .sheet(isPresented: $presentsSharpFramesWorkspace) {
-            if let source = sharpFramesSource, let definition = model.stageCatalog["sharpframes"] {
+            if let source = sharpFramesSource, let definition = sharpFramesDefinition {
                 StageWorkspace(
                     definition: definition,
                     seededValues: ["source": .string(source.path)],
@@ -171,7 +173,7 @@ private struct SceneDashboard: View {
             }
         }
         .sheet(isPresented: $presentsStageWorkspace) {
-            if let stage = workspaceStage, let definition = model.stageCatalog[stage] {
+            if let stage = workspaceStage, let definition = workspaceDefinition {
                 StageWorkspace(
                     definition: definition,
                     seededValues: workspaceSeededValues,
@@ -243,8 +245,9 @@ private struct SceneDashboard: View {
                         guard let source = try SourcePicker.chooseSharpFramesSource() else { return }
                         model.stageDefinition(named: "sharpframes") { result in
                             switch result {
-                            case .success:
+                            case .success(let definition):
                                 sharpFramesSource = source
+                                sharpFramesDefinition = definition
                                 presentsSharpFramesWorkspace = true
                             case .failure(let error):
                                 model.errorMessage = error.localizedDescription
@@ -285,14 +288,17 @@ private struct SceneDashboard: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button(model.stageCatalog[stage.stage] == nil ? "Run \(stage.stage.capitalized)" : "Configure \(stage.stage.capitalized)") {
-                if model.stageCatalog[stage.stage] != nil {
-                    workspaceStage = stage.stage
-                    workspaceSeededValues = [:]
-                    presentsStageWorkspace = true
-                } else {
-                    requestedOptions = nil
-                    requestedStage = stage
+            Button("Configure \(stage.stage.capitalized)") {
+                model.stageDefinition(named: stage.stage) { result in
+                    switch result {
+                    case .success(let definition):
+                        workspaceStage = stage.stage
+                        workspaceDefinition = definition
+                        workspaceSeededValues = [:]
+                        presentsStageWorkspace = true
+                    case .failure(let error):
+                        model.errorMessage = error.localizedDescription
+                    }
                 }
             }
             .disabled(!canRequest(stage))
@@ -339,9 +345,17 @@ private struct SceneDashboard: View {
                         }
                         if artifact.format == "ply" || artifact.format == "sog" {
                             Button("Create LOD") {
-                                workspaceStage = "lod"
-                                workspaceSeededValues = ["source": .string(artifact.relativePath)]
-                                presentsStageWorkspace = true
+                                model.stageDefinition(named: "lod") { result in
+                                    switch result {
+                                    case .success(let definition):
+                                        workspaceStage = "lod"
+                                        workspaceDefinition = definition
+                                        workspaceSeededValues = ["source": .string(artifact.relativePath)]
+                                        presentsStageWorkspace = true
+                                    case .failure(let error):
+                                        model.errorMessage = error.localizedDescription
+                                    }
+                                }
                             }
                             .disabled(model.activeRun != nil || !model.toolAvailable(for: "lod"))
                         }
