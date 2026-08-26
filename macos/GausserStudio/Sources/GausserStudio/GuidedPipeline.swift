@@ -53,6 +53,7 @@ struct SceneNavigator: View {
     let scene: URL
     let engine: EngineClient
     @Binding var step: SceneStep?
+    let navigationRequest: SceneNavigationRequest
 
     @State private var model: SceneViewModel
     @State private var navigation = GuidedNavigationState()
@@ -63,10 +64,16 @@ struct SceneNavigator: View {
     @State private var reimportSource: ArtifactSummary?
     @State private var isChoosingEditedExport = false
 
-    init(scene: URL, engine: EngineClient, step: Binding<SceneStep?>) {
+    init(
+        scene: URL,
+        engine: EngineClient,
+        step: Binding<SceneStep?>,
+        navigationRequest: SceneNavigationRequest
+    ) {
         self.scene = scene
         self.engine = engine
         _step = step
+        self.navigationRequest = navigationRequest
         _model = State(initialValue: SceneViewModel(scene: scene, engine: engine))
     }
 
@@ -100,12 +107,12 @@ struct SceneNavigator: View {
             model.refresh()
         }
         .onDisappear { model.stopObservingEvents() }
-        .onChange(of: step) { _, nextStep in
-            navigation.moved(to: nextStep)
+        .onChange(of: navigationRequest) { _, request in
+            navigation.moved(to: request.step)
         }
         .toolbar {
             Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
-                .disabled(model.isRefreshing || model.activeRun != nil)
+                .disabled(model.isRefreshing || !model.canConfigureStages)
         }
         .confirmationDialog(
             "Run \(studioStageTitle(requestedStage ?? "stage"))?",
@@ -248,7 +255,7 @@ struct SceneNavigator: View {
                         title: "Choose one training route",
                         message: "Brush is the standard masked trainer. Msplat is an experimental unmasked alternative with an explicit image downscale requirement."
                     )
-                    HStack(alignment: .top, spacing: 16) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 16)], spacing: 16) {
                         TrainerChoiceCard(
                             title: "Brush",
                             symbol: "paintbrush.pointed.fill",
@@ -313,6 +320,7 @@ struct SceneNavigator: View {
             StageRunReviewScreen(
                 definition: model.stageCatalog[stage],
                 pendingRun: pendingRun,
+                isStarting: model.isStartingStage,
                 onBackToSettings: { navigation.returnedToSettings() },
                 onRun: {
                     requestedStage = pendingRun.stage
@@ -326,6 +334,9 @@ struct SceneNavigator: View {
                 onResolve: { options, completion in model.resolve(stage: stage, options: options, completion: completion) },
                 onReviewRun: { options, resolution in
                     navigation.recordRunReview(stage: stage, options: options, resolution: resolution)
+                },
+                onDraftChange: { options in
+                    navigation.recordDraft(stage: stage, options: options)
                 },
                 onClose: onBack,
                 nextTitle: next?.title,
@@ -409,14 +420,13 @@ struct SceneNavigator: View {
                                         reimportSource = artifact
                                         isChoosingEditedExport = true
                                     }
-                                    .disabled(model.activeRun != nil || model.isReimporting)
+                                    .disabled(!model.canConfigureStages || model.isReimporting)
                                     if artifact.format == "ply" || artifact.format == "sog" {
                                         Divider()
                                         Button("Create Streamed LOD…") {
-                                            step = .publish
                                             configurationPageForLOD(artifact)
                                         }
-                                        .disabled(model.activeRun != nil || !model.toolAvailable(for: "lod"))
+                                        .disabled(!model.canConfigureStages || !model.toolAvailable(for: "lod"))
                                     }
                                 }
                             }
@@ -575,21 +585,42 @@ private struct TrainerChoiceCard: View {
 private struct PipelineRunStrip: View {
     let model: SceneViewModel
     let run: EngineRun
+    @State private var showsLogs = true
 
     var body: some View {
-        HStack(spacing: 12) {
-            ProgressView().controlSize(.small)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Running \(studioStageTitle(run.stage))").font(.callout.weight(.semibold))
-                Text(model.telemetry.phase?.capitalized ?? run.state?.capitalized ?? "Working")
-                    .font(.caption).foregroundStyle(.secondary)
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                ProgressView().controlSize(.small)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Running \(studioStageTitle(run.stage))").font(.callout.weight(.semibold))
+                    Text(model.telemetry.phase?.capitalized ?? run.state?.capitalized ?? "Working")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let current = model.telemetry.current, let total = model.telemetry.total, total > 0 {
+                    ProgressView(value: Double(current), total: Double(total)).frame(width: 140)
+                    Text("\(current)/\(total)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                Button("Cancel", role: .destructive) { model.cancel() }.buttonStyle(.bordered)
             }
-            Spacer()
-            if let current = model.telemetry.current, let total = model.telemetry.total, total > 0 {
-                ProgressView(value: Double(current), total: Double(total)).frame(width: 140)
-                Text("\(current)/\(total)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            if !model.recentLogs.isEmpty {
+                Divider()
+                DisclosureGroup("Live logs (\(model.logs.count))", isExpanded: $showsLogs) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(model.recentLogs.enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 180)
+                    .padding(.top, 6)
+                }
+                .font(.callout.weight(.medium))
             }
-            Button("Cancel", role: .destructive) { model.cancel() }.buttonStyle(.bordered)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)

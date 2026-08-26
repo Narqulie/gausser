@@ -5,6 +5,7 @@ import SwiftUI
 struct StageRunReviewScreen: View {
     let definition: StageDefinition?
     let pendingRun: PendingStageRun
+    let isStarting: Bool
     let onBackToSettings: () -> Void
     let onRun: () -> Void
 
@@ -39,9 +40,15 @@ struct StageRunReviewScreen: View {
                 HStack {
                     Button("Back to Settings", action: onBackToSettings)
                         .buttonStyle(.bordered)
+                        .disabled(isStarting)
                     Spacer()
-                    Button("Run \(definition?.title ?? studioStageTitle(pendingRun.stage))", action: onRun)
-                        .studioGlassButton()
+                    if isStarting {
+                        Label("Starting…", systemImage: "clock")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button("Run \(definition?.title ?? studioStageTitle(pendingRun.stage))", action: onRun)
+                            .studioGlassButton()
+                    }
                 }
                 .padding(.top, 4)
             }

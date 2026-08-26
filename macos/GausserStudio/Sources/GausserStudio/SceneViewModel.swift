@@ -93,6 +93,9 @@ final class SceneViewModel {
     private(set) var activeRunStartedAt: Date?
     private(set) var telemetry = StageTelemetryState()
     private(set) var logs: [String] = []
+    /// Covers the asynchronous gap between a confirmed launch and the engine's
+    /// run identifier. Without it, a fast second click can submit a duplicate.
+    private(set) var isStartingStage = false
     private(set) var isRefreshing = false
     private(set) var isIngesting = false
     private(set) var isReimporting = false
@@ -138,7 +141,17 @@ final class SceneViewModel {
     /// Configuration is read-only until its explicit Run action. It must remain
     /// available even when a stage's execution prerequisites are not met.
     var canConfigureStages: Bool {
-        activeRun == nil
+        activeRun == nil && !isStartingStage
+    }
+
+    var canStartStage: Bool {
+        activeRun == nil && !isStartingStage
+    }
+
+    /// The engine keeps a 300-line diagnostic tail; the live strip presents a
+    /// smaller most-recent window so it remains useful while a stage is active.
+    var recentLogs: [String] {
+        Array(logs.suffix(100))
     }
 
     func refresh() {
@@ -231,7 +244,7 @@ final class SceneViewModel {
     }
 
     func ingestPhotos(from source: URL, policy: String) {
-        guard !isIngesting, activeRun == nil else {
+        guard !isIngesting, canConfigureStages else {
             errorMessage = "Wait for the active operation to finish first."
             return
         }
@@ -249,7 +262,7 @@ final class SceneViewModel {
     }
 
     func reimportSuperSplat(sourceRelativePath: String, edited: URL) {
-        guard !isReimporting, activeRun == nil else {
+        guard !isReimporting, canConfigureStages else {
             errorMessage = "Wait for the active operation to finish first."
             return
         }
@@ -267,25 +280,9 @@ final class SceneViewModel {
     }
 
     func start(stage: String, arguments: [String] = []) {
-        guard activeRun == nil else {
-            errorMessage = "Wait for the active stage to finish or cancel it first."
-            return
-        }
-        logs.removeAll()
-        telemetry = StageTelemetryState()
+        guard beginStart() else { return }
         engine.start(scene: scene, stage: stage, arguments: arguments) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let message):
-                guard let runID = message.result?.objectValue?["run_id"]?.stringValue else {
-                    self.errorMessage = "The engine accepted a stage without returning a run identifier."
-                    return
-                }
-                self.activeRun = EngineRun(id: runID, scene: self.scene.path, stage: stage, state: "queued")
-                self.activeRunStartedAt = Date()
-            case .failure(let error):
-                self.errorMessage = error.localizedDescription
-            }
+            self?.receiveStartResult(stage: stage, result: result)
         }
     }
 
@@ -306,12 +303,7 @@ final class SceneViewModel {
     }
 
     func start(stage: String, options: [String: JSONValue]) {
-        guard activeRun == nil else {
-            errorMessage = "Wait for the active stage to finish or cancel it first."
-            return
-        }
-        logs.removeAll()
-        telemetry = StageTelemetryState()
+        guard beginStart() else { return }
         engine.start(scene: scene, stage: stage, options: options) { [weak self] result in
             self?.receiveStartResult(stage: stage, result: result)
         }
@@ -358,7 +350,19 @@ final class SceneViewModel {
         }
     }
 
+    private func beginStart() -> Bool {
+        guard canStartStage else {
+            errorMessage = "Wait for the active stage to finish or cancel it first."
+            return false
+        }
+        isStartingStage = true
+        logs.removeAll()
+        telemetry = StageTelemetryState()
+        return true
+    }
+
     private func receiveStartResult(stage: String, result: Result<EngineMessage, Error>) {
+        isStartingStage = false
         switch result {
         case .success(let message):
             guard let runID = message.result?.objectValue?["run_id"]?.stringValue else {

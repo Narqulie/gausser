@@ -9,7 +9,7 @@ struct StudioView: View {
     @State private var engine = EngineClient()
     @State private var isChoosingScene = false
     @State private var errorMessage: String?
-    @State private var selectedStep: SceneStep? = .overview
+    @State private var navigation = SceneNavigationRequest(step: .overview)
 
     var body: some View {
         NavigationSplitView {
@@ -24,12 +24,12 @@ struct StudioView: View {
                     Section("Pipeline") {
                         ForEach(SceneStep.allCases) { item in
                             Button {
-                                selectedStep = item
+                                navigation = SceneNavigationRequest(step: item)
                             } label: {
                                 Label(item.title, systemImage: item.symbol)
                             }
                             .buttonStyle(.plain)
-                            .listRowBackground(selectedStep == item ? Color.accentColor.opacity(0.16) : Color.clear)
+                            .listRowBackground(navigation.step == item ? Color.accentColor.opacity(0.16) : Color.clear)
                             .accessibilityLabel("Open \(item.title) workspace")
                         }
                     }
@@ -64,8 +64,16 @@ struct StudioView: View {
             }
         } detail: {
             if let scene = session.scene {
-                SceneNavigator(scene: scene, engine: engine, step: $selectedStep)
-                    .id(scene.standardizedFileURL.path)
+                SceneNavigator(
+                    scene: scene,
+                    engine: engine,
+                    step: Binding(
+                        get: { navigation.step },
+                        set: { navigation = SceneNavigationRequest(step: $0) }
+                    ),
+                    navigationRequest: navigation
+                )
+                .id(scene.standardizedFileURL.path)
             } else {
                 ContentUnavailableView(
                     "Open a Gausser scene",
@@ -97,7 +105,7 @@ struct StudioView: View {
             switch result {
             case .success:
                 session.select(url)
-                selectedStep = .overview
+                navigation = SceneNavigationRequest(step: .overview)
                 do { try recents.add(url) }
                 catch { errorMessage = error.localizedDescription }
             case .failure(let error):
@@ -110,7 +118,7 @@ struct StudioView: View {
         do {
             try recents.add(url)
             session.select(url)
-            selectedStep = .overview
+            navigation = SceneNavigationRequest(step: .overview)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -119,7 +127,7 @@ struct StudioView: View {
     private func open(_ recent: RecentScene) {
         do {
             session.select(try recents.resolve(recent))
-            selectedStep = .overview
+            navigation = SceneNavigationRequest(step: .overview)
         } catch {
             recents.remove(recent)
             errorMessage = "This recent scene is no longer accessible."

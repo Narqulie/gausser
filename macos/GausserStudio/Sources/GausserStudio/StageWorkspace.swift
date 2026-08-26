@@ -14,8 +14,13 @@ final class StageWorkspaceModel {
     var validationError: String?
     var isResolving = false
     var showsAdvanced = false
+    private let onDraftChange: ([String: JSONValue]) -> Void
 
-    init(definition: StageDefinition, seededValues: [String: JSONValue] = [:]) {
+    init(
+        definition: StageDefinition,
+        seededValues: [String: JSONValue] = [:],
+        onDraftChange: @escaping ([String: JSONValue]) -> Void = { _ in }
+    ) {
         var initialValues = Dictionary(uniqueKeysWithValues: definition.fields.map { ($0.key, $0.defaultValue) })
         if let preset = definition.presets.first(where: { $0.id == definition.preset }) {
             initialValues.merge(preset.values) { _, presetValue in presetValue }
@@ -24,6 +29,7 @@ final class StageWorkspaceModel {
         self.definition = definition
         self.values = initialValues
         self.selectedPreset = definition.preset
+        self.onDraftChange = onDraftChange
     }
 
     func set(_ value: JSONValue, for key: String) {
@@ -32,6 +38,7 @@ final class StageWorkspaceModel {
         resolution = nil
         validationError = nil
         selectedPreset = "custom"
+        onDraftChange(values)
     }
 
     func applyPreset(_ preset: StagePreset) {
@@ -44,6 +51,7 @@ final class StageWorkspaceModel {
         selectedPreset = preset.id
         resolution = nil
         validationError = nil
+        onDraftChange(values)
     }
 
     func isVisible(_ field: StageField) -> Bool {
@@ -68,6 +76,9 @@ struct StageWorkspace: View {
     /// Settings never launch a stage. They can only hand an engine-validated
     /// immutable option snapshot to the separate run-review screen.
     let onReviewRun: ([String: JSONValue], StageResolution) -> Void
+    /// Immediately snapshots edits into the navigator-owned ephemeral draft,
+    /// so leaving a settings screen never silently loses a user's work.
+    let onDraftChange: ([String: JSONValue]) -> Void
     /// Nil uses the sheet-style Close action. A value embeds this workspace in a
     /// guided navigator and makes its Back action deterministic.
     let onClose: (() -> Void)?
@@ -84,6 +95,7 @@ struct StageWorkspace: View {
         seededValues: [String: JSONValue] = [:],
         onResolve: @escaping ([String: JSONValue], @escaping (Result<StageResolution, Error>) -> Void) -> Void,
         onReviewRun: @escaping ([String: JSONValue], StageResolution) -> Void,
+        onDraftChange: @escaping ([String: JSONValue]) -> Void = { _ in },
         onClose: (() -> Void)? = nil,
         nextTitle: String? = nil,
         onContinue: (() -> Void)? = nil
@@ -92,10 +104,15 @@ struct StageWorkspace: View {
         self.seededValues = seededValues
         self.onResolve = onResolve
         self.onReviewRun = onReviewRun
+        self.onDraftChange = onDraftChange
         self.onClose = onClose
         self.nextTitle = nextTitle
         self.onContinue = onContinue
-        _model = State(initialValue: StageWorkspaceModel(definition: definition, seededValues: seededValues))
+        _model = State(initialValue: StageWorkspaceModel(
+            definition: definition,
+            seededValues: seededValues,
+            onDraftChange: onDraftChange
+        ))
     }
 
     var body: some View {

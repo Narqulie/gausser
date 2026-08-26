@@ -39,6 +39,22 @@ import Testing
     #expect(model.values["threshold"] == .number(0.3))
 }
 
+@Test @MainActor func stageWorkspaceSnapshotsEveryDraftEditImmediately() throws {
+    let data = Data("""
+    {"version":1,"title":"Stage","description":"Test","preset":"default","presets":[{"id":"default","title":"Default","description":"Base","values":{"count":1}},{"id":"other","title":"Other","description":"Changed","values":{"count":2}}],"fields":[{"key":"count","label":"Count","type":"integer","default":1}]}
+    """.utf8)
+    var snapshots: [[String: JSONValue]] = []
+    let model = StageWorkspaceModel(
+        definition: try JSONDecoder().decode(StageDefinition.self, from: data),
+        onDraftChange: { snapshots.append($0) }
+    )
+
+    model.set(.number(3), for: "count")
+    model.applyPreset(try #require(model.definition.presets.last))
+
+    #expect(snapshots == [["count": .number(3)], ["count": .number(2)]])
+}
+
 @Test @MainActor func stageWorkspaceInvalidatesAResolvedCommandOnEdit() throws {
     let data = Data("""
     {"version":1,"title":"Stage","description":"Test","preset":"default","presets":[],"fields":[{"key":"count","label":"Count","type":"integer","default":1}]}
