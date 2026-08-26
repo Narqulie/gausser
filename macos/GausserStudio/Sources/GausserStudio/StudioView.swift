@@ -47,7 +47,8 @@ struct StudioView: View {
             }
         } detail: {
             if let scene = session.scene {
-                SceneDashboard(scene: scene)
+                SceneDashboard(scene: scene, engine: engine)
+                    .id(scene.standardizedFileURL.path)
             } else {
                 ContentUnavailableView(
                     "Open a Gausser scene",
@@ -122,61 +123,186 @@ struct StudioView: View {
 
 private struct SceneDashboard: View {
     let scene: URL
+    let engine: EngineClient
 
-    private let stages = [
-        ("Sources", "photo.stack", "Waiting for engine preflight"),
-        ("Sharp Frames", "film", "Optional video ingestion"),
-        ("SAM3", "viewfinder", "Masking stage"),
-        ("COLMAP", "camera.aperture", "Reconstruction stage"),
-        ("Brush / Msplat", "sparkles", "Training stage"),
-        ("LOD", "square.3.layers.3d", "Publish stage"),
-    ]
+    @State private var model: SceneViewModel
+    @State private var requestedStage: StageReadiness?
+    @State private var samPrompt = ""
+    @State private var matcher = "sequential"
+    @State private var maxSplats = "1500000"
+    @State private var msplatDownscale = "4"
+
+    init(scene: URL, engine: EngineClient) {
+        self.scene = scene
+        self.engine = engine
+        _model = State(initialValue: SceneViewModel(scene: scene, engine: engine))
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(scene.lastPathComponent)
-                        .font(.largeTitle.bold())
-                    Text(scene.path)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+                header
+                settings
+                pipeline
+                if let activeRun = model.activeRun {
+                    activeRunView(activeRun)
                 }
-
-                GroupBox("Pipeline") {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
-                        ForEach(stages, id: \.0) { stage in
-                            VStack(alignment: .leading, spacing: 12) {
-                                Label(stage.0, systemImage: stage.1)
-                                    .font(.headline)
-                                Text(stage.2)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                HStack {
-                                    Image(systemName: "circle.dotted")
-                                        .foregroundStyle(.secondary)
-                                    Text("Not inspected")
-                                        .font(.caption)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-                        }
-                    }
-                    .padding(.top, 4)
+                if !model.logs.isEmpty {
+                    logs
                 }
-
-                ContentUnavailableView(
-                    "Engine not connected yet",
-                    systemImage: "bolt.horizontal.circle",
-                    description: Text("The next slice will populate this dashboard from the persistent Python engine.")
-                )
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 24)
             }
             .padding(28)
         }
         .navigationTitle(scene.lastPathComponent)
+        .task { model.refresh() }
+        .toolbar {
+            Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
+                .disabled(model.isRefreshing || model.activeRun != nil)
+        }
+        .confirmationDialog(
+            "Run \(requestedStage?.stage ?? "stage")?",
+            isPresented: Binding(get: { requestedStage != nil }, set: { if !$0 { requestedStage = nil } })
+        ) {
+            Button("Run", role: .destructive) { startRequestedStage() }
+        } message: {
+            Text("Gausser will launch this scene-owned stage. Its logs and cancellation remain managed by the Python engine.")
+        }
+        .alert("Stage error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(model.errorMessage ?? "")
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(scene.lastPathComponent)
+                .font(.largeTitle.bold())
+            Text(scene.path)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+    }
+
+    private var settings: some View {
+        GroupBox("Run settings") {
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+                GridRow {
+                    Text("SAM3 prompt")
+                    TextField("e.g. fountain", text: $samPrompt)
+                        .textFieldStyle(.roundedBorder)
+                }
+                GridRow {
+                    Text("COLMAP matcher")
+                    Picker("Matcher", selection: $matcher) {
+                        Text("Sequential").tag("sequential")
+                        Text("Exhaustive").tag("exhaustive")
+                    }
+                    .labelsHidden()
+                }
+                GridRow {
+                    Text("Brush maximum splats")
+                    TextField("1500000", text: $maxSplats)
+                        .textFieldStyle(.roundedBorder)
+                }
+                GridRow {
+                    Text("Msplat downscale")
+                    TextField("4", text: $msplatDownscale)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private var pipeline: some View {
+        GroupBox("Pipeline") {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 14)], spacing: 14) {
+                ForEach(model.stages) { stage in
+                    stageCard(stage)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private func stageCard(_ stage: StageReadiness) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(stage.stage.capitalized)
+                    .font(.headline)
+                Spacer()
+                Text(stage.state)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(stage.canRun ? .green : .secondary)
+            }
+            Text(stage.detail)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Run \(stage.stage.capitalized)") {
+                requestedStage = stage
+            }
+            .disabled(!canRequest(stage))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func activeRunView(_ run: EngineRun) -> some View {
+        GroupBox("Running \(run.stage)") {
+            HStack {
+                ProgressView()
+                Text("\(run.stage.capitalized) is \(run.state ?? "running").")
+                Spacer()
+                Button("Cancel", role: .destructive) { model.cancel() }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private var logs: some View {
+        GroupBox("Live logs") {
+            Text(model.logs.joined(separator: "\n"))
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+        }
+    }
+
+    private func canRequest(_ stage: StageReadiness) -> Bool {
+        guard stage.stage != "images", stage.stage != "sharpframes", stage.stage != "lod" else { return false }
+        return stage.canRun && model.toolAvailable(for: stage.stage) && model.activeRun == nil
+    }
+
+    private func startRequestedStage() {
+        guard let stage = requestedStage else { return }
+        requestedStage = nil
+        switch stage.stage {
+        case "sammer":
+            guard !samPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                model.errorMessage = "Enter a SAM3 prompt before starting masking."
+                return
+            }
+            model.start(stage: stage.stage, arguments: ["--prompt", samPrompt])
+        case "colmap":
+            model.start(stage: stage.stage, arguments: ["--matcher", matcher])
+        case "brush":
+            guard let value = Int(maxSplats), value > 0 else {
+                model.errorMessage = "Brush maximum splats must be a positive integer."
+                return
+            }
+            model.start(stage: stage.stage, arguments: ["--max-splats", maxSplats])
+        case "msplat":
+            guard let value = Int(msplatDownscale), value > 0 else {
+                model.errorMessage = "Msplat downscale must be a positive integer."
+                return
+            }
+            model.start(stage: stage.stage, arguments: ["--downscale-factor", msplatDownscale])
+        default:
+            model.errorMessage = "This stage requires a source or artifact selected in its dedicated workspace."
+        }
     }
 }

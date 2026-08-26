@@ -18,9 +18,35 @@ final class EngineClient {
 
     var isConnected = false
     var events: [EngineMessage] = []
+    var onEvent: ((EngineMessage) -> Void)?
 
     func initialize(scene: URL, completion: @escaping (Result<EngineMessage, Error>) -> Void) {
         send(method: "initialize", params: ["scene": .string(scene.path)], completion: completion)
+    }
+
+    func preflight(scene: URL, completion: @escaping (Result<EngineMessage, Error>) -> Void) {
+        send(method: "preflight", params: ["scene": .string(scene.path)], completion: completion)
+    }
+
+    func start(
+        scene: URL,
+        stage: String,
+        arguments: [String],
+        completion: @escaping (Result<EngineMessage, Error>) -> Void
+    ) {
+        send(
+            method: "start",
+            params: [
+                "scene": .string(scene.path),
+                "stage": .string(stage),
+                "arguments": .array(arguments.map(JSONValue.string)),
+            ],
+            completion: completion
+        )
+    }
+
+    func cancel(runID: String, completion: @escaping (Result<EngineMessage, Error>) -> Void) {
+        send(method: "cancel", params: ["run_id": .string(runID)], completion: completion)
     }
 
     func close() {
@@ -92,6 +118,7 @@ final class EngineClient {
                 }
             } else {
                 events.append(message)
+                onEvent?(message)
             }
         }
     }

@@ -42,6 +42,18 @@ import Testing
     #expect(try reloaded.resolve(reloaded.scenes[0]).standardizedFileURL == root.standardizedFileURL)
 }
 
+@Test func engineMessageDecodesLogEvent() throws {
+    let data = Data("""
+    {"event":"log","run_id":"run-1","line":"iteration 5000"}
+    """.utf8)
+
+    let message = try JSONDecoder().decode(EngineMessage.self, from: data)
+
+    #expect(message.event == "log")
+    #expect(message.runID == "run-1")
+    #expect(message.line == "iteration 5000")
+}
+
 @Test func engineMessageDecodesStructuredRunEvent() throws {
     let data = Data("""
     {"event":"finished","run":{"id":"run-1","scene":"/tmp/scene","stage":"colmap","state":"succeeded"}}

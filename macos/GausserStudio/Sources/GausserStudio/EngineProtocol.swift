@@ -68,4 +68,11 @@ struct EngineMessage: Decodable, Sendable {
     let result: JSONValue?
     let error: EngineError?
     let run: EngineRun?
+    let runID: String?
+    let line: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, event, result, error, run, line
+        case runID = "run_id"
+    }
 }
