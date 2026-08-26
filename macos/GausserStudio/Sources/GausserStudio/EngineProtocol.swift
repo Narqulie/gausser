@@ -57,8 +57,15 @@ struct EngineRun: Codable, Equatable, Sendable {
     let state: String?
 }
 
+struct EngineError: Decodable, Equatable, Sendable {
+    let code: String
+    let message: String
+}
+
 struct EngineMessage: Decodable, Sendable {
     let id: String?
     let event: String?
+    let result: JSONValue?
+    let error: EngineError?
     let run: EngineRun?
 }

@@ -24,6 +24,14 @@ def fingerprint_inputs(paths: list[Path]) -> dict[str, str]:
     return {path.name: fingerprint_file(path) for path in paths}
 
 
+def initialize_manifest(paths: ScenePaths) -> None:
+    """Publish the initial manifest for a newly created scene."""
+    if paths.manifest.exists():
+        raise ValueError(f"scene manifest already exists: {paths.manifest}")
+    paths.metadata.mkdir(parents=True, exist_ok=True)
+    _write_manifest(paths, {"version": 1, "stages": {}})
+
+
 def record_stage(paths: ScenePaths, stage: str, data: dict[str, Any]) -> None:
     paths.metadata.mkdir(parents=True, exist_ok=True)
     document: dict[str, Any] = {"version": 1, "stages": {}}
@@ -40,6 +48,10 @@ def record_stage(paths: ScenePaths, stage: str, data: dict[str, Any]) -> None:
         "completed_at": datetime.now(UTC).isoformat(),
         **data,
     }
+    _write_manifest(paths, document)
+
+
+def _write_manifest(paths: ScenePaths, document: dict[str, Any]) -> None:
     with NamedTemporaryFile("w", encoding="utf-8", dir=paths.metadata, prefix="manifest-", suffix=".tmp", delete=False) as stream:
         json.dump(document, stream, indent=2, sort_keys=True)
         stream.write("\n")

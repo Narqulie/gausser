@@ -4,7 +4,9 @@ import UniformTypeIdentifiers
 struct StudioView: View {
     @State private var session = ProjectSession()
     @State private var recents = RecentSceneStore()
+    @State private var engine = EngineClient()
     @State private var isChoosingScene = false
+    @State private var isChoosingNewProject = false
     @State private var errorMessage: String?
 
     var body: some View {
@@ -36,6 +38,9 @@ struct StudioView: View {
             }
             .navigationTitle("Gausser Studio")
             .toolbar {
+                Button("New Project", systemImage: "plus") {
+                    isChoosingNewProject = true
+                }
                 Button("Open Scene", systemImage: "folder.badge.plus") {
                     isChoosingScene = true
                 }
@@ -60,6 +65,15 @@ struct StudioView: View {
                 open(url)
             }
         }
+        .fileImporter(
+            isPresented: $isChoosingNewProject,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                initializeProject(at: url)
+            }
+        }
         .alert("Unable to open scene", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -67,6 +81,23 @@ struct StudioView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(errorMessage ?? "")
+        }
+    }
+
+    private func initializeProject(at url: URL) {
+        session.select(url)
+        engine.initialize(scene: url) { result in
+            switch result {
+            case .success:
+                do {
+                    try recents.add(url)
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            case .failure(let error):
+                session.close()
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

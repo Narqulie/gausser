@@ -63,6 +63,49 @@ def test_engine_starts_stage_after_acknowledging_and_streams_result(scene: Path)
     assert finished["run"]["result"]["command"] == ["sammer"]
 
 
+def test_engine_initializes_explicit_empty_scene(tmp_path: Path):
+    from gausser.engine import GausserEngine
+
+    root = tmp_path / "new-scene"
+    root.mkdir()
+    emitted: list[dict] = []
+
+    GausserEngine().dispatch(
+        {"id": "create-1", "method": "initialize", "params": {"scene": str(root)}},
+        emitted.append,
+    )
+
+    assert emitted == [
+        {
+            "id": "create-1",
+            "result": {
+                "scene": str(root),
+                "manifest": str(root / ".gausser" / "manifest.json"),
+            },
+        }
+    ]
+    assert (root / "images").is_dir()
+
+
+def test_engine_reports_nonempty_project_initialization_as_a_domain_error(tmp_path: Path):
+    from gausser.engine import GausserEngine
+
+    root = tmp_path / "not-empty"
+    root.mkdir()
+    (root / "source.mov").write_bytes(b"video")
+    emitted: list[dict] = []
+
+    GausserEngine().dispatch(
+        {"id": "create-2", "method": "initialize", "params": {"scene": str(root)}},
+        emitted.append,
+    )
+
+    assert emitted == [{
+        "id": "create-2",
+        "error": {"code": "scene_initialization_failed", "message": f"New scene directory must be empty: {root}"},
+    }]
+
+
 def test_engine_rejects_malformed_requests_without_stopping(scene: Path):
     from gausser.engine import GausserEngine
 

@@ -19,7 +19,7 @@ from uuid import uuid4
 from .controller import SceneController, Stage, StageRequest
 from .preflight import inspect_scene, inspect_tools
 from .process import CommandResult
-from .scene import ScenePaths
+from .scene import SceneError, ScenePaths, initialize_scene
 
 
 EventSink = Callable[[dict[str, Any]], None]
@@ -72,6 +72,13 @@ class GausserEngine:
             elif method == "status":
                 self._require_empty_params(params)
                 emit({"id": request_id, "result": {"active_runs": self._active_descriptors()}})
+            elif method == "initialize":
+                scene = self._scene_from_params(params)
+                initialized = initialize_scene(scene.root)
+                emit({
+                    "id": request_id,
+                    "result": {"scene": str(initialized.root), "manifest": str(initialized.manifest)},
+                })
             elif method == "start":
                 active = self._reserve_run(params)
                 # Acknowledge before launching the thread so clients always observe
@@ -83,6 +90,8 @@ class GausserEngine:
                 emit({"id": request_id, "result": self._cancel(run_id)})
             else:
                 raise RequestError(f"unsupported method: {method}")
+        except SceneError as exc:
+            emit({"id": request_id, "error": {"code": "scene_initialization_failed", "message": str(exc)}})
         except RequestError as exc:
             emit({"id": request_id, "error": {"code": exc.code, "message": str(exc)}})
         except Exception as exc:  # Defensive boundary: a client request never kills the service.

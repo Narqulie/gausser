@@ -14,6 +14,42 @@ class SceneError(ValueError):
     """Raised when a directory cannot be used as a Gausser scene."""
 
 
+def initialize_scene(root: Path | str) -> "ScenePaths":
+    """Initialize an explicitly selected empty directory as a Gausser scene."""
+    paths = ScenePaths.from_root(root)
+    if not paths.root.is_dir():
+        raise SceneError(f"Scene root is not a directory: {paths.root}")
+
+    contents = [path for path in paths.root.iterdir() if path.name != ".DS_Store"]
+    if contents:
+        raise SceneError(f"New scene directory must be empty: {paths.root}")
+
+    created: list[Path] = []
+
+    def rollback() -> None:
+        paths.manifest.unlink(missing_ok=True)
+        for path in reversed(created):
+            try:
+                path.rmdir()
+            except OSError:
+                pass
+
+    try:
+        for path in (paths.images, paths.runs, paths.metadata, paths.staging):
+            path.mkdir()
+            created.append(path)
+        from .manifest import initialize_manifest
+
+        initialize_manifest(paths)
+    except OSError as exc:
+        rollback()
+        raise SceneError(f"Unable to initialize scene: {paths.root}") from exc
+    except Exception:
+        rollback()
+        raise
+    return paths
+
+
 @dataclass(frozen=True)
 class ScenePaths:
     """All managed paths derived from one resolved scene root."""
