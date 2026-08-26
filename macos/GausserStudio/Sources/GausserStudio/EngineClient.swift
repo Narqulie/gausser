@@ -100,7 +100,7 @@ final class EngineClient {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [ProcessInfo.processInfo.environment["GAUSSER_ENGINE"] ?? "gausser-engine"]
+        process.arguments = [engineExecutablePath]
 
         let inputPipe = Pipe()
         let outputPipe = Pipe()
@@ -118,6 +118,16 @@ final class EngineClient {
         self.process = process
         input = inputPipe.fileHandleForWriting
         isConnected = true
+    }
+
+    private var engineExecutablePath: String {
+        if let configured = ProcessInfo.processInfo.environment["GAUSSER_ENGINE"], !configured.isEmpty {
+            return configured
+        }
+        if let bundled = Bundle.main.url(forResource: "gausser-engine", withExtension: nil) {
+            return bundled.path
+        }
+        return "gausser-engine"
     }
 
     private func consume(_ data: Data) {

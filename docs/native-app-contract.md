@@ -11,9 +11,11 @@ processes.
 ## V1 boundary
 
 V1 is a locally built, non-sandboxed developer application for this
-workstation. It starts with existing scenes and the full stage-control surface,
-then adds scene initialization and media ingest. Bundling/notarizing Python is
-a later delivery concern, not a reason to duplicate the engine in Swift.
+workstation. It opens or creates scenes, imports a photo directory by an
+explicit copy/link policy, and selects video or image-directory input for Sharp
+Frames. It requires macOS 15 because the pinned MetalSplatter dependency does.
+Bundling/notarizing Python is a later delivery concern, not a reason to
+duplicate the engine in Swift.
 
 The first native vertical slice is:
 
@@ -50,10 +52,13 @@ protocol data.
 Requests:
 
 ```json
-{"id":"req-1","method":"preflight","params":{"scene":"/absolute/scene"}}
-{"id":"req-2","method":"start","params":{"scene":"/absolute/scene","stage":"colmap","arguments":["--matcher","sequential"]}}
-{"id":"req-3","method":"cancel","params":{"run_id":"run-123"}}
-{"id":"req-4","method":"status","params":{}}
+{"id":"req-1","method":"initialize","params":{"scene":"/absolute/empty-folder"}}
+{"id":"req-2","method":"preflight","params":{"scene":"/absolute/scene"}}
+{"id":"req-3","method":"artifacts","params":{"scene":"/absolute/scene"}}
+{"id":"req-4","method":"ingest_photos","params":{"scene":"/absolute/scene","source":"/absolute/photos","policy":"copy"}}
+{"id":"req-5","method":"start","params":{"scene":"/absolute/scene","stage":"colmap","arguments":["--matcher","sequential"]}}
+{"id":"req-6","method":"cancel","params":{"run_id":"run-123"}}
+{"id":"req-7","method":"status","params":{}}
 ```
 
 Synchronous responses use `{ "id": ..., "result": ... }` or
@@ -75,9 +80,10 @@ state—remain the durable record following an app restart.
 ## Native scene access
 
 The app uses `NSOpenPanel` and stores security-scoped bookmarks for recents,
-including removable external volumes. It starts/stops access around every
-engine operation. The Python engine only sees canonical absolute paths already
-authorized by its parent application.
+including removable external volumes. V1 is not sandboxed. A sandboxed,
+distributable build must establish a separate security-scoped access strategy
+for the Python child process; app-process access alone is not evidence that a
+child receives the same entitlement.
 
 ## Stage model
 
@@ -99,4 +105,6 @@ by the headless CLI.
 - malformed requests cannot terminate the engine;
 - stdout remains valid JSON Lines under concurrent log events;
 - all scene mutations remain transactional and manifest-backed;
-- app restart can reconstruct completed artifacts from the scene alone.
+- app restart can reconstruct completed artifacts from the scene alone;
+- V1 packaging is developer-local and requires an installed `gausser-engine`;
+  signing, notarization, and an embedded Python runtime are separate release work.
