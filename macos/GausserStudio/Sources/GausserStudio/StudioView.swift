@@ -7,7 +7,6 @@ struct StudioView: View {
     @State private var recents = RecentSceneStore()
     @State private var engine = EngineClient()
     @State private var isChoosingScene = false
-    @State private var isChoosingNewProject = false
     @State private var errorMessage: String?
 
     var body: some View {
@@ -40,7 +39,8 @@ struct StudioView: View {
             .navigationTitle("Gausser Studio")
             .toolbar {
                 Button("New Project", systemImage: "plus") {
-                    isChoosingNewProject = true
+                    guard let destination = SourcePicker.chooseNewProjectDirectory() else { return }
+                    initializeProject(at: destination)
                 }
                 Button("Open Scene", systemImage: "folder.badge.plus") {
                     isChoosingScene = true
@@ -67,15 +67,6 @@ struct StudioView: View {
                 open(url)
             }
         }
-        .fileImporter(
-            isPresented: $isChoosingNewProject,
-            allowedContentTypes: [.folder],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                initializeProject(at: url)
-            }
-        }
         .alert("Unable to open scene", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -87,17 +78,16 @@ struct StudioView: View {
     }
 
     private func initializeProject(at url: URL) {
-        session.select(url)
         engine.initialize(scene: url) { result in
             switch result {
             case .success:
+                session.select(url)
                 do {
                     try recents.add(url)
                 } catch {
                     errorMessage = error.localizedDescription
                 }
             case .failure(let error):
-                session.close()
                 errorMessage = error.localizedDescription
             }
         }
@@ -235,7 +225,7 @@ private struct SceneDashboard: View {
     private var sourceImport: some View {
         GroupBox("Sources") {
             HStack {
-                Text("Import a photo folder, or select one video or a folder of videos for Sharp Frames.")
+                Text("Import a photo folder, select one or several videos from one folder, or choose a video folder for Sharp Frames.")
                     .foregroundStyle(.secondary)
                 Spacer()
                 Picker("Import policy", selection: $ingestPolicy) {
@@ -248,14 +238,18 @@ private struct SceneDashboard: View {
                     model.ingestPhotos(from: source, policy: ingestPolicy)
                 }
                 .disabled(model.isIngesting || model.activeRun != nil)
-                Button("Import Video / Sharp Frames…", systemImage: "film") {
-                    guard let source = SourcePicker.chooseSharpFramesSource() else { return }
-                    guard model.stageCatalog["sharpframes"] != nil else {
-                        model.errorMessage = "Sharp Frames settings are still loading. Refresh and try again."
-                        return
+                Button("Import Videos / Sharp Frames…", systemImage: "film") {
+                    do {
+                        guard let source = try SourcePicker.chooseSharpFramesSource() else { return }
+                        guard model.stageCatalog["sharpframes"] != nil else {
+                            model.errorMessage = "Sharp Frames settings are still loading. Refresh and try again."
+                            return
+                        }
+                        sharpFramesSource = source
+                        presentsSharpFramesWorkspace = true
+                    } catch {
+                        model.errorMessage = error.localizedDescription
                     }
-                    sharpFramesSource = source
-                    presentsSharpFramesWorkspace = true
                 }
                 .disabled(model.activeRun != nil || !model.toolAvailable(for: "sharpframes") || !model.stageReady(for: "sharpframes"))
             }
