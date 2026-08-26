@@ -47,6 +47,17 @@ func sceneViewModelStoresStructuredTelemetryForItsActiveRun() {
 }
 
 @Test @MainActor
+func sceneConfigurationRemainsAvailableUntilAStageStarts() {
+    let engine = EngineClient()
+    let model = SceneViewModel(scene: URL(fileURLWithPath: "/tmp/scene-a"), engine: engine)
+
+    #expect(model.canConfigureStages)
+    let run = EngineRun(id: "run-a", scene: "/tmp/scene-a", stage: "colmap", state: nil)
+    model.receive(EngineMessage(id: nil, event: "started", result: nil, error: nil, run: run, runID: nil, line: nil))
+    #expect(!model.canConfigureStages)
+}
+
+@Test @MainActor
 func sceneViewModelAcceptsEventsForItsCanonicalScene() {
     let engine = EngineClient()
     let selected = URL(fileURLWithPath: "/tmp/scene-a")

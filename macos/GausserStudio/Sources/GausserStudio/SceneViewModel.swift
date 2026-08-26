@@ -135,6 +135,12 @@ final class SceneViewModel {
         sceneReadiness.first(where: { $0.stage == stage })?.canRun ?? false
     }
 
+    /// Configuration is read-only until its explicit Run action. It must remain
+    /// available even when a stage's execution prerequisites are not met.
+    var canConfigureStages: Bool {
+        activeRun == nil
+    }
+
     func refresh() {
         isRefreshing = true
         refreshStageCatalog { _ in }

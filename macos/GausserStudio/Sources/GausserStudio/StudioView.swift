@@ -67,6 +67,7 @@ struct StudioView: View {
                 open(url)
             }
         }
+        .navigationSplitViewStyle(.balanced)
         .alert("Unable to open scene", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -139,7 +140,7 @@ private struct SceneDashboard: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            LazyVStack(alignment: .leading, spacing: 24) {
                 header
                 sourceImport
                 pipeline
@@ -200,7 +201,7 @@ private struct SceneDashboard: View {
         }
         .toolbar {
             Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
-                .disabled(model.isRefreshing || model.activeRun != nil)
+                .disabled(model.isRefreshing || !model.canConfigureStages)
         }
         .confirmationDialog(
             "Run \(requestedStage?.stage ?? "stage")?",
@@ -218,152 +219,205 @@ private struct SceneDashboard: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(scene.lastPathComponent)
-                .font(.largeTitle.bold())
-            Text(scene.path)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "cube.transparent")
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+                    .frame(width: 52, height: 52)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(scene.lastPathComponent)
+                        .font(.largeTitle.weight(.semibold))
+                    Text(scene.path)
+                        .font(.callout.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+            }
+            if !model.stages.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    StudioGlassActions {
+                        HStack(spacing: 8) {
+                            ForEach(model.stages.filter { $0.stage != "images" }) { stage in
+                                StudioStatusBadge(title: studioStageTitle(stage.stage), state: stage.state)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+            }
         }
+        .padding(.bottom, 4)
     }
 
     private var sourceImport: some View {
-        GroupBox("Sources") {
-            HStack {
-                Text("Import a photo folder, select one or several videos from one folder, or choose a video folder for Sharp Frames.")
-                    .foregroundStyle(.secondary)
-                Spacer()
+        StudioContentCard("Sources", systemImage: "photo.on.rectangle.angled") {
+            Text("Bring in a photo folder, select several clips from one folder, or select the containing video folder for Sharp Frames.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) {
                 Picker("Import policy", selection: $ingestPolicy) {
                     Text("Copy files").tag("copy")
                     Text("Link files").tag("link")
                 }
-                .labelsHidden()
-                Button("Import Photo Folder…", systemImage: "photo.on.rectangle") {
-                    guard let source = SourcePicker.choosePhotoDirectory() else { return }
-                    model.ingestPhotos(from: source, policy: ingestPolicy)
-                }
-                .disabled(model.isIngesting || model.activeRun != nil)
-                Button("Import Videos / Sharp Frames…", systemImage: "film") {
-                    do {
-                        guard let source = try SourcePicker.chooseSharpFramesSource() else { return }
-                        model.stageDefinition(named: "sharpframes") { result in
-                            switch result {
-                            case .success(let definition):
-                                sharpFramesSource = source
-                                sharpFramesDefinition = definition
-                                presentsSharpFramesWorkspace = true
-                            case .failure(let error):
-                                model.errorMessage = error.localizedDescription
-                            }
-                        }
-                    } catch {
-                        model.errorMessage = error.localizedDescription
+                .pickerStyle(.menu)
+                Spacer()
+                StudioGlassActions {
+                    Button("Import Photos…", systemImage: "photo.on.rectangle") {
+                        guard let source = SourcePicker.choosePhotoDirectory() else { return }
+                        model.ingestPhotos(from: source, policy: ingestPolicy)
                     }
+                    .disabled(model.isIngesting || !model.canConfigureStages)
+                    .studioGlassButton()
+                    Button("Select Video Source…", systemImage: "film") {
+                        do {
+                            guard let source = try SourcePicker.chooseSharpFramesSource() else { return }
+                            model.stageDefinition(named: "sharpframes") { result in
+                                switch result {
+                                case .success(let definition):
+                                    sharpFramesSource = source
+                                    sharpFramesDefinition = definition
+                                    presentsSharpFramesWorkspace = true
+                                case .failure(let error):
+                                    model.errorMessage = error.localizedDescription
+                                }
+                            }
+                        } catch {
+                            model.errorMessage = error.localizedDescription
+                        }
+                    }
+                    .disabled(!model.canConfigureStages)
+                    .studioGlassButton()
                 }
-                .disabled(model.activeRun != nil || !model.toolAvailable(for: "sharpframes") || !model.stageReady(for: "sharpframes"))
             }
-            .padding(.top, 4)
         }
     }
 
     private var pipeline: some View {
-        GroupBox("Pipeline") {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 14)], spacing: 14) {
-                ForEach(model.stages) { stage in
+        StudioContentCard("Pipeline", systemImage: "point.3.connected.trianglepath.dotted") {
+            Text("Inspect and configure every tool at any time. The engine validates prerequisites only when you validate or run it.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 270), spacing: 14)], spacing: 14) {
+                ForEach(model.stages.filter { $0.stage != "images" && $0.stage != "sharpframes" }) { stage in
                     stageCard(stage)
                 }
             }
-            .padding(.top, 4)
         }
     }
 
     private func stageCard(_ stage: StageReadiness) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(stage.stage.capitalized)
-                    .font(.headline)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: studioStageSymbol(stage.stage))
+                    .foregroundStyle(stage.canRun ? Color.accentColor : Color.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(studioStageTitle(stage.stage))
+                        .font(.headline)
+                    Text(stage.state.capitalized)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(stage.canRun ? .green : .secondary)
+                }
                 Spacer()
-                Text(stage.state)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(stage.canRun ? .green : .secondary)
             }
             Text(stage.detail)
-                .font(.subheadline)
+                .font(.callout)
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Configure \(stage.stage.capitalized)") {
-                model.stageDefinition(named: stage.stage) { result in
-                    switch result {
-                    case .success(let definition):
-                        workspaceStage = stage.stage
-                        workspaceDefinition = definition
-                        workspaceSeededValues = [:]
-                        presentsStageWorkspace = true
-                    case .failure(let error):
-                        model.errorMessage = error.localizedDescription
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                if !stage.canRun {
+                    Label("Prerequisites pending", systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Configure…") {
+                    model.stageDefinition(named: stage.stage) { result in
+                        switch result {
+                        case .success(let definition):
+                            workspaceStage = stage.stage
+                            workspaceDefinition = definition
+                            workspaceSeededValues = [:]
+                            presentsStageWorkspace = true
+                        case .failure(let error):
+                            model.errorMessage = error.localizedDescription
+                        }
                     }
                 }
+                .disabled(!model.canConfigureStages)
+                .buttonStyle(.borderedProminent)
             }
-            .disabled(!canRequest(stage))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+        .padding(16)
+        .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private var artifacts: some View {
-        GroupBox("Artifacts") {
+        StudioContentCard("Artifacts", systemImage: "cube.box") {
             if model.artifacts.isEmpty {
                 Text("No scene-owned exports yet.")
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
             } else {
                 ForEach(model.artifacts) { artifact in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(artifact.relativePath)
-                                .font(.system(.subheadline, design: .monospaced))
-                            Text("\(artifact.kind) · \(artifact.format.uppercased()) · \(ByteCountFormatter.string(fromByteCount: Int64(artifact.sizeBytes), countStyle: .file))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Reveal") {
-                            NSWorkspace.shared.activateFileViewerSelecting([artifactURL(artifact)])
-                        }
-                        if supportsNativeViewer(artifact) {
-                            Button("View") {
-                                viewer.load(artifactURL(artifact))
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(artifact.relativePath)
+                            .font(.system(.subheadline, design: .monospaced))
+                            .lineLimit(2)
+                            .textSelection(.enabled)
+                        Text("\(artifact.kind) · \(artifact.format.uppercased()) · \(ByteCountFormatter.string(fromByteCount: Int64(artifact.sizeBytes), countStyle: .file))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        HStack {
+                            Button("Reveal") {
+                                NSWorkspace.shared.activateFileViewerSelecting([artifactURL(artifact)])
                             }
-                        }
-                        if supportsEditorHandoff(artifact) {
-                            Button("SuperSplat") {
-                                handoffToSuperSplat(artifact)
+                            if supportsNativeViewer(artifact) {
+                                Button("View") {
+                                    viewer.load(artifactURL(artifact))
+                                }
                             }
-                            Button("Reimport Edited") {
-                                reimportSource = artifact
-                                isChoosingEditedExport = true
-                            }
-                            .disabled(model.activeRun != nil || model.isReimporting)
-                        }
-                        if artifact.format == "ply" || artifact.format == "sog" {
-                            Button("Create LOD") {
-                                model.stageDefinition(named: "lod") { result in
-                                    switch result {
-                                    case .success(let definition):
-                                        workspaceStage = "lod"
-                                        workspaceDefinition = definition
-                                        workspaceSeededValues = ["source": .string(artifact.relativePath)]
-                                        presentsStageWorkspace = true
-                                    case .failure(let error):
-                                        model.errorMessage = error.localizedDescription
+                            if supportsEditorHandoff(artifact) {
+                                Menu("More") {
+                                    Button("Open in SuperSplat") {
+                                        handoffToSuperSplat(artifact)
+                                    }
+                                    Button("Reimport Edited Export…") {
+                                        reimportSource = artifact
+                                        isChoosingEditedExport = true
+                                    }
+                                    .disabled(model.activeRun != nil || model.isReimporting)
+                                    if artifact.format == "ply" || artifact.format == "sog" {
+                                        Divider()
+                                        Button("Create Streamed LOD…") {
+                                            model.stageDefinition(named: "lod") { result in
+                                                switch result {
+                                                case .success(let definition):
+                                                    workspaceStage = "lod"
+                                                    workspaceDefinition = definition
+                                                    workspaceSeededValues = ["source": .string(artifact.relativePath)]
+                                                    presentsStageWorkspace = true
+                                                case .failure(let error):
+                                                    model.errorMessage = error.localizedDescription
+                                                }
+                                            }
+                                        }
+                                        .disabled(model.activeRun != nil || !model.toolAvailable(for: "lod"))
                                     }
                                 }
                             }
-                            .disabled(model.activeRun != nil || !model.toolAvailable(for: "lod"))
+                            Spacer()
                         }
                     }
-                    .padding(.vertical, 4)
+                    .padding(14)
+                    .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
             }
         }
@@ -427,11 +481,11 @@ private struct SceneDashboard: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let elapsed = model.displayedElapsedSeconds(now: context.date)
             let freshness = model.freshnessAgeSeconds(now: context.date)
-            GroupBox("Running \(run.stage)") {
+            StudioContentCard("Running \(studioStageTitle(run.stage))", systemImage: "waveform.path.ecg") {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         ProgressView()
-                        Text("\(run.stage.capitalized) is \(run.state ?? "running").")
+                        Text("\(studioStageTitle(run.stage)) is \(run.state ?? "running").")
                         Spacer()
                         Text("Elapsed \(formattedDuration(elapsed))")
                             .monospacedDigit()
@@ -476,18 +530,16 @@ private struct SceneDashboard: View {
     }
 
     private var logs: some View {
-        GroupBox("Live logs") {
-            Text(model.logs.joined(separator: "\n"))
-                .font(.system(.caption, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
+        StudioContentCard("Live logs", systemImage: "text.alignleft") {
+            ScrollView(.vertical) {
+                Text(model.logs.joined(separator: "\n"))
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 260)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-    }
-
-    private func canRequest(_ stage: StageReadiness) -> Bool {
-        guard stage.stage != "images", stage.stage != "sharpframes", stage.stage != "lod" else { return false }
-        return stage.canRun && model.toolAvailable(for: stage.stage) && model.activeRun == nil
     }
 
     private func startRequestedStage() {

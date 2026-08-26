@@ -8,5 +8,6 @@ struct GausserStudioApp: App {
                 .frame(minWidth: 920, minHeight: 620)
         }
         .defaultSize(width: 1180, height: 760)
+        .windowToolbarStyle(.unified)
     }
 }
