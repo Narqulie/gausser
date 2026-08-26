@@ -65,7 +65,16 @@ struct StageWorkspace: View {
     let definition: StageDefinition
     let seededValues: [String: JSONValue]
     let onResolve: ([String: JSONValue], @escaping (Result<StageResolution, Error>) -> Void) -> Void
-    let onRun: ([String: JSONValue]) -> Void
+    /// Settings never launch a stage. They can only hand an engine-validated
+    /// immutable option snapshot to the separate run-review screen.
+    let onReviewRun: ([String: JSONValue], StageResolution) -> Void
+    /// Nil uses the sheet-style Close action. A value embeds this workspace in a
+    /// guided navigator and makes its Back action deterministic.
+    let onClose: (() -> Void)?
+    /// The guided navigator may expose its normal next step without making the
+    /// user close a workspace or rediscover the sidebar.
+    let nextTitle: String?
+    let onContinue: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var model: StageWorkspaceModel
@@ -74,45 +83,61 @@ struct StageWorkspace: View {
         definition: StageDefinition,
         seededValues: [String: JSONValue] = [:],
         onResolve: @escaping ([String: JSONValue], @escaping (Result<StageResolution, Error>) -> Void) -> Void,
-        onRun: @escaping ([String: JSONValue]) -> Void
+        onReviewRun: @escaping ([String: JSONValue], StageResolution) -> Void,
+        onClose: (() -> Void)? = nil,
+        nextTitle: String? = nil,
+        onContinue: (() -> Void)? = nil
     ) {
         self.definition = definition
         self.seededValues = seededValues
         self.onResolve = onResolve
-        self.onRun = onRun
+        self.onReviewRun = onReviewRun
+        self.onClose = onClose
+        self.nextTitle = nextTitle
+        self.onContinue = onContinue
         _model = State(initialValue: StageWorkspaceModel(definition: definition, seededValues: seededValues))
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        workspaceHero
-                        presetCard
-                        fieldGroups
-                        notices
-                        outputContext
-                        commandPreview
-                    }
-                    .frame(maxWidth: 860, alignment: .leading)
-                    .padding(28)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                }
-                .scrollBounceBehavior(.basedOnSize)
-                .disabled(model.isResolving)
-
-                Divider()
-                actionBar
+        Group {
+            if onClose == nil {
+                NavigationStack { workspaceContent }
+                    .frame(minWidth: 720, idealWidth: 860, maxWidth: 1_050, minHeight: 620, idealHeight: 760)
+            } else {
+                workspaceContent
             }
-            .navigationTitle(definition.title)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
+        }
+    }
+
+    private var workspaceContent: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    workspaceHero
+                    presetCard
+                    fieldGroups
+                    notices
+                    outputContext
+                    commandPreview
+                }
+                .frame(maxWidth: 860, alignment: .leading)
+                .padding(28)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .disabled(model.isResolving)
+
+            Divider()
+            actionBar
+        }
+        .navigationTitle(definition.title)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button(onClose == nil ? "Close" : "Back") {
+                    if let onClose { onClose() } else { dismiss() }
                 }
             }
         }
-        .frame(minWidth: 720, idealWidth: 860, maxWidth: 1_050, minHeight: 620, idealHeight: 760)
     }
 
     private var workspaceHero: some View {
@@ -275,12 +300,16 @@ struct StageWorkspace: View {
                 Button("Validate settings") { resolve() }
                     .disabled(model.isResolving)
                     .studioGlassButton()
-                Button("Run \(definition.title)") {
-                    onRun(model.values)
-                    dismiss()
+                Button("Review run") {
+                    guard let resolution = model.resolution else { return }
+                    onReviewRun(model.values, resolution)
                 }
                 .disabled(model.resolution == nil || model.isResolving)
                 .buttonStyle(.borderedProminent)
+                if let nextTitle, let onContinue {
+                    Button("Continue to \(nextTitle)", action: onContinue)
+                        .buttonStyle(.bordered)
+                }
             }
         }
         .padding(.horizontal, 28)
