@@ -41,7 +41,7 @@ def test_engine_starts_stage_after_acknowledging_and_streams_result(scene: Path)
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event, inherited_fds):
+        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
             on_line("working")
             return CommandResult((request.stage,), self.scene.root, 0, 0.1, ("working",), False)
 
@@ -76,7 +76,7 @@ def test_engine_catalog_and_typed_sharpframes_start_use_engine_resolved_options(
         def command_for(self, request):
             return ["sharpframes", *request.arguments, "--scene", str(self.scene.root)]
 
-        def run(self, request, *, on_line, cancel_event, inherited_fds):
+        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
             received.append(request.arguments)
             return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
 
@@ -107,6 +107,29 @@ def test_engine_catalog_and_typed_sharpframes_start_use_engine_resolved_options(
          "--selection-method", "best-n", "--batch-size", "5", "--batch-buffer", "2", "--outlier-window-size", "15",
          "--outlier-sensitivity", "60", "--width", "0"),
     ]
+
+
+def test_engine_enriches_structured_stage_events_with_run_timing(scene: Path):
+    from gausser.engine import GausserEngine
+    from gausser.stage_events import StageEvent
+
+    class Controller:
+        def __init__(self, paths): self.scene = paths
+        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
+            assert on_event is not None
+            on_event(StageEvent("progress", {"phase": "reconstruction", "current": 2, "total": 3, "unit": "images", "message": "Processed"}))
+            return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
+
+    engine = GausserEngine(controller_factory=Controller)
+    events: list[dict] = []
+    engine.dispatch({"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "colmap", "arguments": []}}, events.append)
+    _wait_for(events, "finished")
+
+    progress = next(event for event in events if event.get("event") == "progress")
+    assert progress["run_id"].startswith("run-")
+    assert progress["current"] == 2
+    assert progress["elapsed_seconds"] >= 0
+    assert progress["observed_elapsed_seconds"] >= 0
 
 
 def test_engine_initializes_explicit_empty_scene(tmp_path: Path):
@@ -213,7 +236,7 @@ def test_engine_rejects_photo_ingest_while_a_stage_owns_the_scene(scene: Path):
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event, inherited_fds):
+        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
             release.wait(timeout=1)
             return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
 
@@ -283,7 +306,7 @@ def test_engine_rejects_a_second_active_run_for_the_same_scene(scene: Path):
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event, inherited_fds):
+        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
             release.wait(timeout=1)
             return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
 
@@ -308,7 +331,7 @@ def test_engine_shutdown_cancels_active_work_and_releases_scene(scene: Path):
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event, inherited_fds):
+        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
             assert cancel_event is not None
             assert cancel_event.wait(timeout=1)
             observed_cancel.set()
@@ -340,7 +363,7 @@ def test_engine_cancel_sets_the_stage_cancellation_event(scene: Path):
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event, inherited_fds):
+        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
             assert cancel_event is not None
             assert cancel_event.wait(timeout=1)
             observed_cancel.set()

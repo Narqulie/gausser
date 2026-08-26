@@ -44,6 +44,19 @@ indirect enum JSONValue: Codable, Equatable, Sendable {
     }
 }
 
+extension JSONValue {
+    var displayText: String {
+        switch self {
+        case .string(let value): value
+        case .number(let value): value.formatted(.number.precision(.significantDigits(4)))
+        case .bool(let value): value ? "yes" : "no"
+        case .array(let values): "\(values.count) values"
+        case .object(let values): "\(values.count) values"
+        case .null: "–"
+        }
+    }
+}
+
 struct EngineRequest: Codable, Equatable, Sendable {
     let id: String
     let method: String
@@ -55,6 +68,25 @@ struct EngineRun: Codable, Equatable, Sendable {
     let scene: String
     let stage: String
     let state: String?
+    let elapsedSeconds: Double?
+    let lastObservedElapsedSeconds: Double?
+    let phase: String?
+
+    init(id: String, scene: String, stage: String, state: String?, elapsedSeconds: Double? = nil, lastObservedElapsedSeconds: Double? = nil, phase: String? = nil) {
+        self.id = id
+        self.scene = scene
+        self.stage = stage
+        self.state = state
+        self.elapsedSeconds = elapsedSeconds
+        self.lastObservedElapsedSeconds = lastObservedElapsedSeconds
+        self.phase = phase
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, scene, stage, state, phase
+        case elapsedSeconds = "elapsed_seconds"
+        case lastObservedElapsedSeconds = "last_observed_elapsed_seconds"
+    }
 }
 
 struct StageCatalogResponse: Decodable, Equatable, Sendable {
@@ -167,9 +199,44 @@ struct EngineMessage: Decodable, Sendable {
     let run: EngineRun?
     let runID: String?
     let line: String?
+    let elapsedSeconds: Double?
+    let observedElapsedSeconds: Double?
+    let phase: String?
+    let current: Int?
+    let total: Int?
+    let unit: String?
+    let message: String?
+    let step: Int?
+    let values: [String: JSONValue]?
+
+    init(
+        id: String?, event: String?, result: JSONValue?, error: EngineError?, run: EngineRun?, runID: String?, line: String?,
+        elapsedSeconds: Double? = nil, observedElapsedSeconds: Double? = nil, phase: String? = nil,
+        current: Int? = nil, total: Int? = nil, unit: String? = nil, message: String? = nil,
+        step: Int? = nil, values: [String: JSONValue]? = nil
+    ) {
+        self.id = id
+        self.event = event
+        self.result = result
+        self.error = error
+        self.run = run
+        self.runID = runID
+        self.line = line
+        self.elapsedSeconds = elapsedSeconds
+        self.observedElapsedSeconds = observedElapsedSeconds
+        self.phase = phase
+        self.current = current
+        self.total = total
+        self.unit = unit
+        self.message = message
+        self.step = step
+        self.values = values
+    }
 
     enum CodingKeys: String, CodingKey {
-        case id, event, result, error, run, line
+        case id, event, result, error, run, line, phase, current, total, unit, message, step, values
         case runID = "run_id"
+        case elapsedSeconds = "elapsed_seconds"
+        case observedElapsedSeconds = "observed_elapsed_seconds"
     }
 }

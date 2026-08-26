@@ -49,6 +49,21 @@ def test_controller_passes_resolved_studio_settings_to_sharpframes(scene: Path):
     assert json.loads(command[-1]) == {"specification_version": 1, "preset": "custom", "values": {"fps": 2}}
 
 
+def test_controller_streams_known_stage_telemetry(scene: Path):
+    events = []
+
+    def fake_runner(command, **kwargs):
+        kwargs["on_line"]("Processed file [2/3]")
+        return CommandResult(tuple(command), kwargs["cwd"], 0, 0.0, (), False)
+
+    controller = SceneController(ScenePaths.from_root(scene), runner=fake_runner)
+    controller.run(StageRequest("colmap"), on_event=events.append)
+
+    assert events[0].kind == "progress"
+    assert events[0].data["current"] == 2
+    assert events[0].data["total"] == 3
+
+
 def test_controller_builds_explicit_unmasked_msplat_command(scene: Path):
     controller = SceneController(ScenePaths.from_root(scene))
 

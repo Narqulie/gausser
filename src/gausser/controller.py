@@ -11,11 +11,13 @@ from typing import Any, Callable, Literal, Mapping
 from .preflight import inspect_scene
 from .process import CommandResult, LineCallback, run_command
 from .scene import ScenePaths
+from .stage_events import StageEvent, StageTelemetry
 
 
 Stage = Literal["sharpframes", "sammer", "colmap", "brush", "msplat", "lod"]
 Trainer = Literal["brush", "msplat"]
 _PIPELINE_STAGES: tuple[Stage, Stage] = ("sammer", "colmap")
+StageEventCallback = Callable[[StageEvent], None]
 
 
 class StageUnavailable(RuntimeError):
@@ -67,16 +69,30 @@ class SceneController:
         request: StageRequest,
         *,
         on_line: LineCallback | None = None,
+        on_event: StageEventCallback | None = None,
         cancel_event: threading.Event | None = None,
         inherited_fds: tuple[int, ...] = (),
     ) -> CommandResult:
         state = self.readiness().get(request.stage)
         if state != "ready":
             raise StageUnavailable(f"{request.stage} is {state}; it cannot be started")
+        telemetry = StageTelemetry.for_stage(
+            request.stage,
+            request.arguments,
+            total_images=len(self.scene.image_files()),
+        )
+
+        def handle_line(line: str) -> None:
+            if on_line is not None:
+                on_line(line)
+            event = telemetry.from_line(line)
+            if event is not None and on_event is not None:
+                on_event(event)
+
         return self._runner(
             self.command_for(request),
             cwd=self.scene.root,
-            on_line=on_line,
+            on_line=handle_line,
             cancel_event=cancel_event,
             inherited_fds=inherited_fds,
         )
@@ -87,13 +103,20 @@ class SceneController:
         *,
         trainer: Trainer = "brush",
         on_line: LineCallback | None = None,
+        on_event: StageEventCallback | None = None,
         cancel_event: threading.Event | None = None,
         inherited_fds: tuple[int, ...] = (),
     ) -> list[CommandResult]:
         """Run SAM3, COLMAP, then the explicitly selected trainer."""
         results: list[CommandResult] = []
         for stage in (*_PIPELINE_STAGES, trainer):
-            result = self.run(requests[stage], on_line=on_line, cancel_event=cancel_event, inherited_fds=inherited_fds)
+            result = self.run(
+                requests[stage],
+                on_line=on_line,
+                on_event=on_event,
+                cancel_event=cancel_event,
+                inherited_fds=inherited_fds,
+            )
             results.append(result)
             if not result.succeeded:
                 break

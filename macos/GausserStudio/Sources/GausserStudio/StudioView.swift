@@ -424,15 +424,55 @@ private struct SceneDashboard: View {
     }
 
     private func activeRunView(_ run: EngineRun) -> some View {
-        GroupBox("Running \(run.stage)") {
-            HStack {
-                ProgressView()
-                Text("\(run.stage.capitalized) is \(run.state ?? "running").")
-                Spacer()
-                Button("Cancel", role: .destructive) { model.cancel() }
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let elapsed = model.displayedElapsedSeconds(now: context.date)
+            let freshness = model.freshnessAgeSeconds(now: context.date)
+            GroupBox("Running \(run.stage)") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        ProgressView()
+                        Text("\(run.stage.capitalized) is \(run.state ?? "running").")
+                        Spacer()
+                        Text("Elapsed \(formattedDuration(elapsed))")
+                            .monospacedDigit()
+                        Button("Cancel", role: .destructive) { model.cancel() }
+                    }
+                    if let phase = model.telemetry.phase {
+                        Text(phase.capitalized)
+                            .font(.subheadline.weight(.medium))
+                    }
+                    if let current = model.telemetry.current, let total = model.telemetry.total, total > 0 {
+                        ProgressView(value: Double(current), total: Double(total)) {
+                            Text("\(current) / \(total) \(model.telemetry.unit ?? "items")")
+                        }
+                    }
+                    if let step = model.telemetry.step {
+                        Text("Step \(step)")
+                            .font(.subheadline)
+                    }
+                    if !model.telemetry.values.isEmpty {
+                        HStack(spacing: 12) {
+                            ForEach(model.telemetry.values.keys.sorted(), id: \.self) { key in
+                                Text("\(key.replacingOccurrences(of: "_", with: " ").capitalized): \(model.telemetry.values[key]!.displayText)")
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    if let freshness {
+                        Text("Last upstream update \(formattedDuration(freshness)) ago")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 4)
             }
-            .padding(.top, 4)
         }
+    }
+
+    private func formattedDuration(_ seconds: Double) -> String {
+        let value = max(0, Int(seconds.rounded(.down)))
+        return String(format: "%02d:%02d:%02d", value / 3600, (value / 60) % 60, value % 60)
     }
 
     private var logs: some View {

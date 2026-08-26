@@ -79,6 +79,19 @@ import Testing
     #expect(message.line == "iteration 5000")
 }
 
+@Test func engineMessageDecodesStructuredTelemetry() throws {
+    let data = Data("""
+    {"event":"metric","run_id":"run-1","elapsed_seconds":12.5,"observed_elapsed_seconds":12.5,"phase":"training","step":1200,"values":{"splat_count":38291,"psnr":27.8}}
+    """.utf8)
+
+    let message = try JSONDecoder().decode(EngineMessage.self, from: data)
+
+    #expect(message.event == "metric")
+    #expect(message.step == 1200)
+    #expect(message.elapsedSeconds == 12.5)
+    #expect(message.values?["splat_count"] == .number(38291))
+}
+
 @Test func engineMessageDecodesStructuredRunEvent() throws {
     let data = Data("""
     {"event":"finished","run":{"id":"run-1","scene":"/tmp/scene","stage":"colmap","state":"succeeded"}}

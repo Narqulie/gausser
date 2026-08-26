@@ -8,12 +8,13 @@ continues to own stage commands and the shared process runner owns child lifecyc
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import argparse
 import json
 from pathlib import Path
 import sys
 import threading
+import time
 from typing import Any, Callable, TextIO
 from uuid import uuid4
 
@@ -54,10 +55,24 @@ class ActiveRun:
     settings: dict[str, Any] | None
     cancel_event: threading.Event
     lock: SceneLock
+    started_monotonic: float = field(default_factory=time.monotonic)
+    last_observed_monotonic: float | None = None
+    last_phase: str | None = None
     thread: threading.Thread | None = None
 
-    def descriptor(self) -> dict[str, str]:
-        return {"id": self.id, "scene": str(self.scene.root), "stage": self.stage}
+    def descriptor(self) -> dict[str, Any]:
+        elapsed = max(0.0, time.monotonic() - self.started_monotonic)
+        return {
+            "id": self.id,
+            "scene": str(self.scene.root),
+            "stage": self.stage,
+            "elapsed_seconds": elapsed,
+            "last_observed_elapsed_seconds": (
+                max(0.0, self.last_observed_monotonic - self.started_monotonic)
+                if self.last_observed_monotonic is not None else None
+            ),
+            "phase": self.last_phase,
+        }
 
 
 class GausserEngine:
@@ -280,12 +295,36 @@ class GausserEngine:
         thread.start()
 
     def _execute(self, active: ActiveRun, emit: EventSink) -> None:
-        emit({"event": "started", "run": active.descriptor()})
+        emit({"event": "started", "run": active.descriptor(), "elapsed_seconds": 0.0})
+
+        def emit_line(line: str) -> None:
+            emit({
+                "event": "log",
+                "run_id": active.id,
+                "line": line,
+                "elapsed_seconds": self._elapsed(active),
+            })
+
+        def emit_stage_event(stage_event) -> None:
+            observed = time.monotonic()
+            active.last_observed_monotonic = observed
+            phase = stage_event.data.get("phase")
+            if isinstance(phase, str):
+                active.last_phase = phase
+            emit({
+                "event": stage_event.kind,
+                "run_id": active.id,
+                "elapsed_seconds": max(0.0, observed - active.started_monotonic),
+                "observed_elapsed_seconds": max(0.0, observed - active.started_monotonic),
+                **stage_event.data,
+            })
+
         try:
             controller = self._controller_factory(active.scene)
             result = controller.run(
                 StageRequest(active.stage, active.arguments, active.settings),
-                on_line=lambda line: emit({"event": "log", "run_id": active.id, "line": line}),
+                on_line=emit_line,
+                on_event=emit_stage_event,
                 cancel_event=active.cancel_event,
                 inherited_fds=(active.lock.fileno(),),
             )
@@ -325,6 +364,10 @@ class GausserEngine:
         }
 
     @staticmethod
+    def _elapsed(active: ActiveRun) -> float:
+        return max(0.0, time.monotonic() - active.started_monotonic)
+
+    @staticmethod
     def _result_data(result: CommandResult) -> dict[str, Any]:
         return {
             "command": list(result.command),
@@ -343,7 +386,7 @@ class GausserEngine:
         active.cancel_event.set()
         return {"run_id": run_id, "cancellation_requested": True}
 
-    def _active_descriptors(self) -> list[dict[str, str]]:
+    def _active_descriptors(self) -> list[dict[str, Any]]:
         with self._lock:
             return [active.descriptor() for active in self._active_by_id.values()]
 

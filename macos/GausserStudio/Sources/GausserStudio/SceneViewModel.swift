@@ -39,6 +39,18 @@ private struct StatusResponse: Decodable {
     }
 }
 
+struct StageTelemetryState: Equatable {
+    var phase: String?
+    var current: Int?
+    var total: Int?
+    var unit: String?
+    var message: String?
+    var step: Int?
+    var values: [String: JSONValue] = [:]
+    var elapsedSeconds: Double = 0
+    var observedElapsedSeconds: Double?
+}
+
 private struct PreflightResponse: Decodable {
     let scene: String
     let sceneReadiness: [StageReadiness]
@@ -64,6 +76,8 @@ final class SceneViewModel {
     private(set) var artifacts: [ArtifactSummary] = []
     private(set) var stageCatalog: [String: StageDefinition] = [:]
     private(set) var activeRun: EngineRun?
+    private(set) var activeRunStartedAt: Date?
+    private(set) var telemetry = StageTelemetryState()
     private(set) var logs: [String] = []
     private(set) var isRefreshing = false
     private(set) var isIngesting = false
@@ -152,8 +166,10 @@ final class SceneViewModel {
                     let active = try self.decodeStatus(message).activeRuns.first(where: { self.belongsToScene($0) })
                     if let active {
                         self.activeRun = active
+                        self.activeRunStartedAt = Date().addingTimeInterval(-(active.elapsedSeconds ?? 0))
                     } else if self.activeRun?.state != "queued" {
                         self.activeRun = nil
+                        self.activeRunStartedAt = nil
                     }
                 } catch {
                     self.errorMessage = error.localizedDescription
@@ -206,6 +222,7 @@ final class SceneViewModel {
             return
         }
         logs.removeAll()
+        telemetry = StageTelemetryState()
         engine.start(scene: scene, stage: stage, arguments: arguments) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -215,6 +232,7 @@ final class SceneViewModel {
                     return
                 }
                 self.activeRun = EngineRun(id: runID, scene: self.scene.path, stage: stage, state: "queued")
+                self.activeRunStartedAt = Date()
             case .failure(let error):
                 self.errorMessage = error.localizedDescription
             }
@@ -243,6 +261,7 @@ final class SceneViewModel {
             return
         }
         logs.removeAll()
+        telemetry = StageTelemetryState()
         engine.start(scene: scene, stage: stage, options: options) { [weak self] result in
             self?.receiveStartResult(stage: stage, result: result)
         }
@@ -262,13 +281,27 @@ final class SceneViewModel {
         case "started":
             guard let run = message.run, belongsToScene(run) else { return }
             activeRun = run
+            activeRunStartedAt = Date().addingTimeInterval(-(message.elapsedSeconds ?? 0))
+            telemetry.elapsedSeconds = message.elapsedSeconds ?? 0
         case "log":
             guard message.runID == activeRun?.id, let line = message.line else { return }
             logs.append(line)
             if logs.count > 300 { logs.removeFirst(logs.count - 300) }
+        case "progress", "metric":
+            guard message.runID == activeRun?.id else { return }
+            telemetry.phase = message.phase ?? telemetry.phase
+            telemetry.current = message.current ?? telemetry.current
+            telemetry.total = message.total ?? telemetry.total
+            telemetry.unit = message.unit ?? telemetry.unit
+            telemetry.message = message.message ?? telemetry.message
+            telemetry.step = message.step ?? telemetry.step
+            telemetry.elapsedSeconds = message.elapsedSeconds ?? telemetry.elapsedSeconds
+            telemetry.observedElapsedSeconds = message.observedElapsedSeconds ?? telemetry.observedElapsedSeconds
+            if let values = message.values { telemetry.values.merge(values) { _, newest in newest } }
         case "finished":
             guard let run = message.run, belongsToScene(run), run.id == activeRun?.id else { return }
             activeRun = nil
+            activeRunStartedAt = nil
             refresh()
         default:
             break
@@ -283,9 +316,20 @@ final class SceneViewModel {
                 return
             }
             activeRun = EngineRun(id: runID, scene: scene.path, stage: stage, state: "queued")
+            activeRunStartedAt = Date()
         case .failure(let error):
             errorMessage = error.localizedDescription
         }
+    }
+
+    func displayedElapsedSeconds(now: Date = .now) -> Double {
+        guard let activeRunStartedAt else { return telemetry.elapsedSeconds }
+        return max(telemetry.elapsedSeconds, now.timeIntervalSince(activeRunStartedAt))
+    }
+
+    func freshnessAgeSeconds(now: Date = .now) -> Double? {
+        guard let observed = telemetry.observedElapsedSeconds else { return nil }
+        return max(0, displayedElapsedSeconds(now: now) - observed)
     }
 
     private func belongsToScene(_ run: EngineRun) -> Bool {

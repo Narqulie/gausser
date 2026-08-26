@@ -55,32 +55,28 @@ def run_brush(
     )
 
 
-def _parse_and_emit(line: str, state: TrainProgress, callback: ProgressCallback) -> None:
+def parse_progress(line: str, state: TrainProgress) -> str | None:
+    """Update ``state`` for a documented Brush message and return its kind."""
     msg = re.sub(r"^\[.*?\]\s*", "", line)
 
     if _LOADING_PAT.search(msg):
         state.phase = "loading"
-        callback(state)
-        return
+        return "loading"
 
-    m = _DATASET_PAT.search(msg)
-    if m:
+    if _DATASET_PAT.search(msg):
         state.phase = "loading"
-        callback(state)
-        return
+        return "loading"
 
     if _LOADED_PAT.search(msg):
         state.phase = "training"
-        callback(state)
-        return
+        return "loaded"
 
     m = _REFINE_PAT.search(msg)
     if m:
         state.iter = int(m.group(1))
         state.splat_count = int(m.group(2))
         state.phase = "training"
-        callback(state)
-        return
+        return "refine"
 
     m = _EVAL_PAT.search(msg)
     if m:
@@ -88,11 +84,15 @@ def _parse_and_emit(line: str, state: TrainProgress, callback: ProgressCallback)
         state.psnr = float(m.group(2))
         state.ssim = float(m.group(3))
         state.phase = "training"
-        callback(state)
-        return
+        return "evaluation"
 
     if _DONE_PAT.search(msg):
         state.iter = state.total
         state.phase = "done"
+        return "done"
+    return None
+
+
+def _parse_and_emit(line: str, state: TrainProgress, callback: ProgressCallback) -> None:
+    if parse_progress(line, state) is not None:
         callback(state)
-        return

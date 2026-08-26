@@ -46,16 +46,22 @@ def run_colmap(
     return run_command(cmd, cwd=cwd, on_line=handle_line)
 
 
-def _parse_and_emit(line: str, callback: ProgressCallback, total_images: int) -> None:
+def parse_progress(line: str, total_images: int = 0) -> StepProgress | None:
+    """Return progress from a documented COLMAP line, if one is present."""
     m = _REGISTER_PATTERN.search(line)
     if m:
         current = int(m.group(1))
-        callback(StepProgress(current, max(current, total_images), line))
-        return
+        return StepProgress(current, max(current, total_images), line)
     for pattern in _PROGRESS_PATTERNS:
         m = pattern.search(line)
         if m and len(m.groups()) >= 2:
             current, total = int(m.group(1)), int(m.group(2))
             if total > 0:
-                callback(StepProgress(current, total, line))
-            return
+                return StepProgress(current, total, line)
+    return None
+
+
+def _parse_and_emit(line: str, callback: ProgressCallback, total_images: int) -> None:
+    progress = parse_progress(line, total_images)
+    if progress is not None:
+        callback(progress)
