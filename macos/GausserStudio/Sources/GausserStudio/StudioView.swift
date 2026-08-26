@@ -206,7 +206,7 @@ private struct SceneDashboard: View {
     private var sourceImport: some View {
         GroupBox("Sources") {
             HStack {
-                Text("Import a photo folder, or select a video for Sharp Frames.")
+                Text("Import a photo folder, or select one video or a folder of videos for Sharp Frames.")
                     .foregroundStyle(.secondary)
                 Spacer()
                 Picker("Import policy", selection: $ingestPolicy) {

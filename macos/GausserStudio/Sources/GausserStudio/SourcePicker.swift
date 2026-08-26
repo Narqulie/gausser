@@ -18,8 +18,8 @@ enum SourcePicker {
     /// Select a video or an image folder for the explicit Sharp Frames stage.
     static func chooseSharpFramesSource() -> URL? {
         let panel = NSOpenPanel()
-        panel.title = "Choose Video or Image Folder"
-        panel.message = "Choose a video to extract sharp frames, or a folder to select from existing images."
+        panel.title = "Choose a Video or Source Folder"
+        panel.message = "Choose one video, a folder of multiple videos, or an image folder to select sharp frames."
         panel.prompt = "Choose Source"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true

@@ -27,8 +27,9 @@ if COLMAP finds multiple (which happens more than you'd think).
 **brusher** — runs Brush 3DGS training on the COLMAP output. Writes `.ply`
 checkpoints every N iterations so you can stop early and still have a result.
 
-**sharpframes** — optional pre-processing that selects frames from a video or
-image source into `images/` transactionally before the reconstruction stages.
+**sharpframes** — optional pre-processing that selects frames from one video,
+a directory of videos, or an image source into `images/` transactionally before
+the reconstruction stages.
 
 **msplatter** — an experimental Apple-Silicon Msplat backend. It creates an
 isolated run with a PLY export and checkpoint, but is deliberately **not** a

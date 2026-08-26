@@ -52,17 +52,22 @@ def inspect_scene(paths: ScenePaths) -> list[Readiness]:
 
 
 def inspect_tools() -> list[Readiness]:
-    # Check the executable SceneController will actually launch.  Checking
+    # Check the executables SceneController will actually launch.  Checking
     # implementation modules such as ``sam3`` reports false negatives for the
     # supported wrapper commands, which activate their own runtime environment.
     tools = (
-        ("sharpframes", "sharpframes"), ("sammer", "sammer"), ("colmap", "colmap"), ("brush", "brush"),
+        ("sammer", "sammer"), ("colmap", "colmap"), ("brush", "brush"),
         ("msplat", "msplatter"), ("lod", "splat-transform"),
     )
-    readiness = [
+    sharpframes = Readiness(
+        "sharpframes",
+        "ready" if shutil.which("sharpframes") and shutil.which("sharp-frames") else "unavailable",
+        "sharpframes + sharp-frames" if shutil.which("sharpframes") and shutil.which("sharp-frames") else "Install Sharp Frames with `pip install sharp-frames`",
+    )
+    readiness = [sharpframes, *[
         Readiness(stage, "ready" if shutil.which(binary) else "unavailable", binary)
         for stage, binary in tools
-    ]
+    ]]
     if importlib.util.find_spec("msplat") is None:
         return [
             Readiness(item.stage, "unavailable", "Install with `pip install msplat`") if item.stage == "msplat" else item

@@ -23,7 +23,9 @@ bin_path=$(cd "$studio_root" && swift build -c release --show-bin-path)
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin_path/GausserStudio" "$app/Contents/MacOS/GausserStudio"
-cp "$engine" "$app/Contents/Resources/gausser-engine"
+engine_dir=$(dirname "$engine")
+printf '#!/bin/sh\nexport PATH=%q:"${PATH:-}"\nexec %q "$@"\n' "$engine_dir" "$engine" > "$app/Contents/Resources/gausser-engine"
+chmod +x "$app/Contents/Resources/gausser-engine"
 find "$bin_path" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$app/Contents/Resources/" \;
 
 cat > "$app/Contents/Info.plist" <<'PLIST'

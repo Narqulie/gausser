@@ -14,13 +14,23 @@ def test_preflight_blocks_sharpframes_when_images_are_already_owned(scene):
 
 
 def test_tool_preflight_checks_the_actual_stage_commands(monkeypatch):
-    commands = {"sharpframes", "sammer", "colmap", "brush", "msplatter", "splat-transform"}
+    commands = {"sharpframes", "sharp-frames", "sammer", "colmap", "brush", "msplatter", "splat-transform"}
     monkeypatch.setattr("gausser.preflight.shutil.which", lambda command: "/tools/" + command if command in commands else None)
     monkeypatch.setattr("gausser.preflight.importlib.util.find_spec", lambda name: object() if name == "msplat" else None)
 
     assert {item.stage: item.state for item in inspect_tools()} == {
         "sharpframes": "ready", "sammer": "ready", "colmap": "ready", "brush": "ready", "msplat": "ready", "lod": "ready",
     }
+
+
+def test_tool_preflight_reports_missing_sharp_frames_backend(monkeypatch):
+    commands = {"sharpframes", "sammer", "colmap", "brush", "msplatter", "splat-transform"}
+    monkeypatch.setattr("gausser.preflight.shutil.which", lambda command: "/tools/" + command if command in commands else None)
+    monkeypatch.setattr("gausser.preflight.importlib.util.find_spec", lambda name: object() if name == "msplat" else None)
+
+    status = {item.stage: item for item in inspect_tools()}["sharpframes"]
+    assert status.state == "unavailable"
+    assert "sharp-frames" in status.detail
 
 
 def test_preflight_guides_a_scene_without_colmap(scene):
