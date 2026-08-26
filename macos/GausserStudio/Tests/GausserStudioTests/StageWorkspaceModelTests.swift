@@ -25,6 +25,20 @@ import Testing
     #expect(model.values["vocab_tree"] == .null)
 }
 
+@Test @MainActor func stageWorkspacePreservesRequiredSubjectWhenChangingPreset() throws {
+    let data = Data("""
+    {"version":1,"title":"SAM3","description":"Mask","preset":"standard","groups":[],"presets":[{"id":"standard","title":"Standard","description":"Base","values":{"threshold":0.5}},{"id":"coverage","title":"Coverage","description":"Lower","values":{"threshold":0.3}}],"fields":[{"key":"prompt","label":"Prompt","type":"text","default":"","required":true},{"key":"threshold","label":"Threshold","type":"decimal","default":0.5}]}
+    """.utf8)
+    let definition = try JSONDecoder().decode(StageDefinition.self, from: data)
+    let model = StageWorkspaceModel(definition: definition)
+    model.set(.string("fountain"), for: "prompt")
+
+    model.applyPreset(try #require(definition.presets.last))
+
+    #expect(model.values["prompt"] == .string("fountain"))
+    #expect(model.values["threshold"] == .number(0.3))
+}
+
 @Test @MainActor func stageWorkspaceInvalidatesAResolvedCommandOnEdit() throws {
     let data = Data("""
     {"version":1,"title":"Stage","description":"Test","preset":"default","presets":[],"fields":[{"key":"count","label":"Count","type":"integer","default":1}]}

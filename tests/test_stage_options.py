@@ -5,6 +5,22 @@ import pytest
 from gausser.stage_options import StageOptionError, catalog, resolve_options
 
 
+def test_sammer_options_resolve_standard_and_coverage_presets():
+    standard = resolve_options("sammer", {"prompt": "fountain"})
+    assert standard.preset == "standard-mask"
+    assert standard.arguments == ("--prompt", "fountain", "--score-threshold", "0.5", "--device", "auto", "--dilation", "0", "--feather", "0")
+
+    coverage = resolve_options("sammer", {"prompt": "fountain", "score_threshold": 0.3, "dilation": 8, "feather": 12})
+    assert coverage.preset == "coverage-focus"
+
+
+def test_sammer_options_reject_invalid_prompt_and_threshold():
+    with pytest.raises(StageOptionError, match="prompt must be a non-empty string"):
+        resolve_options("sammer", {"prompt": "  "})
+    with pytest.raises(StageOptionError, match="score_threshold must be between 0 and 1"):
+        resolve_options("sammer", {"prompt": "fountain", "score_threshold": 1.1})
+
+
 def test_colmap_options_resolve_capture_aware_presets_and_safe_artifact_policy():
     video = resolve_options("colmap", {})
     assert video.preset == "video-sequence"

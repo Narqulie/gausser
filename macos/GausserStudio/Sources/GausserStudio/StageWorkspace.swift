@@ -36,7 +36,7 @@ final class StageWorkspaceModel {
 
     func applyPreset(_ preset: StagePreset) {
         var resetValues = Dictionary(uniqueKeysWithValues: definition.fields.map { ($0.key, $0.defaultValue) })
-        for field in definition.fields where field.readOnly == true {
+        for field in definition.fields where field.readOnly == true || field.required == true {
             resetValues[field.key] = values[field.key] ?? field.defaultValue
         }
         resetValues.merge(preset.values) { _, presetValue in presetValue }

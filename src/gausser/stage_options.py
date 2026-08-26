@@ -21,6 +21,18 @@ class ResolvedStageOptions:
     arguments: tuple[str, ...]
 
 
+_SAMMER_DEFAULTS: dict[str, Any] = {
+    "prompt": "",
+    "score_threshold": 0.5,
+    "all_instances": False,
+    "device": "auto",
+    "checkpoint": None,
+    "force": False,
+    "dilation": 0,
+    "feather": 0,
+}
+
+
 _COLMAP_VIDEO_DEFAULTS: dict[str, Any] = {
     "matcher": "sequential",
     "use_gpu": True,
@@ -57,6 +69,7 @@ def catalog() -> dict[str, dict[str, Any]]:
     option defaults or command construction.
     """
     return {
+        "sammer": _sammer_definition(),
         "colmap": _colmap_definition(),
         "sharpframes": {
             "version": 1,
@@ -105,11 +118,77 @@ def catalog() -> dict[str, dict[str, Any]]:
 
 def resolve_options(stage: str, options: Mapping[str, object]) -> ResolvedStageOptions:
     """Validate Studio options and produce deterministic CLI arguments."""
+    if stage == "sammer":
+        return _resolve_sammer(options)
     if stage == "colmap":
         return _resolve_colmap(options)
     if stage == "sharpframes":
         return _resolve_sharpframes(options)
     raise StageOptionError(f"typed options are not available for {stage}")
+
+
+def _sammer_definition() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "title": "SAM3 Masking",
+        "description": "Create transactional Brush and COLMAP masks from a subject prompt.",
+        "preset": "standard-mask",
+        "groups": [
+            {"id": "subject", "title": "Subject", "description": "Describe the object to retain for reconstruction."},
+            {"id": "mask", "title": "Mask quality", "description": "Confidence and instance selection."},
+            {"id": "advanced", "title": "Advanced", "description": "Device, model, and output-replacement controls.", "advanced": True},
+        ],
+        "presets": [
+            {"recommended": True, "id": "standard-mask", "title": "Standard mask", "description": "SAM3 defaults: highest-confidence instance at a 0.5 threshold.", "values": _SAMMER_DEFAULTS},
+            {"id": "coverage-focus", "title": "Coverage focus", "description": "Lower threshold and light edge expansion when the standard mask misses valid subject pixels.", "values": {**_SAMMER_DEFAULTS, "score_threshold": 0.3, "dilation": 8, "feather": 12}},
+        ],
+        "warnings": [
+            {"level": "warning", "message": "Replacing existing masks changes downstream reconstruction/training inputs. Inspect the prompt and preview the resolved command first."},
+        ],
+        "fields": [
+            _field("prompt", "Subject prompt", "text", "", required=True, group="subject", help="Describe the object to preserve, for example ‘fountain’ or ‘statue’."),
+            _field("score_threshold", "Confidence threshold", "decimal", 0.5, minimum=0, maximum=1, group="mask", help="Higher values reject uncertain detections."),
+            _field("all_instances", "Merge all instances", "boolean", False, group="mask", help="Merge every detected instance instead of keeping only the highest-confidence result."),
+            _field("dilation", "Mask dilation (pixels)", "integer", 0, minimum=0, group="mask", help="Expand mask edges before saving."),
+            _field("feather", "Mask feather (pixels)", "integer", 0, minimum=0, group="mask", help="Blur mask edges before saving."),
+            _field("device", "Compute device", "enum", "auto", choices=["auto", "mps", "cuda", "cpu"], group="advanced", advanced=True, help="Auto selects the supported local accelerator."),
+            _field("checkpoint", "SAM3 checkpoint", "path", None, group="advanced", advanced=True, help="Optional local checkpoint or Hugging Face model identifier."),
+            _field("force", "Replace existing masks", "boolean", False, group="advanced", advanced=True, help="Required when masks already exist; publication remains transactional."),
+        ],
+    }
+
+
+def _resolve_sammer(options: Mapping[str, object]) -> ResolvedStageOptions:
+    unexpected = sorted(set(options) - set(_SAMMER_DEFAULTS))
+    if unexpected:
+        raise StageOptionError(f"unsupported sammer options: {', '.join(unexpected)}")
+    values: dict[str, Any] = dict(_SAMMER_DEFAULTS)
+    values.update(options)
+    if not isinstance(values["prompt"], str) or not values["prompt"].strip():
+        raise StageOptionError("prompt must be a non-empty string")
+    if isinstance(values["score_threshold"], bool) or not isinstance(values["score_threshold"], (int, float)) or not 0 <= values["score_threshold"] <= 1:
+        raise StageOptionError("score_threshold must be between 0 and 1")
+    for key in ("all_instances", "force"):
+        if not isinstance(values[key], bool):
+            raise StageOptionError(f"{key} must be a boolean")
+    _enum(values, "device", ("auto", "mps", "cuda", "cpu"))
+    for key in ("dilation", "feather"):
+        _positive_integer(values, key, minimum=0)
+    checkpoint = values["checkpoint"]
+    if checkpoint is not None and (not isinstance(checkpoint, str) or not checkpoint.strip()):
+        raise StageOptionError("checkpoint must be a non-empty path or null")
+
+    arguments: list[str] = ["--prompt", values["prompt"], "--score-threshold", str(values["score_threshold"]), "--device", values["device"], "--dilation", str(values["dilation"]), "--feather", str(values["feather"])]
+    if values["all_instances"]:
+        arguments.append("--all-instances")
+    if checkpoint is not None:
+        arguments.extend(["--checkpoint", checkpoint])
+    if values["force"]:
+        arguments.append("--force")
+    standard = {**_SAMMER_DEFAULTS, "prompt": values["prompt"]}
+    coverage = {**standard, "score_threshold": 0.3, "dilation": 8, "feather": 12}
+    preset = "standard-mask" if values == standard else "coverage-focus" if values == coverage else "custom"
+    return ResolvedStageOptions("sammer", 1, preset, values, tuple(arguments))
 
 
 def _colmap_definition() -> dict[str, Any]:

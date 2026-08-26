@@ -134,7 +134,6 @@ private struct SceneDashboard: View {
     @State private var presentsSharpFramesWorkspace = false
     @State private var workspaceStage: String?
     @State private var presentsStageWorkspace = false
-    @State private var samPrompt = ""
     @State private var maxSplats = "1500000"
     @State private var msplatDownscale = "4"
     @State private var ingestPolicy = "copy"
@@ -268,11 +267,6 @@ private struct SceneDashboard: View {
     private var settings: some View {
         GroupBox("Run settings") {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
-                GridRow {
-                    Text("SAM3 prompt")
-                    TextField("e.g. fountain", text: $samPrompt)
-                        .textFieldStyle(.roundedBorder)
-                }
                 GridRow {
                     Text("Brush maximum splats")
                     TextField("1500000", text: $maxSplats)
@@ -516,11 +510,11 @@ private struct SceneDashboard: View {
             }
             model.start(stage: stage.stage, options: options)
         case "sammer":
-            guard !samPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                model.errorMessage = "Enter a SAM3 prompt before starting masking."
+            guard let options else {
+                model.errorMessage = "Validate SAM3 settings before launching."
                 return
             }
-            model.start(stage: stage.stage, arguments: ["--prompt", samPrompt])
+            model.start(stage: stage.stage, options: options)
         case "colmap":
             guard let options else {
                 model.errorMessage = "Validate COLMAP settings before launching."
