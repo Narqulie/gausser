@@ -41,11 +41,15 @@ def inspect_scene(paths: ScenePaths) -> list[Readiness]:
         colmap_state,
         Readiness("brush", "ready" if model else "unavailable", "Brush requires a valid COLMAP model"),
         Readiness("msplat", "ready" if msplat_ready else "unavailable", msplat_detail),
+        Readiness("lod", "ready", "Provide an explicit scene-owned PLY export"),
     ]
 
 
 def inspect_tools() -> list[Readiness]:
-    tools = (("sammer", "sam3"), ("colmap", "colmap"), ("brush", "brush"), ("msplat", "msplatter"))
+    tools = (
+        ("sammer", "sam3"), ("colmap", "colmap"), ("brush", "brush"),
+        ("msplat", "msplatter"), ("lod", "splat-transform"),
+    )
     readiness = [
         Readiness(stage, "ready" if shutil.which(binary) else "unavailable", binary)
         for stage, binary in tools

@@ -35,6 +35,14 @@ def test_controller_builds_explicit_unmasked_msplat_command(scene: Path):
     ]
 
 
+def test_controller_builds_scene_owned_lod_command(scene: Path):
+    controller = SceneController(ScenePaths.from_root(scene))
+
+    assert controller.command_for(StageRequest("lod", ("runs/brush/test/exports/export_15000.ply",))) == [
+        "lodder", "--scene", str(scene), "runs/brush/test/exports/export_15000.ply"
+    ]
+
+
 def test_controller_gates_brush_without_a_valid_colmap_model(scene: Path):
     controller = SceneController(ScenePaths.from_root(scene))
 

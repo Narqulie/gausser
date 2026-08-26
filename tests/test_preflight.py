@@ -13,3 +13,5 @@ def test_preflight_guides_a_scene_without_colmap(scene):
     assert statuses["brush"].state == "unavailable"
     assert statuses["msplat"].state == "unavailable"
     assert "unmasked" in statuses["msplat"].detail
+    assert statuses["lod"].state == "ready"
+    assert "explicit" in statuses["lod"].detail

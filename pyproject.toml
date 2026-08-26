@@ -29,11 +29,12 @@ colmapper = "colmapper.cli:main"
 brusher = "brusher.cli:main"
 sharpframes = "sharpframes.cli:main"
 msplatter = "msplatter.cli:main"
+lodder = "lodder.cli:main"
 gausser = "gausser.tui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["gausser*", "sammer*", "colmapper*", "brusher*", "sharpframes*", "msplatter*"]
+include = ["gausser*", "sammer*", "colmapper*", "brusher*", "sharpframes*", "msplatter*", "lodder*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

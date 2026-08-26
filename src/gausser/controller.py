@@ -12,7 +12,7 @@ from .process import CommandResult, LineCallback, run_command
 from .scene import ScenePaths
 
 
-Stage = Literal["sammer", "colmap", "brush", "msplat"]
+Stage = Literal["sammer", "colmap", "brush", "msplat", "lod"]
 Trainer = Literal["brush", "msplat"]
 _PIPELINE_STAGES: tuple[Stage, Stage] = ("sammer", "colmap")
 
@@ -51,6 +51,8 @@ class SceneController:
             return ["brusher", str(self.scene.root), *request.arguments]
         if request.stage == "msplat":
             return ["msplatter", str(self.scene.root), "--allow-unmasked", *request.arguments]
+        if request.stage == "lod":
+            return ["lodder", "--scene", str(self.scene.root), *request.arguments]
         raise ValueError(f"unknown stage: {request.stage}")
 
     def run(

@@ -27,7 +27,8 @@ def create_app(scene: ScenePaths):
         #overview, #tools { height: auto; margin: 1 2; }
         #stage-controls { height: auto; margin: 1 2; }
         #log { height: 1fr; margin: 1 2; border: round $primary; }
-        #prompt { margin: 0 2; }
+        #inputs { height: auto; margin: 0 2; }
+        #prompt, #lod-source { width: 1fr; }
         """
         BINDINGS = [("q", "quit", "Quit"), ("escape", "cancel_stage", "Cancel stage"), ("r", "refresh", "Refresh")]
 
@@ -44,13 +45,16 @@ def create_app(scene: ScenePaths):
                 yield Static(f"Scene: {self.scene.root}", id="scene")
                 yield Static("", id="overview")
                 yield Static("", id="tools")
-                yield Input(placeholder="SAM3 prompt (required to start SAM3)", id="prompt")
+                with Horizontal(id="inputs"):
+                    yield Input(placeholder="SAM3 prompt", id="prompt")
+                    yield Input(placeholder="PLY export for LOD", id="lod-source")
                 with Horizontal(id="stage-controls"):
-                    yield Button("Run SAM3", id="sammer", variant="primary")
-                    yield Button("Run COLMAP", id="colmap")
-                    yield Button("Run Brush", id="brush")
-                    yield Button("Run Msplat (unmasked)", id="msplat", variant="warning")
-                    yield Button("Run pipeline", id="pipeline", variant="success")
+                    yield Button("SAM3", id="sammer", variant="primary")
+                    yield Button("COLMAP", id="colmap")
+                    yield Button("Brush", id="brush")
+                    yield Button("Msplat", id="msplat", variant="warning")
+                    yield Button("LOD", id="lod")
+                    yield Button("Pipeline", id="pipeline", variant="success")
                     yield Button("Cancel", id="cancel", variant="error")
                 yield RichLog(id="log", wrap=True, highlight=False)
             yield Footer()
@@ -69,8 +73,10 @@ def create_app(scene: ScenePaths):
             )
             states = {item.stage: item.state for item in scene_status}
             tools = {item.stage: item.state for item in tool_status}
-            for stage in ("sammer", "colmap", "brush", "msplat"):
-                self.query_one(f"#{stage}", Button).disabled = states[stage] != "ready" or tools[stage] != "ready"
+            for stage in ("sammer", "colmap", "brush", "msplat", "lod"):
+                self.query_one(f"#{stage}", Button).disabled = (
+                    states.get(stage) != "ready" or tools.get(stage) != "ready"
+                )
             self.query_one("#pipeline", Button).disabled = states["sammer"] != "ready" or any(
                 tools[stage] != "ready" for stage in ("sammer", "colmap", "brush")
             )
@@ -103,7 +109,7 @@ def create_app(scene: ScenePaths):
                 self.pending_request = None
                 self.start_pipeline(prompt)
                 return
-            if stage not in {"sammer", "colmap", "brush", "msplat"}:
+            if stage not in {"sammer", "colmap", "brush", "msplat", "lod"}:
                 return
             arguments: tuple[str, ...] = ()
             if stage == "sammer":
@@ -112,6 +118,12 @@ def create_app(scene: ScenePaths):
                     self.query_one("#log", RichLog).write("SAM3 needs a text prompt.")
                     return
                 arguments = ("--prompt", prompt)
+            if stage == "lod":
+                source = self.query_one("#lod-source", Input).value.strip()
+                if not source:
+                    self.query_one("#log", RichLog).write("LOD creation requires an explicit scene-owned PLY export path.")
+                    return
+                arguments = (source,)
             request = StageRequest(stage, arguments)
             if request != self.pending_request:
                 self.pending_request = request
@@ -119,6 +131,9 @@ def create_app(scene: ScenePaths):
                     "Msplat does not consume SAM masks and will train unmasked. "
                     "Press Run Msplat (unmasked) again to acknowledge and start."
                     if stage == "msplat"
+                    else "LOD creation derives deployable data from the selected PLY export. "
+                    "Press Create LOD again to confirm."
+                    if stage == "lod"
                     else f"Ready to run {stage}. Press its button again to confirm. Esc cancels a running stage."
                 )
                 self.query_one("#log", RichLog).write(message)

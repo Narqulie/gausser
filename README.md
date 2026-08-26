@@ -3,8 +3,8 @@
 Scene-owned CLI stages that turn photos into 3D Gaussian Splatting `.ply` files.
 
 ```
-sharpframes (optional) → sammer → colmapper → brusher
-                                      └→ msplatter (experimental, unmasked)
+sharpframes (optional) → sammer → colmapper → brusher ───┐
+                                      └→ msplatter (experimental, unmasked) ─┴→ lodder (optional streaming LOD)
 ```
 
 I built this because the existing pipelines were monolithic scripts that did
@@ -33,6 +33,11 @@ image source into `images/` transactionally before the reconstruction stages.
 **msplatter** — an experimental Apple-Silicon Msplat backend. It creates an
 isolated run with a PLY export and checkpoint, but is deliberately **not** a
 replacement for Brush: upstream Msplat has no mask-input support.
+
+**lodder** — turns an explicitly selected Brush or Msplat PLY export into a
+streamed PlayCanvas LOD tree (`lod-meta.json` plus chunk files). By default it
+retains 100%, 50%, and 25% splat levels. It is a deployment derivative, not an
+automatic training step.
 
 Each one has a progress bar that actually shows what's happening, not just a
 spinning cursor.
@@ -70,6 +75,17 @@ runs exactly the selected trainer. Msplat never consumes SAM masks; `4` loads
 source images at quarter linear resolution and is appropriate for large scenes
 on Apple Silicon.
 
+Create a deployable LOD artifact from an exact completed export; Gausser will
+reject inputs outside the scene root and never guesses the latest checkpoint:
+
+```bash
+lodder runs/brush/<run-id>/exports/export_15000.ply
+# or
+lodder runs/msplat/<run-id>/exports/scene.ply --chunk-count 1024 --chunk-extent 32
+# Use a different descending LOD recipe when the target requires it:
+lodder runs/msplat/<run-id>/exports/scene.ply --lod-percentages 100,40,15
+```
+
 If you're working with video frames (like I mostly am) the `--matcher
 sequential` flag is important — the default exhaustive matcher pairs every
 image with every other image and on 500 frames that's 125k pairs, which just
@@ -88,6 +104,7 @@ hangs on MPS.
   `ffprobe` on PATH
 - Optional Msplat (`pip install msplat`) on Apple Silicon running macOS 14+;
   it requires COLMAP **binary** sparse output
+- Optional streamed LOD creation: `npm install -g @playcanvas/splat-transform`
 
 The pinned SAM3 commit avoids a triton dependency issue on macOS. The latest
 commit tries to import triton (CUDA-only) at module load time and crashes on
@@ -104,12 +121,13 @@ gausser
 ```
 
 The terminal UI shows scene/tool readiness and can run SAM3, COLMAP, Brush, an
-ordered pipeline, or experimental Msplat. Enter the SAM3 prompt, then press a
-stage action twice to confirm it. Msplat requires its own second confirmation:
-it does not consume SAM masks and therefore deliberately trains unmasked. `Esc`
-requests cancellation and waits for the shared runner to clean up the complete
-process tree. `r` refreshes readiness and `q` quits. The same scene-owned CLI
-commands remain available for headless use.
+ordered pipeline, experimental Msplat, or LOD creation. Enter the SAM3 prompt
+or exact scene-owned PLY export path as appropriate, then press a stage action
+twice to confirm it. Msplat requires its own second confirmation: it does not
+consume SAM masks and therefore deliberately trains unmasked. `Esc` requests
+cancellation and waits for the shared runner to clean up the complete process
+tree. `r` refreshes readiness and `q` quits. The same scene-owned CLI commands
+remain available for headless use.
 
 ## Directory layout the tools expect
 
@@ -127,7 +145,8 @@ my_scene/
 │           └── points3D.bin
 ├── runs/
 │   ├── brush/<run-id>/exports/  ← created by brusher
-│   └── msplat/<run-id>/          ← experimental PLY export + checkpoint
+│   ├── msplat/<run-id>/          ← experimental PLY export + checkpoint
+│   └── lod/<run-id>/lod-meta.json ← validated streamed LOD derivative
 └── .gausser/
     ├── manifest.json
     └── staging/         ← incomplete work; never consumed
@@ -156,6 +175,9 @@ sharpframes SOURCE [--scene SCENE] [--force] [SHARP-FRAMES OPTIONS]
 
 msplatter [SCENE] [--iterations 7000] [--num-downscales 0]
            [--downscale-factor N] [--no-eval] --allow-unmasked
+
+lodder SOURCE.ply [--scene SCENE] [--chunk-count N] [--chunk-extent METRES]
+       [--lod-percentages 100,50,25]
 
 python monitor_and_run.py SCENE [--no-wait] [--matcher sequential]
        [--trainer brush|msplat]
@@ -203,3 +225,8 @@ supersplat or play with in the brush viewer.
   COLMAP models, not text sparse models. Msplat loads all source images into
   shared GPU memory; for large scenes use `--downscale-factor N` to load at
   one-Nth linear resolution (for example, `4` for quarter-resolution inputs).
+- `lodder` creates PlayCanvas LOD streaming data rather than a single PLY. It
+  uses `splat-transform` to derive lower-detail PLY levels, then bundles them
+  transactionally. It requires `splat-transform` on PATH, records its detected
+  version and source hash, and rejects incomplete metadata/chunk output before
+  publication.
