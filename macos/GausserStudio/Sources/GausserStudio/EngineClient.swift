@@ -11,6 +11,7 @@ struct EngineClientError: LocalizedError {
 @MainActor
 @Observable
 final class EngineClient {
+    private let executableOverride: String?
     private var process: Process?
     private var input: FileHandle?
     private var outputBuffer = Data()
@@ -19,6 +20,10 @@ final class EngineClient {
     var isConnected = false
     var events: [EngineMessage] = []
     private var eventSubscribers: [UUID: (EngineMessage) -> Void] = [:]
+
+    init(engineExecutable: String? = nil) {
+        self.executableOverride = engineExecutable
+    }
 
     func subscribeToEvents(_ subscriber: @escaping (EngineMessage) -> Void) -> UUID {
         let id = UUID()
@@ -98,15 +103,10 @@ final class EngineClient {
     }
 
     func close() {
-        guard let process else { return }
-        process.terminate()
-        self.process = nil
+        // EOF asks the JSON-lines service to run its shutdown path, which cancels
+        // and joins the scene-owned child before this process terminates.
+        input?.closeFile()
         input = nil
-        isConnected = false
-        let error = EngineClientError(message: "The Gausser engine stopped.")
-        let waiting = pending
-        pending.removeAll()
-        waiting.values.forEach { $0(.failure(error)) }
     }
 
     private func send(
@@ -138,6 +138,11 @@ final class EngineClient {
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { [weak self] terminated in
+            Task { @MainActor [weak self] in
+                self?.engineDidTerminate(terminated)
+            }
+        }
 
         outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
@@ -152,6 +157,9 @@ final class EngineClient {
     }
 
     private var engineExecutablePath: String {
+        if let executableOverride, !executableOverride.isEmpty {
+            return executableOverride
+        }
         if let configured = ProcessInfo.processInfo.environment["GAUSSER_ENGINE"], !configured.isEmpty {
             return configured
         }
@@ -159,6 +167,19 @@ final class EngineClient {
             return bundled.path
         }
         return "gausser-engine"
+    }
+
+    private func engineDidTerminate(_ terminated: Process) {
+        guard process === terminated else { return }
+        input?.closeFile()
+        input = nil
+        process = nil
+        isConnected = false
+        outputBuffer.removeAll(keepingCapacity: false)
+        let error = EngineClientError(message: "The Gausser engine stopped unexpectedly.")
+        let waiting = pending
+        pending.removeAll()
+        waiting.values.forEach { $0(.failure(error)) }
     }
 
     private func consume(_ data: Data) {

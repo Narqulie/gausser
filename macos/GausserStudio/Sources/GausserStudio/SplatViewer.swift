@@ -203,10 +203,11 @@ public struct SplatViewerHost: NSViewRepresentable {
 
             loadingTask = Task { @MainActor [weak self, weak model] in
                 do {
-                    let points = try await Task.detached(priority: .userInitiated) {
+                    let readerTask = Task.detached(priority: .userInitiated) {
                         let reader = try AutodetectSceneReader(request.url)
                         return try await reader.readAll()
-                    }.value
+                    }
+                    let points = try await awaitCancellableReader(readerTask)
                     try Task.checkCancellation()
                     guard !points.isEmpty else {
                         throw SplatViewerHostError.emptyScene
@@ -331,6 +332,14 @@ private enum SplatViewerHostError: LocalizedError {
         case .emptyScene:
             "The selected splat artifact contains no splats."
         }
+    }
+}
+
+func awaitCancellableReader<Value: Sendable>(_ readerTask: Task<Value, Error>) async throws -> Value {
+    try await withTaskCancellationHandler {
+        try await readerTask.value
+    } onCancel: {
+        readerTask.cancel()
     }
 }
 

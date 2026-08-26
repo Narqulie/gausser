@@ -62,6 +62,21 @@ import Testing
     }
 }
 
+@Test func cancellingViewerWaitCancelsItsReaderTask() async {
+    let reader = Task<Int, Error> {
+        try await Task.sleep(for: .seconds(10))
+        return 1
+    }
+    let waiter = Task {
+        try await awaitCancellableReader(reader)
+    }
+    await Task.yield()
+    waiter.cancel()
+    _ = await waiter.result
+
+    #expect(reader.isCancelled)
+}
+
 @Test @MainActor func viewerClearCancelsTheCurrentExplicitSelection() throws {
     let artifact = try makeTemporaryArtifact(extension: "splat")
     defer { try? FileManager.default.removeItem(at: artifact.deletingLastPathComponent()) }

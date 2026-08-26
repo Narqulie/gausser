@@ -4,6 +4,15 @@ from gausser.preflight import inspect_scene
 from gausser.scene import ScenePaths
 
 
+def test_preflight_blocks_sharpframes_when_images_are_already_owned(scene):
+    (scene / "images" / "photo.jpg").write_bytes(b"image")
+
+    statuses = {item.stage: item for item in inspect_scene(ScenePaths.from_root(scene))}
+
+    assert statuses["sharpframes"].state == "unavailable"
+    assert "replace" in statuses["sharpframes"].detail.lower()
+
+
 def test_preflight_guides_a_scene_without_colmap(scene):
     statuses = {item.stage: item for item in inspect_scene(ScenePaths.from_root(scene))}
 

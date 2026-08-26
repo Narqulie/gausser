@@ -45,6 +45,7 @@ def reimport_edited_export(
     staged_run = attempt / "run"
     staged_export = staged_run / "exports" / f"edited{edited.suffix.lower()}"
     staged_export.parent.mkdir(parents=True)
+    published = False
     try:
         shutil.copy2(edited, staged_export)
         provenance = staged_run / "provenance.json"
@@ -65,6 +66,7 @@ def reimport_edited_export(
             encoding="utf-8",
         )
         replace_directory(staged_run, destination)
+        published = True
         published_export = destination / "exports" / staged_export.name
         published_provenance = destination / "provenance.json"
         record_stage(
@@ -80,6 +82,10 @@ def reimport_edited_export(
             },
         )
         return SuperSplatImport(selected_run_id, published_export, published_provenance)
+    except Exception:
+        if published:
+            shutil.rmtree(destination, ignore_errors=True)
+        raise
     finally:
         shutil.rmtree(attempt, ignore_errors=True)
 

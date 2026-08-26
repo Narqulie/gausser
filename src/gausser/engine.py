@@ -7,6 +7,7 @@ continues to own stage commands and the shared process runner owns child lifecyc
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import argparse
 import json
@@ -22,6 +23,7 @@ from .ingest import ingest_photo_directory
 from .preflight import inspect_scene, inspect_tools
 from .process import CommandResult
 from .scene import SceneError, ScenePaths, initialize_scene
+from .scene_lock import SceneLock, SceneLockError
 from .supersplat import reimport_edited_export
 
 
@@ -49,6 +51,7 @@ class ActiveRun:
     stage: Stage
     arguments: tuple[str, ...]
     cancel_event: threading.Event
+    lock: SceneLock
     thread: threading.Thread | None = None
 
     def descriptor(self) -> dict[str, str]:
@@ -78,7 +81,8 @@ class GausserEngine:
                 emit({"id": request_id, "result": {"active_runs": self._active_descriptors()}})
             elif method == "initialize":
                 scene = self._scene_from_params(params)
-                initialized = initialize_scene(scene.root)
+                with self._scene_mutation(scene):
+                    initialized = initialize_scene(scene.root)
                 emit({
                     "id": request_id,
                     "result": {"scene": str(initialized.root), "manifest": str(initialized.manifest)},
@@ -88,10 +92,10 @@ class GausserEngine:
                 emit({"id": request_id, "result": {"artifacts": [asdict(item) for item in list_artifacts(scene)]}})
             elif method == "ingest_photos":
                 scene = self._scene_from_params(params)
-                self._require_scene_idle(scene)
-                source = self._required_string(params, "source")
-                policy = self._required_string(params, "policy")
-                result = ingest_photo_directory(scene, source, policy=policy)
+                with self._scene_mutation(scene):
+                    source = self._required_string(params, "source")
+                    policy = self._required_string(params, "policy")
+                    result = ingest_photo_directory(scene, source, policy=policy)
                 emit({
                     "id": request_id,
                     "result": {
@@ -102,10 +106,10 @@ class GausserEngine:
                 })
             elif method == "reimport_supersplat":
                 scene = self._scene_from_params(params)
-                self._require_scene_idle(scene)
-                source = self._required_string(params, "source")
-                edited = self._required_string(params, "edited")
-                result = reimport_edited_export(scene, source, edited)
+                with self._scene_mutation(scene):
+                    source = self._required_string(params, "source")
+                    edited = self._required_string(params, "edited")
+                    result = reimport_edited_export(scene, source, edited)
                 emit({
                     "id": request_id,
                     "result": {
@@ -119,12 +123,21 @@ class GausserEngine:
                 # Acknowledge before launching the thread so clients always observe
                 # a run id before any event for that run.
                 emit({"id": request_id, "result": {"run_id": active.id}})
-                self._launch(active, emit)
+                try:
+                    self._launch(active, emit)
+                except Exception:
+                    with self._lock:
+                        self._active_by_id.pop(active.id, None)
+                        self._active_by_scene.pop(active.scene.root, None)
+                    active.lock.release()
+                    raise
             elif method == "cancel":
                 run_id = self._required_string(params, "run_id")
                 emit({"id": request_id, "result": self._cancel(run_id)})
             else:
                 raise RequestError(f"unsupported method: {method}")
+        except SceneLockError as exc:
+            emit({"id": request_id, "error": {"code": "scene_busy", "message": str(exc)}})
         except SceneError as exc:
             code = "scene_initialization_failed" if method == "initialize" else "scene_error"
             emit({"id": request_id, "error": {"code": code, "message": str(exc)}})
@@ -176,10 +189,22 @@ class GausserEngine:
             raise RequestError(f"scene does not exist: {scene}")
         return ScenePaths.from_root(scene)
 
-    def _require_scene_idle(self, scene: ScenePaths) -> None:
+    def _require_no_local_run(self, scene: ScenePaths) -> None:
         with self._lock:
             if scene.root in self._active_by_scene:
                 raise SceneBusyError(f"a run is already active for {scene.root}")
+
+    @contextmanager
+    def _scene_mutation(self, scene: ScenePaths):
+        """Exclude both local and other-engine mutations for a short operation."""
+        self._require_no_local_run(scene)
+        lock = SceneLock(scene.root)
+        lock.acquire()
+        try:
+            self._require_no_local_run(scene)
+            yield
+        finally:
+            lock.release()
 
     def _reserve_run(self, params: dict[str, object]) -> ActiveRun:
         scene = self._scene_from_params(params)
@@ -190,19 +215,27 @@ class GausserEngine:
         if not isinstance(raw_arguments, list) or any(not isinstance(item, str) or "\0" in item for item in raw_arguments):
             raise RequestError("arguments must be an array of strings without NUL bytes")
 
-        active = ActiveRun(
-            id=f"run-{uuid4().hex}",
-            scene=scene,
-            stage=stage_name,  # type: ignore[arg-type]
-            arguments=tuple(raw_arguments),
-            cancel_event=threading.Event(),
-        )
-        with self._lock:
-            if scene.root in self._active_by_scene:
-                raise SceneBusyError(f"a run is already active for {scene.root}")
-            self._active_by_id[active.id] = active
-            self._active_by_scene[scene.root] = active
-        return active
+        self._require_no_local_run(scene)
+        scene_lock = SceneLock(scene.root)
+        scene_lock.acquire()
+        try:
+            active = ActiveRun(
+                id=f"run-{uuid4().hex}",
+                scene=scene,
+                stage=stage_name,  # type: ignore[arg-type]
+                arguments=tuple(raw_arguments),
+                cancel_event=threading.Event(),
+                lock=scene_lock,
+            )
+            with self._lock:
+                if scene.root in self._active_by_scene:
+                    raise SceneBusyError(f"a run is already active for {scene.root}")
+                self._active_by_id[active.id] = active
+                self._active_by_scene[scene.root] = active
+            return active
+        except Exception:
+            scene_lock.release()
+            raise
 
     def _launch(self, active: ActiveRun, emit: EventSink) -> None:
         thread = threading.Thread(
@@ -237,6 +270,7 @@ class GausserEngine:
             with self._lock:
                 self._active_by_id.pop(active.id, None)
                 self._active_by_scene.pop(active.scene.root, None)
+            active.lock.release()
         emit(event)
 
     @staticmethod

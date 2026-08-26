@@ -31,13 +31,18 @@ def inspect_scene(paths: ScenePaths) -> list[Readiness]:
         Readiness("colmap", "completed", f"{model.images} registered images, {model.points} points")
         if model else Readiness("colmap", "ready" if images else "unavailable", "No valid sparse/0 model")
     )
+    sharpframes_ready = not paths.images.exists() or not any(paths.images.iterdir())
+    sharpframes_detail = (
+        "Provide a video or image-directory source"
+        if sharpframes_ready else "Images already exist; explicitly replace them from the Sharp Frames CLI"
+    )
     msplat_ready = bool(images) and model is not None and model.format == "binary"
     msplat_detail = "Experimental unmasked training; valid binary COLMAP model required"
     if model is not None and model.format != "binary":
         msplat_detail = "Msplat upstream requires binary COLMAP output"
     return [
         image_state,
-        Readiness("sharpframes", "ready", "Provide a video or image-directory source"),
+        Readiness("sharpframes", "ready" if sharpframes_ready else "unavailable", sharpframes_detail),
         Readiness("sammer", "ready" if images else "unavailable", "SAM3 required"),
         colmap_state,
         Readiness("brush", "ready" if model else "unavailable", "Brush requires a valid COLMAP model"),
