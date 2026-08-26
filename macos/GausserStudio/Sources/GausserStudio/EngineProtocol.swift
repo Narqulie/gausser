@@ -118,9 +118,11 @@ struct StageGroup: Decodable, Equatable, Sendable, Identifiable {
 }
 
 struct StageNotice: Decodable, Equatable, Sendable, Identifiable {
-    let id: String
     let level: String
     let message: String
+
+    /// Python warnings are keyed by their immutable contents, not an invented UI ID.
+    var id: String { "\(level):\(message)" }
 }
 
 struct StageOutputContext: Decodable, Equatable, Sendable {

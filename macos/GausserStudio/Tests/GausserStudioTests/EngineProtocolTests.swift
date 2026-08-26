@@ -53,6 +53,16 @@ import Testing
     #expect(try reloaded.resolve(reloaded.scenes[0]).standardizedFileURL == root.standardizedFileURL)
 }
 
+@Test func stageCatalogDecodesEngineWarningsWithoutSyntheticIDs() throws {
+    let data = Data("""
+    {"stages":{"sharpframes":{"version":1,"title":"Sharp Frames","description":"Select","preset":"upstream-defaults","presets":[],"warnings":[{"level":"warning","message":"An upstream warning."}],"fields":[]}}}
+    """.utf8)
+
+    let catalog = try JSONDecoder().decode(StageCatalogResponse.self, from: data)
+
+    #expect(catalog.stages["sharpframes"]?.warnings?.first?.id == "warning:An upstream warning.")
+}
+
 @Test func stageCatalogDecodesGroupsAndFieldVisibility() throws {
     let data = Data("""
     {"stages":{"sharpframes":{"version":1,"title":"Sharp Frames","description":"Select","preset":"upstream-defaults","groups":[{"id":"selection","title":"Selection","description":"Frame selection"}],"presets":[{"id":"upstream-defaults","title":"Defaults","description":"Upstream","recommended":true,"values":{}}],"fields":[{"key":"source","label":"Source","type":"path","default":null,"required":true,"group":"selection"},{"key":"vocab_tree","label":"Vocabulary tree","type":"path","default":null,"visible_when":{"key":"matcher","equals":"vocab_tree"}}]}}}
