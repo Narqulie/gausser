@@ -13,7 +13,7 @@ struct StudioView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selectedStep) {
+            List {
                 Section("Projects") {
                     if let scene = session.scene {
                         Label(scene.lastPathComponent, systemImage: "cube.transparent")
@@ -22,9 +22,15 @@ struct StudioView: View {
                 }
                 if session.scene != nil {
                     Section("Pipeline") {
-                        ForEach(SceneStep.allCases) { step in
-                            Label(step.title, systemImage: step.symbol)
-                                .tag(Optional(step))
+                        ForEach(SceneStep.allCases) { item in
+                            Button {
+                                selectedStep = item
+                            } label: {
+                                Label(item.title, systemImage: item.symbol)
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(selectedStep == item ? Color.accentColor.opacity(0.16) : Color.clear)
+                            .accessibilityLabel("Open \(item.title) workspace")
                         }
                     }
                 }
