@@ -39,3 +39,21 @@ def test_brush_telemetry_reports_observed_metrics_without_inventing_progress():
         "step": 1200,
         "values": {"psnr": 27.8, "ssim": 0.91},
     }
+
+
+def test_sammer_telemetry_reports_masking_progress():
+    telemetry = StageTelemetry("sammer")
+
+    event = telemetry.from_line("Masking 14/425")
+
+    assert event is not None
+    assert event.data == {"phase": "masking", "current": 14, "total": 425, "unit": "images", "message": "Masking 14/425"}
+
+
+def test_msplat_telemetry_reports_training_metrics():
+    telemetry = StageTelemetry("msplat")
+
+    event = telemetry.from_line("Msplat 250/30000: 2,012,333 splats")
+
+    assert event is not None
+    assert event.data == {"phase": "training", "step": 250, "total": 30000, "unit": "iterations", "values": {"splat_count": 2012333}, "message": "Msplat 250/30000: 2,012,333 splats"}

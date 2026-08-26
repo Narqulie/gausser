@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Literal
 
 from brusher.runner import TrainProgress, parse_progress as parse_brush_progress
 from colmapper.runner import parse_progress as parse_colmap_progress
 
 StageEventKind = Literal["progress", "metric"]
+_SAMMER_PROGRESS = re.compile(r"\bMasking\s+(\d+)\s*/\s*(\d+)", re.IGNORECASE)
+_MSPLAT_PROGRESS = re.compile(r"\bMsplat\s+(\d+)\s*/\s*(\d+)\s*:\s*([\d,]+)\s+splats", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,22 @@ class StageTelemetry:
                 "total": progress.total,
                 "unit": "images",
                 "message": progress.message,
+            })
+        if self.stage == "sammer":
+            match = _SAMMER_PROGRESS.search(line)
+            if match is None:
+                return None
+            return StageEvent("progress", {
+                "phase": "masking", "current": int(match.group(1)), "total": int(match.group(2)),
+                "unit": "images", "message": line,
+            })
+        if self.stage == "msplat":
+            match = _MSPLAT_PROGRESS.search(line)
+            if match is None:
+                return None
+            return StageEvent("metric", {
+                "phase": "training", "step": int(match.group(1)), "total": int(match.group(2)),
+                "unit": "iterations", "values": {"splat_count": int(match.group(3).replace(",", ""))}, "message": line,
             })
         if self.stage == "brush":
             kind = parse_brush_progress(line, self._brush)
