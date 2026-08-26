@@ -10,7 +10,7 @@ from pathlib import Path
 
 from gausser.manifest import fingerprint_file, record_stage
 from gausser.process import run_command
-from gausser.publish import replace_directory
+from gausser.publish import publish_directory
 from gausser.scene import SceneError, ScenePaths
 from gausser.ui import console
 
@@ -66,18 +66,18 @@ def main(argv: list[str] | None = None) -> None:
         console.print("[bold red]Sharp Frames selected no images; existing images/ was left unchanged.[/bold red]")
         sys.exit(1)
 
-    replace_directory(staged_images, scene.images)
-    record_stage(
-        scene,
-        "sharpframes",
-        {
-            "source": str(source),
-            "source_fingerprint": fingerprint_file(source) if source.is_file() else None,
-            "parameters": {"command": cmd[3:]},
-            "studio_settings": args.studio_settings,
-            "outputs": {"images": str(scene.relative_path(scene.images)), "count": len(images)},
-        },
-    )
+    with publish_directory(staged_images, scene.images):
+        record_stage(
+            scene,
+            "sharpframes",
+            {
+                "source": str(source),
+                "source_fingerprint": fingerprint_file(source) if source.is_file() else None,
+                "parameters": {"command": cmd[3:]},
+                "studio_settings": args.studio_settings,
+                "outputs": {"images": str(scene.relative_path(scene.images)), "count": len(images)},
+            },
+        )
     shutil.rmtree(attempt, ignore_errors=True)
     console.print(f"[green]Published {len(images)} selected images to {scene.images}[/green]")
 

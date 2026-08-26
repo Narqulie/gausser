@@ -65,6 +65,7 @@ struct SharpFramesWorkspace: View {
                 }
             }
             .formStyle(.grouped)
+            .disabled(isResolving)
             .onChange(of: values) { _, _ in
                 resolution = nil
                 validationError = nil
@@ -87,7 +88,7 @@ struct SharpFramesWorkspace: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button("Validate settings") { resolve() }
+                Button(isResolving ? "Validating…" : "Validate settings") { resolve() }
                     .disabled(isResolving)
                 if resolution != nil {
                     Button("Confirm & Run") {
