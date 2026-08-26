@@ -134,7 +134,6 @@ private struct SceneDashboard: View {
     @State private var presentsSharpFramesWorkspace = false
     @State private var workspaceStage: String?
     @State private var presentsStageWorkspace = false
-    @State private var msplatDownscale = "4"
     @State private var ingestPolicy = "copy"
     @State private var reimportSource: ArtifactSummary?
     @State private var isChoosingEditedExport = false
@@ -266,11 +265,6 @@ private struct SceneDashboard: View {
     private var settings: some View {
         GroupBox("Run settings") {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
-                GridRow {
-                    Text("Msplat downscale")
-                    TextField("4", text: $msplatDownscale)
-                        .textFieldStyle(.roundedBorder)
-                }
             }
             .padding(.top, 4)
         }
@@ -522,11 +516,11 @@ private struct SceneDashboard: View {
             }
             model.start(stage: stage.stage, options: options)
         case "msplat":
-            guard let value = Int(msplatDownscale), value > 0 else {
-                model.errorMessage = "Msplat downscale must be a positive integer."
+            guard let options else {
+                model.errorMessage = "Acknowledge and validate Msplat's unmasked settings before launching."
                 return
             }
-            model.start(stage: stage.stage, arguments: ["--downscale-factor", msplatDownscale])
+            model.start(stage: stage.stage, options: options)
         case "lod":
             model.start(stage: stage.stage, arguments: arguments)
         default:

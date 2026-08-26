@@ -5,6 +5,15 @@ import pytest
 from gausser.stage_options import StageOptionError, catalog, resolve_options
 
 
+def test_msplat_options_require_an_explicit_unmasked_acknowledgement():
+    with pytest.raises(StageOptionError, match="acknowledge_unmasked must be true"):
+        resolve_options("msplat", {})
+
+    resolved = resolve_options("msplat", {"acknowledge_unmasked": True})
+    assert resolved.preset == "local-memory-safe"
+    assert resolved.arguments == ("--iterations", "30000", "--num-downscales", "0", "--downscale-factor", "4.0")
+
+
 def test_brush_options_default_to_bounded_apple_silicon_safe_training():
     resolved = resolve_options("brush", {})
     assert resolved.preset == "apple-silicon-safe"

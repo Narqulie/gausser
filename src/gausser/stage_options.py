@@ -21,6 +21,15 @@ class ResolvedStageOptions:
     arguments: tuple[str, ...]
 
 
+_MSPLAT_DEFAULTS: dict[str, Any] = {
+    "iterations": 30000,
+    "num_downscales": 0,
+    "downscale_factor": 4.0,
+    "no_eval": False,
+    "acknowledge_unmasked": False,
+}
+
+
 _BRUSH_DEFAULTS: dict[str, Any] = {
     "total_train_iters": 30000,
     "export_every": 5000,
@@ -83,6 +92,7 @@ def catalog() -> dict[str, dict[str, Any]]:
         "sammer": _sammer_definition(),
         "colmap": _colmap_definition(),
         "brush": _brush_definition(),
+        "msplat": _msplat_definition(),
         "sharpframes": {
             "version": 1,
             "title": "Sharp Frames",
@@ -130,6 +140,8 @@ def catalog() -> dict[str, dict[str, Any]]:
 
 def resolve_options(stage: str, options: Mapping[str, object]) -> ResolvedStageOptions:
     """Validate Studio options and produce deterministic CLI arguments."""
+    if stage == "msplat":
+        return _resolve_msplat(options)
     if stage == "brush":
         return _resolve_brush(options)
     if stage == "sammer":
@@ -139,6 +151,60 @@ def resolve_options(stage: str, options: Mapping[str, object]) -> ResolvedStageO
     if stage == "sharpframes":
         return _resolve_sharpframes(options)
     raise StageOptionError(f"typed options are not available for {stage}")
+
+
+def _msplat_definition() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "title": "Msplat Training",
+        "description": "Experimental unmasked Msplat training from a binary COLMAP model.",
+        "preset": "local-memory-safe",
+        "groups": [
+            {"id": "training", "title": "Training", "description": "Iteration count and resolution scale."},
+            {"id": "safety", "title": "Masking acknowledgement", "description": "Msplat cannot consume SAM masks."},
+            {"id": "advanced", "title": "Advanced", "description": "Msplat-specific downscale and evaluation options.", "advanced": True},
+        ],
+        "presets": [
+            {"recommended": True, "id": "local-memory-safe", "title": "Local memory safe", "description": "The verified 425-camera local configuration: factor-4 source downscale and 30k iterations.", "values": _MSPLAT_DEFAULTS},
+            {"id": "validation-run", "title": "Validation run", "description": "Shorter factor-4 run for verifying reconstruction and environment wiring.", "values": {**_MSPLAT_DEFAULTS, "iterations": 7000}},
+        ],
+        "warnings": [
+            {"level": "warning", "message": "Msplat has no mask-input support and no maximum-splats control. It cannot replace masked Brush training silently."},
+            {"level": "warning", "message": "Full-resolution 425-camera training exceeded the tested 36 GB local memory envelope. Keep factor 4 unless the target machine has been evaluated."},
+        ],
+        "fields": [
+            _field("iterations", "Training iterations", "integer", 30000, minimum=1, group="training", help="Total Msplat optimization steps."),
+            _field("downscale_factor", "Image downscale factor", "decimal", 4.0, minimum=1, group="training", help="Load images at 1/N resolution. Factor 4 is the tested local-safe setting."),
+            _field("acknowledge_unmasked", "I understand SAM masks are not used", "boolean", False, group="safety", required=True, help="Required explicit acknowledgement before unmasked training can start."),
+            _field("num_downscales", "Internal downscale passes", "integer", 0, minimum=0, group="advanced", advanced=True, help="Additional upstream Msplat resolution passes."),
+            _field("no_eval", "Skip final evaluation", "boolean", False, group="advanced", advanced=True, help="Avoid the final metrics pass when only an export is needed."),
+        ],
+    }
+
+
+def _resolve_msplat(options: Mapping[str, object]) -> ResolvedStageOptions:
+    unexpected = sorted(set(options) - set(_MSPLAT_DEFAULTS))
+    if unexpected:
+        raise StageOptionError(f"unsupported msplat options: {', '.join(unexpected)}")
+    values: dict[str, Any] = dict(_MSPLAT_DEFAULTS)
+    values.update(options)
+    _positive_integer(values, "iterations", minimum=1)
+    _positive_integer(values, "num_downscales", minimum=0)
+    factor = values["downscale_factor"]
+    if isinstance(factor, bool) or not isinstance(factor, (int, float)) or factor < 1:
+        raise StageOptionError("downscale_factor must be at least 1")
+    for key in ("no_eval", "acknowledge_unmasked"):
+        if not isinstance(values[key], bool):
+            raise StageOptionError(f"{key} must be a boolean")
+    if not values["acknowledge_unmasked"]:
+        raise StageOptionError("acknowledge_unmasked must be true because Msplat does not use SAM masks")
+    arguments: list[str] = ["--iterations", str(values["iterations"]), "--num-downscales", str(values["num_downscales"]), "--downscale-factor", str(values["downscale_factor"])]
+    if values["no_eval"]:
+        arguments.append("--no-eval")
+    standard = {**_MSPLAT_DEFAULTS, "acknowledge_unmasked": True}
+    validation = {**standard, "iterations": 7000}
+    preset = "local-memory-safe" if values == standard else "validation-run" if values == validation else "custom"
+    return ResolvedStageOptions("msplat", 1, preset, values, tuple(arguments))
 
 
 def _brush_definition() -> dict[str, Any]:
