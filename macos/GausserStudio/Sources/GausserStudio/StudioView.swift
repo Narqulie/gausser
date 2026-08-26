@@ -170,9 +170,9 @@ private struct SceneDashboard: View {
         .onDisappear { model.stopObservingEvents() }
         .sheet(isPresented: $presentsSharpFramesWorkspace) {
             if let source = sharpFramesSource, let definition = model.stageCatalog["sharpframes"] {
-                SharpFramesWorkspace(
+                StageWorkspace(
                     definition: definition,
-                    source: source,
+                    seededValues: ["source": .string(source.path)],
                     onResolve: { options, completion in model.resolve(stage: "sharpframes", options: options, completion: completion) }
                 ) { options in
                     requestedOptions = options

@@ -66,8 +66,40 @@ struct StageDefinition: Decodable, Equatable, Sendable {
     let title: String
     let description: String
     let preset: String
+    let groups: [StageGroup]?
     let presets: [StagePreset]
     let fields: [StageField]
+    let warnings: [StageNotice]?
+    let outputContext: StageOutputContext?
+
+    enum CodingKeys: String, CodingKey {
+        case version, title, description, preset, groups, presets, fields, warnings
+        case outputContext = "output_context"
+    }
+}
+
+struct StageGroup: Decodable, Equatable, Sendable, Identifiable {
+    let id: String
+    let title: String
+    let description: String?
+    let advanced: Bool?
+}
+
+struct StageNotice: Decodable, Equatable, Sendable, Identifiable {
+    let id: String
+    let level: String
+    let message: String
+}
+
+struct StageOutputContext: Decodable, Equatable, Sendable {
+    let title: String
+    let path: String
+    let description: String?
+}
+
+struct StageCondition: Decodable, Equatable, Sendable {
+    let key: String
+    let equals: JSONValue
 }
 
 struct StageResolution: Decodable, Equatable, Sendable {
@@ -88,6 +120,8 @@ struct StagePreset: Decodable, Equatable, Sendable {
     let id: String
     let title: String
     let description: String
+    let recommended: Bool?
+    let warnings: [String]?
     let values: [String: JSONValue]
 }
 
@@ -102,12 +136,21 @@ struct StageField: Decodable, Equatable, Sendable, Identifiable {
     let choices: [String]?
     let help: String?
     let advanced: Bool?
+    let group: String?
+    let visibleWhen: StageCondition?
+    let requiredWhen: StageCondition?
+    let placeholder: String?
+    let unit: String?
+    let readOnly: Bool?
 
     var id: String { key }
 
     enum CodingKeys: String, CodingKey {
-        case key, label, type, required, minimum, maximum, choices, help, advanced
+        case key, label, type, required, minimum, maximum, choices, help, advanced, group, placeholder, unit
         case defaultValue = "default"
+        case visibleWhen = "visible_when"
+        case requiredWhen = "required_when"
+        case readOnly = "read_only"
     }
 }
 

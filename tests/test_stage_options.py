@@ -16,6 +16,9 @@ def test_sharpframes_catalog_exposes_complete_upstream_controls():
     ]
     assert definition["fields"][1]["default"] == 10
     assert definition["fields"][1]["minimum"] == 1
+    assert [group["id"] for group in definition["groups"]] == ["source", "selection", "advanced"]
+    assert definition["fields"][6]["group"] == "advanced"
+    assert definition["fields"][6]["advanced"] is True
 
 
 def test_sharpframes_options_resolve_to_reproducible_command_arguments():

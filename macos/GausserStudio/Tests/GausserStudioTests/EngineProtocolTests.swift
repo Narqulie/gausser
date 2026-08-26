@@ -53,6 +53,20 @@ import Testing
     #expect(try reloaded.resolve(reloaded.scenes[0]).standardizedFileURL == root.standardizedFileURL)
 }
 
+@Test func stageCatalogDecodesGroupsAndFieldVisibility() throws {
+    let data = Data("""
+    {"stages":{"sharpframes":{"version":1,"title":"Sharp Frames","description":"Select","preset":"upstream-defaults","groups":[{"id":"selection","title":"Selection","description":"Frame selection"}],"presets":[{"id":"upstream-defaults","title":"Defaults","description":"Upstream","recommended":true,"values":{}}],"fields":[{"key":"source","label":"Source","type":"path","default":null,"required":true,"group":"selection"},{"key":"vocab_tree","label":"Vocabulary tree","type":"path","default":null,"visible_when":{"key":"matcher","equals":"vocab_tree"}}]}}}
+    """.utf8)
+
+    let catalog = try JSONDecoder().decode(StageCatalogResponse.self, from: data)
+    let stage = try #require(catalog.stages["sharpframes"])
+
+    #expect(stage.groups?.first?.id == "selection")
+    #expect(stage.presets.first?.recommended == true)
+    #expect(stage.fields[1].visibleWhen?.key == "matcher")
+    #expect(stage.fields[1].visibleWhen?.equals == .string("vocab_tree"))
+}
+
 @Test func engineMessageDecodesLogEvent() throws {
     let data = Data("""
     {"event":"log","run_id":"run-1","line":"iteration 5000"}
