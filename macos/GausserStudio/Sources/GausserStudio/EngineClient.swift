@@ -114,15 +114,24 @@ final class EngineClient {
         params: [String: JSONValue],
         completion: @escaping (Result<EngineMessage, Error>) -> Void
     ) {
+        var requestID: String?
         do {
             try startIfNeeded()
             let request = EngineRequest(id: UUID().uuidString, method: method, params: params)
+            requestID = request.id
             var data = try JSONEncoder().encode(request)
             data.append(0x0A)
+            guard let input else {
+                throw EngineClientError(message: "The Gausser engine input is unavailable.")
+            }
             pending[request.id] = completion
-            try input?.write(contentsOf: data)
+            try input.write(contentsOf: data)
         } catch {
-            completion(.failure(error))
+            if let requestID, let waiting = pending.removeValue(forKey: requestID) {
+                waiting(.failure(error))
+            } else {
+                completion(.failure(error))
+            }
         }
     }
 

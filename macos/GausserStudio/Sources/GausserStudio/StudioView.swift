@@ -242,7 +242,7 @@ private struct SceneDashboard: View {
                 Button("Select Sharp Frames…", systemImage: "film") {
                     isChoosingSharpSource = true
                 }
-                .disabled(model.activeRun != nil || !model.toolAvailable(for: "sharpframes"))
+                .disabled(model.activeRun != nil || !model.toolAvailable(for: "sharpframes") || !model.stageReady(for: "sharpframes"))
             }
             .padding(.top, 4)
         }

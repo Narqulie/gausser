@@ -65,6 +65,7 @@ def run_command(
     env: Mapping[str, str] | None = None,
     tail_lines: int = 200,
     cancel_event: threading.Event | None = None,
+    inherited_fds: tuple[int, ...] = (),
 ) -> CommandResult:
     """Run ``command`` in ``cwd``, streaming merged output and retaining its tail.
 
@@ -75,6 +76,10 @@ def run_command(
         raise ValueError("command must not be empty")
     if tail_lines < 1:
         raise ValueError("tail_lines must be positive")
+    if any(not isinstance(fd, int) or fd < 0 for fd in inherited_fds):
+        raise ValueError("inherited_fds must contain non-negative file descriptors")
+    if inherited_fds and os.name == "nt":
+        raise ValueError("inherited_fds are unsupported on Windows")
 
     workdir = Path(cwd).expanduser().resolve()
     if not workdir.is_dir():
@@ -89,6 +94,8 @@ def run_command(
 
     started = time.monotonic()
     popen_kwargs: dict[str, object] = {"start_new_session": True}
+    if inherited_fds:
+        popen_kwargs["pass_fds"] = inherited_fds
     if os.name == "nt":
         popen_kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
 

@@ -41,7 +41,7 @@ def test_engine_starts_stage_after_acknowledging_and_streams_result(scene: Path)
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event):
+        def run(self, request, *, on_line, cancel_event, inherited_fds):
             on_line("working")
             return CommandResult((request.stage,), self.scene.root, 0, 0.1, ("working",), False)
 
@@ -167,7 +167,7 @@ def test_engine_rejects_photo_ingest_while_a_stage_owns_the_scene(scene: Path):
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event):
+        def run(self, request, *, on_line, cancel_event, inherited_fds):
             release.wait(timeout=1)
             return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
 
@@ -237,7 +237,7 @@ def test_engine_rejects_a_second_active_run_for_the_same_scene(scene: Path):
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event):
+        def run(self, request, *, on_line, cancel_event, inherited_fds):
             release.wait(timeout=1)
             return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
 
@@ -262,7 +262,7 @@ def test_engine_shutdown_cancels_active_work_and_releases_scene(scene: Path):
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event):
+        def run(self, request, *, on_line, cancel_event, inherited_fds):
             assert cancel_event is not None
             assert cancel_event.wait(timeout=1)
             observed_cancel.set()
@@ -294,7 +294,7 @@ def test_engine_cancel_sets_the_stage_cancellation_event(scene: Path):
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event):
+        def run(self, request, *, on_line, cancel_event, inherited_fds):
             assert cancel_event is not None
             assert cancel_event.wait(timeout=1)
             observed_cancel.set()

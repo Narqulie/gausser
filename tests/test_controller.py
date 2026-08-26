@@ -25,6 +25,7 @@ def test_controller_uses_scene_owned_command_and_cancellation(scene: Path):
     assert calls[0][0] == ["sammer", "--scene", str(scene), "--prompt", "statue"]
     assert calls[0][1]["cwd"] == scene
     assert calls[0][1]["cancel_event"] is cancel
+    assert calls[0][1]["inherited_fds"] == ()
 
 
 def test_controller_builds_scene_owned_sharpframes_command(scene: Path):

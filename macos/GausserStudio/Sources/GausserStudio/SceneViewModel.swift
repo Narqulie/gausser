@@ -95,6 +95,10 @@ final class SceneViewModel {
         toolReadiness.first(where: { $0.stage == stage })?.canRun ?? false
     }
 
+    func stageReady(for stage: String) -> Bool {
+        sceneReadiness.first(where: { $0.stage == stage })?.canRun ?? false
+    }
+
     func refresh() {
         isRefreshing = true
         engine.preflight(scene: scene) { [weak self] result in

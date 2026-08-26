@@ -9,6 +9,7 @@ import time
 import pytest
 
 from gausser.process import run_command
+from gausser.scene_lock import SceneLock, SceneLockError, acquire_scene_lock
 
 
 def test_runner_merges_output_and_keeps_a_bounded_tail(tmp_path):
@@ -28,6 +29,32 @@ def test_runner_merges_output_and_keeps_a_bounded_tail(tmp_path):
     assert result.succeeded
     assert lines == ["standard", "diagnostic", "final"]
     assert result.output_tail == ("diagnostic", "final")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-descriptor inheritance test")
+def test_runner_keeps_scene_lock_owned_after_parent_releases(tmp_path: Path):
+    lock = SceneLock(tmp_path)
+    lock.acquire()
+    started = threading.Event()
+    result: list[object] = []
+
+    def run() -> None:
+        result.append(run_command(
+            [sys.executable, "-u", "-c", "import time; print('ready'); time.sleep(0.3)"],
+            cwd=tmp_path,
+            inherited_fds=(lock.fileno(),),
+            on_line=lambda line: started.set() if line == "ready" else None,
+        ))
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert started.wait(timeout=2)
+    lock.release()
+    with pytest.raises(SceneLockError, match="already owned"):
+        with acquire_scene_lock(tmp_path):
+            pass
+    thread.join(timeout=2)
+    assert result[0].succeeded
 
 
 def test_runner_interrupts_a_cancelled_process_group(tmp_path):

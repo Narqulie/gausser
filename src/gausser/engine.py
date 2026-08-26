@@ -255,6 +255,7 @@ class GausserEngine:
                 StageRequest(active.stage, active.arguments),
                 on_line=lambda line: emit({"event": "log", "run_id": active.id, "line": line}),
                 cancel_event=active.cancel_event,
+                inherited_fds=(active.lock.fileno(),),
             )
             state = "succeeded" if result.succeeded else "cancelled" if result.cancelled else "failed"
             event: dict[str, Any] = {

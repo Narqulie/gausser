@@ -39,14 +39,19 @@ class SceneLock:
             raise
         self._stream = stream
 
+    def fileno(self) -> int:
+        if self._stream is None:
+            raise RuntimeError("scene lock is not acquired")
+        return self._stream.fileno()
+
     def release(self) -> None:
         if self._stream is None:
             return
         stream, self._stream = self._stream, None
-        try:
-            _unlock(stream)
-        finally:
-            stream.close()
+        # Closing, rather than explicitly unlocking, retains ownership when the
+        # stage child inherited this open file description.  If no child owns it,
+        # closing immediately releases the advisory lock.
+        stream.close()
 
     def __enter__(self) -> "SceneLock":
         self.acquire()
@@ -70,9 +75,3 @@ def _lock_nonblocking(stream: TextIO) -> None:
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as exc:
         raise SceneLockError(f"scene is already owned by another Gausser engine: {Path(stream.name)}") from exc
-
-
-def _unlock(stream: TextIO) -> None:
-    import fcntl
-
-    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)

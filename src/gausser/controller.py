@@ -63,6 +63,7 @@ class SceneController:
         *,
         on_line: LineCallback | None = None,
         cancel_event: threading.Event | None = None,
+        inherited_fds: tuple[int, ...] = (),
     ) -> CommandResult:
         state = self.readiness().get(request.stage)
         if state != "ready":
@@ -72,6 +73,7 @@ class SceneController:
             cwd=self.scene.root,
             on_line=on_line,
             cancel_event=cancel_event,
+            inherited_fds=inherited_fds,
         )
 
     def run_pipeline(
@@ -81,11 +83,12 @@ class SceneController:
         trainer: Trainer = "brush",
         on_line: LineCallback | None = None,
         cancel_event: threading.Event | None = None,
+        inherited_fds: tuple[int, ...] = (),
     ) -> list[CommandResult]:
         """Run SAM3, COLMAP, then the explicitly selected trainer."""
         results: list[CommandResult] = []
         for stage in (*_PIPELINE_STAGES, trainer):
-            result = self.run(requests[stage], on_line=on_line, cancel_event=cancel_event)
+            result = self.run(requests[stage], on_line=on_line, cancel_event=cancel_event, inherited_fds=inherited_fds)
             results.append(result)
             if not result.succeeded:
                 break
