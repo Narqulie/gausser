@@ -7,7 +7,7 @@ continues to own stage commands and the shared process runner owns child lifecyc
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import argparse
 import json
 from pathlib import Path
@@ -16,6 +16,7 @@ import threading
 from typing import Any, Callable, TextIO
 from uuid import uuid4
 
+from .artifacts import list_artifacts
 from .controller import SceneController, Stage, StageRequest
 from .preflight import inspect_scene, inspect_tools
 from .process import CommandResult
@@ -79,6 +80,9 @@ class GausserEngine:
                     "id": request_id,
                     "result": {"scene": str(initialized.root), "manifest": str(initialized.manifest)},
                 })
+            elif method == "artifacts":
+                scene = self._scene_from_params(params)
+                emit({"id": request_id, "result": {"artifacts": [asdict(item) for item in list_artifacts(scene)]}})
             elif method == "start":
                 active = self._reserve_run(params)
                 # Acknowledge before launching the thread so clients always observe

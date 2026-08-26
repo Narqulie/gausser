@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -127,6 +128,7 @@ private struct SceneDashboard: View {
 
     @State private var model: SceneViewModel
     @State private var requestedStage: StageReadiness?
+    @State private var requestedArguments: [String] = []
     @State private var samPrompt = ""
     @State private var matcher = "sequential"
     @State private var maxSplats = "1500000"
@@ -144,6 +146,7 @@ private struct SceneDashboard: View {
                 header
                 settings
                 pipeline
+                artifacts
                 if let activeRun = model.activeRun {
                     activeRunView(activeRun)
                 }
@@ -241,6 +244,7 @@ private struct SceneDashboard: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("Run \(stage.stage.capitalized)") {
+                requestedArguments = []
                 requestedStage = stage
             }
             .disabled(!canRequest(stage))
@@ -248,6 +252,40 @@ private struct SceneDashboard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var artifacts: some View {
+        GroupBox("Artifacts") {
+            if model.artifacts.isEmpty {
+                Text("No scene-owned exports yet.")
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            } else {
+                ForEach(model.artifacts) { artifact in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(artifact.relativePath)
+                                .font(.system(.subheadline, design: .monospaced))
+                            Text("\(artifact.kind) · \(artifact.format.uppercased()) · \(ByteCountFormatter.string(fromByteCount: Int64(artifact.sizeBytes), countStyle: .file))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Reveal") {
+                            NSWorkspace.shared.activateFileViewerSelecting([scene.appending(path: artifact.relativePath)])
+                        }
+                        if artifact.format == "ply" || artifact.format == "sog" {
+                            Button("Create LOD") {
+                                requestedArguments = [artifact.relativePath]
+                                requestedStage = StageReadiness(stage: "lod", state: "ready", detail: artifact.relativePath)
+                            }
+                            .disabled(model.activeRun != nil || !model.toolAvailable(for: "lod"))
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
     }
 
     private func activeRunView(_ run: EngineRun) -> some View {
@@ -279,7 +317,9 @@ private struct SceneDashboard: View {
 
     private func startRequestedStage() {
         guard let stage = requestedStage else { return }
+        let arguments = requestedArguments
         requestedStage = nil
+        requestedArguments = []
         switch stage.stage {
         case "sammer":
             guard !samPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -301,6 +341,8 @@ private struct SceneDashboard: View {
                 return
             }
             model.start(stage: stage.stage, arguments: ["--downscale-factor", msplatDownscale])
+        case "lod":
+            model.start(stage: stage.stage, arguments: arguments)
         default:
             model.errorMessage = "This stage requires a source or artifact selected in its dedicated workspace."
         }

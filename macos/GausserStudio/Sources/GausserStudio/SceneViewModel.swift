@@ -1,6 +1,23 @@
 import Foundation
 import Observation
 
+struct ArtifactSummary: Decodable, Identifiable, Equatable {
+    let relativePath: String
+    let kind: String
+    let runID: String
+    let format: String
+    let sizeBytes: Int
+
+    var id: String { relativePath }
+
+    enum CodingKeys: String, CodingKey {
+        case kind, format
+        case relativePath = "relative_path"
+        case runID = "run_id"
+        case sizeBytes = "size_bytes"
+    }
+}
+
 struct StageReadiness: Decodable, Identifiable, Equatable {
     let stage: String
     let state: String
@@ -8,6 +25,10 @@ struct StageReadiness: Decodable, Identifiable, Equatable {
 
     var id: String { stage }
     var canRun: Bool { state == "ready" }
+}
+
+private struct ArtifactResponse: Decodable {
+    let artifacts: [ArtifactSummary]
 }
 
 private struct PreflightResponse: Decodable {
@@ -31,6 +52,7 @@ final class SceneViewModel {
 
     private(set) var sceneReadiness: [StageReadiness] = []
     private(set) var toolReadiness: [StageReadiness] = []
+    private(set) var artifacts: [ArtifactSummary] = []
     private(set) var activeRun: EngineRun?
     private(set) var logs: [String] = []
     private(set) var isRefreshing = false
@@ -66,6 +88,19 @@ final class SceneViewModel {
                     let response = try self.decodePreflight(message)
                     self.sceneReadiness = response.sceneReadiness
                     self.toolReadiness = response.toolReadiness
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                }
+            case .failure(let error):
+                self.errorMessage = error.localizedDescription
+            }
+        }
+        engine.artifacts(scene: scene) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let message):
+                do {
+                    self.artifacts = try self.decodeArtifacts(message).artifacts
                 } catch {
                     self.errorMessage = error.localizedDescription
                 }
@@ -123,10 +158,18 @@ final class SceneViewModel {
     }
 
     private func decodePreflight(_ message: EngineMessage) throws -> PreflightResponse {
+        try decodeResult(message, as: PreflightResponse.self)
+    }
+
+    private func decodeArtifacts(_ message: EngineMessage) throws -> ArtifactResponse {
+        try decodeResult(message, as: ArtifactResponse.self)
+    }
+
+    private func decodeResult<Result: Decodable>(_ message: EngineMessage, as type: Result.Type) throws -> Result {
         guard let result = message.result else {
-            throw EngineClientError(message: "The engine returned no preflight result.")
+            throw EngineClientError(message: "The engine returned no result.")
         }
-        return try JSONDecoder().decode(PreflightResponse.self, from: JSONEncoder().encode(result))
+        return try JSONDecoder().decode(Result.self, from: JSONEncoder().encode(result))
     }
 }
 

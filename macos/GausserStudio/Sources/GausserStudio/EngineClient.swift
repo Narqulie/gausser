@@ -28,6 +28,10 @@ final class EngineClient {
         send(method: "preflight", params: ["scene": .string(scene.path)], completion: completion)
     }
 
+    func artifacts(scene: URL, completion: @escaping (Result<EngineMessage, Error>) -> Void) {
+        send(method: "artifacts", params: ["scene": .string(scene.path)], completion: completion)
+    }
+
     func start(
         scene: URL,
         stage: String,

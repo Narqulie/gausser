@@ -106,6 +106,28 @@ def test_engine_reports_nonempty_project_initialization_as_a_domain_error(tmp_pa
     }]
 
 
+def test_engine_lists_scene_owned_artifacts(scene: Path):
+    from gausser.engine import GausserEngine
+
+    export = scene / "runs" / "brush" / "run-a" / "exports" / "scene.ply"
+    export.parent.mkdir(parents=True)
+    export.write_bytes(b"ply")
+    emitted: list[dict] = []
+
+    GausserEngine().dispatch(
+        {"id": "artifacts-1", "method": "artifacts", "params": {"scene": str(scene)}},
+        emitted.append,
+    )
+
+    assert emitted == [{"id": "artifacts-1", "result": {"artifacts": [{
+        "relative_path": "runs/brush/run-a/exports/scene.ply",
+        "kind": "brush",
+        "run_id": "run-a",
+        "format": "ply",
+        "size_bytes": 3,
+    }]}}]
+
+
 def test_engine_rejects_malformed_requests_without_stopping(scene: Path):
     from gausser.engine import GausserEngine
 
