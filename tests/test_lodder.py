@@ -13,10 +13,10 @@ def _success(command, cwd, output=()):
     return CommandResult(tuple(command), cwd, 0, 0.0, tuple(output), False)
 
 
-def test_lodder_publishes_validated_scene_owned_lod(monkeypatch, scene):
+def test_lodder_publishes_validated_scene_owned_sog_lod(monkeypatch, scene):
     from lodder import cli
 
-    source = scene / "runs" / "brush" / "brush-run" / "exports" / "export_15000.ply"
+    source = scene / "runs" / "brush" / "brush-run" / "exports" / "raatihuoneensuihku.sog"
     source.parent.mkdir(parents=True)
     source.write_text("ply source", encoding="utf-8")
     calls: list[list[str]] = []
@@ -57,7 +57,7 @@ def test_lodder_publishes_validated_scene_owned_lod(monkeypatch, scene):
         ],
     ]
     manifest = json.loads((scene / ".gausser" / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["stages"]["lod"]["source"] == "runs/brush/brush-run/exports/export_15000.ply"
+    assert manifest["stages"]["lod"]["source"] == "runs/brush/brush-run/exports/raatihuoneensuihku.sog"
     assert manifest["stages"]["lod"]["tool_version"] == "splat-transform v2.0.3"
     assert manifest["stages"]["lod"]["output"] == "runs/lod/lod-run/lod-meta.json"
     assert manifest["stages"]["lod"]["lod_percentages"] == [100, 50, 25]

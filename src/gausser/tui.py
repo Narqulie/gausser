@@ -47,7 +47,7 @@ def create_app(scene: ScenePaths):
                 yield Static("", id="tools")
                 with Horizontal(id="inputs"):
                     yield Input(placeholder="SAM3 prompt", id="prompt")
-                    yield Input(placeholder="PLY export for LOD", id="lod-source")
+                    yield Input(placeholder="PLY or SOG export for LOD", id="lod-source")
                 with Horizontal(id="stage-controls"):
                     yield Button("SAM3", id="sammer", variant="primary")
                     yield Button("COLMAP", id="colmap")
@@ -121,7 +121,7 @@ def create_app(scene: ScenePaths):
             if stage == "lod":
                 source = self.query_one("#lod-source", Input).value.strip()
                 if not source:
-                    self.query_one("#log", RichLog).write("LOD creation requires an explicit scene-owned PLY export path.")
+                    self.query_one("#log", RichLog).write("LOD creation requires an explicit scene-owned PLY or SOG export path.")
                     return
                 arguments = (source,)
             request = StageRequest(stage, arguments)

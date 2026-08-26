@@ -1,4 +1,4 @@
-"""Create validated, streamed PlayCanvas LOD artifacts from a scene-owned PLY."""
+"""Create validated, streamed PlayCanvas LOD artifacts from a scene-owned PLY or SOG."""
 
 from __future__ import annotations
 
@@ -20,9 +20,9 @@ TOOL = "splat-transform"
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create a scene-owned streamed PlayCanvas LOD artifact from an explicit PLY export.",
+        description="Create a scene-owned streamed PlayCanvas LOD artifact from an explicit PLY or SOG export.",
     )
-    parser.add_argument("source", type=Path, help="Exact scene-owned .ply export to convert")
+    parser.add_argument("source", type=Path, help="Exact scene-owned .ply or .sog export to convert")
     parser.add_argument("--scene", type=Path, default=Path.cwd(), help="Scene root (default: current directory)")
     parser.add_argument("--chunk-count", type=int, default=512, help="Approximate splats per LOD chunk in K (default: 512)")
     parser.add_argument("--chunk-extent", type=float, default=16.0, help="Approximate LOD chunk extent in metres (default: 16)")
@@ -110,8 +110,8 @@ def main(argv: list[str] | None = None) -> None:
 
     paths = ScenePaths.from_root(args.scene)
     source = args.source.expanduser().resolve()
-    if source.suffix.lower() != ".ply":
-        parser.error(f"source must be a .ply export: {source}")
+    if source.suffix.lower() not in {".ply", ".sog"}:
+        parser.error(f"source must be a .ply or .sog export: {source}")
     if not source.is_file():
         parser.error(f"source PLY not found: {source}")
     try:

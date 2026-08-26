@@ -34,7 +34,7 @@ image source into `images/` transactionally before the reconstruction stages.
 isolated run with a PLY export and checkpoint, but is deliberately **not** a
 replacement for Brush: upstream Msplat has no mask-input support.
 
-**lodder** — turns an explicitly selected Brush or Msplat PLY export into a
+**lodder** — turns an explicitly selected Brush or Msplat PLY or SOG export into a
 streamed PlayCanvas LOD tree (`lod-meta.json` plus chunk files). By default it
 retains 100%, 50%, and 25% splat levels. It is a deployment derivative, not an
 automatic training step.
@@ -122,7 +122,7 @@ gausser
 
 The terminal UI shows scene/tool readiness and can run SAM3, COLMAP, Brush, an
 ordered pipeline, experimental Msplat, or LOD creation. Enter the SAM3 prompt
-or exact scene-owned PLY export path as appropriate, then press a stage action
+or exact scene-owned PLY or SOG export path as appropriate, then press a stage action
 twice to confirm it. Msplat requires its own second confirmation: it does not
 consume SAM masks and therefore deliberately trains unmasked. `Esc` requests
 cancellation and waits for the shared runner to clean up the complete process
@@ -176,7 +176,7 @@ sharpframes SOURCE [--scene SCENE] [--force] [SHARP-FRAMES OPTIONS]
 msplatter [SCENE] [--iterations 7000] [--num-downscales 0]
            [--downscale-factor N] [--no-eval] --allow-unmasked
 
-lodder SOURCE.ply [--scene SCENE] [--chunk-count N] [--chunk-extent METRES]
+lodder SOURCE.{ply,sog} [--scene SCENE] [--chunk-count N] [--chunk-extent METRES]
        [--lod-percentages 100,50,25]
 
 python monitor_and_run.py SCENE [--no-wait] [--matcher sequential]
