@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -33,6 +34,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--scene", type=Path, default=Path.cwd(), help="Owning scene root (default: cwd)")
     parser.add_argument("--sharp-frames", default="sharp-frames", help="Sharp Frames executable")
     parser.add_argument("--force", action="store_true", help="Replace an existing images/ directory")
+    parser.add_argument("--studio-settings", type=_parse_studio_settings, help=argparse.SUPPRESS)
     args, extra = parser.parse_known_args(argv)
 
     source = args.source.expanduser().resolve()
@@ -72,8 +74,19 @@ def main(argv: list[str] | None = None) -> None:
             "source": str(source),
             "source_fingerprint": fingerprint_file(source) if source.is_file() else None,
             "parameters": {"command": cmd[3:]},
+            "studio_settings": args.studio_settings,
             "outputs": {"images": str(scene.relative_path(scene.images)), "count": len(images)},
         },
     )
     shutil.rmtree(attempt, ignore_errors=True)
     console.print(f"[green]Published {len(images)} selected images to {scene.images}[/green]")
+
+
+def _parse_studio_settings(raw: str) -> dict[str, object]:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError("studio settings must be a JSON object") from exc
+    if not isinstance(value, dict):
+        raise argparse.ArgumentTypeError("studio settings must be a JSON object")
+    return value

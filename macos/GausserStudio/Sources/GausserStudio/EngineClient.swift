@@ -102,6 +102,23 @@ final class EngineClient {
         )
     }
 
+    func resolveStage(
+        scene: URL,
+        stage: String,
+        options: [String: JSONValue],
+        completion: @escaping (Result<EngineMessage, Error>) -> Void
+    ) {
+        send(
+            method: "resolve_stage",
+            params: [
+                "scene": .string(scene.path),
+                "stage": .string(stage),
+                "options": .object(options),
+            ],
+            completion: completion
+        )
+    }
+
     func start(
         scene: URL,
         stage: String,

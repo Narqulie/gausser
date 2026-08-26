@@ -4,15 +4,25 @@ import SwiftUI
 struct SharpFramesWorkspace: View {
     let definition: StageDefinition
     let source: URL
+    let onResolve: ([String: JSONValue], @escaping (Result<StageResolution, Error>) -> Void) -> Void
     let onRun: ([String: JSONValue]) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var values: [String: JSONValue]
     @State private var showsAdvanced = false
+    @State private var resolution: StageResolution?
+    @State private var validationError: String?
+    @State private var isResolving = false
 
-    init(definition: StageDefinition, source: URL, onRun: @escaping ([String: JSONValue]) -> Void) {
+    init(
+        definition: StageDefinition,
+        source: URL,
+        onResolve: @escaping ([String: JSONValue], @escaping (Result<StageResolution, Error>) -> Void) -> Void,
+        onRun: @escaping ([String: JSONValue]) -> Void
+    ) {
         self.definition = definition
         self.source = source
+        self.onResolve = onResolve
         self.onRun = onRun
         var initial = Dictionary(uniqueKeysWithValues: definition.fields.map { ($0.key, $0.defaultValue) })
         initial["source"] = .string(source.path)
@@ -55,15 +65,37 @@ struct SharpFramesWorkspace: View {
                 }
             }
             .formStyle(.grouped)
+            .onChange(of: values) { _, _ in
+                resolution = nil
+                validationError = nil
+            }
+
+            if let validationError {
+                Text(validationError)
+                    .foregroundStyle(.red)
+            }
+            if let resolution {
+                GroupBox("Resolved command · \(resolution.preset)") {
+                    Text(resolution.command.joined(separator: "\n"))
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 2)
+                }
+            }
 
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button("Run Sharp Frames") {
-                    onRun(values)
-                    dismiss()
+                Button("Validate settings") { resolve() }
+                    .disabled(isResolving)
+                if resolution != nil {
+                    Button("Confirm & Run") {
+                        onRun(values)
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
             }
         }
         .padding(24)
@@ -95,6 +127,21 @@ struct SharpFramesWorkspace: View {
             }
         default:
             EmptyView()
+        }
+    }
+
+    private func resolve() {
+        isResolving = true
+        validationError = nil
+        resolution = nil
+        onResolve(values) { result in
+            isResolving = false
+            switch result {
+            case .success(let resolution):
+                self.resolution = resolution
+            case .failure(let error):
+                validationError = error.localizedDescription
+            }
         }
     }
 

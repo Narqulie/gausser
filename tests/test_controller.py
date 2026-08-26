@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import threading
 
@@ -34,6 +35,18 @@ def test_controller_builds_scene_owned_sharpframes_command(scene: Path):
     assert controller.command_for(StageRequest("sharpframes", ("source.mov", "--quality", "80"))) == [
         "sharpframes", "source.mov", "--quality", "80", "--scene", str(scene)
     ]
+
+
+def test_controller_passes_resolved_studio_settings_to_sharpframes(scene: Path):
+    controller = SceneController(ScenePaths.from_root(scene))
+
+    command = controller.command_for(StageRequest("sharpframes", ("source.mov",), {
+        "specification_version": 1, "preset": "custom", "values": {"fps": 2},
+    }))
+
+    assert command[:-2] == ["sharpframes", "source.mov", "--scene", str(scene)]
+    assert command[-2] == "--studio-settings"
+    assert json.loads(command[-1]) == {"specification_version": 1, "preset": "custom", "values": {"fps": 2}}
 
 
 def test_controller_builds_explicit_unmasked_msplat_command(scene: Path):

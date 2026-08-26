@@ -51,6 +51,7 @@ class ActiveRun:
     scene: ScenePaths
     stage: Stage
     arguments: tuple[str, ...]
+    settings: dict[str, Any] | None
     cancel_event: threading.Event
     lock: SceneLock
     thread: threading.Thread | None = None
@@ -80,6 +81,18 @@ class GausserEngine:
             elif method == "stage_catalog":
                 self._scene_from_params(params)
                 emit({"id": request_id, "result": {"stages": catalog()}})
+            elif method == "resolve_stage":
+                scene, stage, resolved = self._resolve_stage_options(params)
+                controller = self._controller_factory(scene)
+                request = StageRequest(stage, resolved.arguments, self._settings_snapshot(resolved))
+                emit({"id": request_id, "result": {
+                    "stage": stage,
+                    "specification_version": resolved.specification_version,
+                    "preset": resolved.preset,
+                    "values": resolved.values,
+                    "arguments": list(resolved.arguments),
+                    "command": controller.command_for(request),
+                }})
             elif method == "status":
                 self._require_empty_params(params)
                 emit({"id": request_id, "result": {"active_runs": self._active_descriptors()}})
@@ -220,12 +233,14 @@ class GausserEngine:
         has_options = "options" in params
         if has_arguments and has_options:
             raise RequestError("start accepts either arguments or options, not both")
+        settings: dict[str, Any] | None = None
         if has_options:
             raw_options = params["options"]
             if not isinstance(raw_options, dict):
                 raise RequestError("options must be an object")
             resolved = resolve_options(stage_name, raw_options)
             raw_arguments = list(resolved.arguments)
+            settings = self._settings_snapshot(resolved)
         else:
             raw_arguments = params.get("arguments", [])
             if not isinstance(raw_arguments, list) or any(not isinstance(item, str) or "\0" in item for item in raw_arguments):
@@ -240,6 +255,7 @@ class GausserEngine:
                 scene=scene,
                 stage=stage_name,  # type: ignore[arg-type]
                 arguments=tuple(raw_arguments),
+                settings=settings,
                 cancel_event=threading.Event(),
                 lock=scene_lock,
             )
@@ -268,7 +284,7 @@ class GausserEngine:
         try:
             controller = self._controller_factory(active.scene)
             result = controller.run(
-                StageRequest(active.stage, active.arguments),
+                StageRequest(active.stage, active.arguments, active.settings),
                 on_line=lambda line: emit({"event": "log", "run_id": active.id, "line": line}),
                 cancel_event=active.cancel_event,
                 inherited_fds=(active.lock.fileno(),),
@@ -289,6 +305,24 @@ class GausserEngine:
                 self._active_by_scene.pop(active.scene.root, None)
             active.lock.release()
         emit(event)
+
+    def _resolve_stage_options(self, params: dict[str, object]):
+        scene = self._scene_from_params(params)
+        stage_name = self._required_string(params, "stage")
+        if stage_name not in _STAGE_NAMES:
+            raise RequestError(f"unsupported stage: {stage_name}")
+        raw_options = params.get("options")
+        if not isinstance(raw_options, dict):
+            raise RequestError("options must be an object")
+        return scene, stage_name, resolve_options(stage_name, raw_options)
+
+    @staticmethod
+    def _settings_snapshot(resolved) -> dict[str, Any]:
+        return {
+            "specification_version": resolved.specification_version,
+            "preset": resolved.preset,
+            "values": resolved.values,
+        }
 
     @staticmethod
     def _result_data(result: CommandResult) -> dict[str, Any]:

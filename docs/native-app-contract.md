@@ -59,9 +59,11 @@ Requests:
 {"id":"req-3","method":"artifacts","params":{"scene":"/absolute/scene"}}
 {"id":"req-4","method":"ingest_photos","params":{"scene":"/absolute/scene","source":"/absolute/photos","policy":"copy"}}
 {"id":"req-5","method":"reimport_supersplat","params":{"scene":"/absolute/scene","source":"runs/brush/run/exports/scene.ply","edited":"/absolute/edited.ply"}}
-{"id":"req-6","method":"start","params":{"scene":"/absolute/scene","stage":"colmap","arguments":["--matcher","sequential"]}}
-{"id":"req-7","method":"cancel","params":{"run_id":"run-123"}}
-{"id":"req-8","method":"status","params":{}}
+{"id":"req-6","method":"resolve_stage","params":{"scene":"/absolute/scene","stage":"sharpframes","options":{"source":"/absolute/clips","fps":2}}}
+{"id":"req-7","method":"start","params":{"scene":"/absolute/scene","stage":"sharpframes","options":{"source":"/absolute/clips","fps":2}}}
+{"id":"req-8","method":"start","params":{"scene":"/absolute/scene","stage":"colmap","arguments":["--matcher","sequential"]}}
+{"id":"req-9","method":"cancel","params":{"run_id":"run-123"}}
+{"id":"req-10","method":"status","params":{}}
 ```
 
 Synchronous responses use `{ "id": ..., "result": ... }` or
@@ -96,11 +98,15 @@ the native client is built; otherwise the controller no longer represents all
 workflow stages.
 
 `stage_catalog` returns Python-owned, versioned field definitions, defaults,
-presets, constraints, and help for migrated Studio stages. Studio renders the
-catalog and submits a typed `options` object to `start`; the engine validates
-and resolves it into the headless command. Sharp Frames is the first migrated
-stage. Generic `arguments` remains temporarily for unmigrated stages and is
-mutually exclusive with `options`.
+presets, constraints, and help for migrated Studio stages. `resolve_stage`
+validates a typed `options` object non-mutatively and returns its fully
+expanded command for review. Studio renders the catalog, resolves settings,
+then submits the same typed options to `start`; the engine validates and
+resolves them into the headless command. Sharp Frames is the first migrated
+stage. Its resolved specification version, preset, and values are passed to
+its transactional stage writer and retained in the manifest. Generic
+`arguments` remains temporarily for unmigrated stages and is mutually
+exclusive with `options`.
 
 ## Acceptance constraints
 

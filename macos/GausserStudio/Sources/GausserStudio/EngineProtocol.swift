@@ -70,6 +70,20 @@ struct StageDefinition: Decodable, Equatable, Sendable {
     let fields: [StageField]
 }
 
+struct StageResolution: Decodable, Equatable, Sendable {
+    let stage: String
+    let specificationVersion: Int
+    let preset: String
+    let values: [String: JSONValue]
+    let arguments: [String]
+    let command: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case stage, preset, values, arguments, command
+        case specificationVersion = "specification_version"
+    }
+}
+
 struct StagePreset: Decodable, Equatable, Sendable {
     let id: String
     let title: String

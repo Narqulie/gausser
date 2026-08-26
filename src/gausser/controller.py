@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import threading
-from typing import Callable, Literal
+from typing import Any, Callable, Literal, Mapping
 
 from .preflight import inspect_scene
 from .process import CommandResult, LineCallback, run_command
@@ -25,6 +26,7 @@ class StageUnavailable(RuntimeError):
 class StageRequest:
     stage: Stage
     arguments: tuple[str, ...] = ()
+    settings: Mapping[str, Any] | None = None
 
 
 class SceneController:
@@ -44,7 +46,10 @@ class SceneController:
 
     def command_for(self, request: StageRequest) -> list[str]:
         if request.stage == "sharpframes":
-            return ["sharpframes", *request.arguments, "--scene", str(self.scene.root)]
+            command = ["sharpframes", *request.arguments, "--scene", str(self.scene.root)]
+            if request.settings is not None:
+                command.extend(["--studio-settings", json.dumps(request.settings, sort_keys=True)])
+            return command
         if request.stage == "sammer":
             return ["sammer", "--scene", str(self.scene.root), *request.arguments]
         if request.stage == "colmap":

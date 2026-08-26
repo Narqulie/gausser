@@ -1,6 +1,11 @@
+import json
 from pathlib import Path
 
-from sharpframes.cli import can_publish_into_scene, sharp_frames_command
+from PIL import Image
+
+from gausser.process import CommandResult
+from gausser.scene import initialize_scene
+from sharpframes.cli import can_publish_into_scene, main, sharp_frames_command
 
 
 def test_sharpframes_uses_current_upstream_overwrite_flag(tmp_path: Path):
@@ -14,6 +19,30 @@ def test_sharpframes_allows_initialized_empty_images_directory(tmp_path: Path):
     images.mkdir()
 
     assert can_publish_into_scene(images)
+
+
+def test_sharpframes_records_engine_resolved_settings_in_its_stage_manifest(tmp_path: Path, monkeypatch):
+    scene = tmp_path / "scene"
+    scene.mkdir()
+    initialize_scene(scene)
+    source = tmp_path / "source"
+    source.mkdir()
+    Image.new("RGB", (3, 2)).save(source / "input.jpg")
+
+    def fake_run(command, **_kwargs):
+        output = Path(command[2])
+        output.mkdir(parents=True)
+        Image.new("RGB", (3, 2)).save(output / "selected.jpg")
+        return CommandResult(tuple(command), scene, 0, 0.0, (), False)
+
+    monkeypatch.setattr("sharpframes.cli.run_command", fake_run)
+    monkeypatch.setattr("sharpframes.cli.shutil.which", lambda _command: "/tmp/sharp-frames")
+    settings = {"specification_version": 1, "preset": "custom", "values": {"fps": 2}}
+
+    main([str(source), "--scene", str(scene), "--studio-settings", json.dumps(settings)])
+
+    manifest = json.loads((scene / ".gausser" / "manifest.json").read_text())
+    assert manifest["stages"]["sharpframes"]["studio_settings"] == settings
 
 
 def test_sharpframes_requires_force_for_existing_images(tmp_path: Path):

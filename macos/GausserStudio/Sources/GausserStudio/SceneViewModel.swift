@@ -221,6 +221,22 @@ final class SceneViewModel {
         }
     }
 
+    func resolve(stage: String, options: [String: JSONValue], completion: @escaping (Result<StageResolution, Error>) -> Void) {
+        engine.resolveStage(scene: scene, stage: stage, options: options) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let message):
+                do {
+                    completion(.success(try self.decodeStageResolution(message)))
+                } catch {
+                    completion(.failure(error))
+                }
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
     func start(stage: String, options: [String: JSONValue]) {
         guard activeRun == nil else {
             errorMessage = "Wait for the active stage to finish or cancel it first."
@@ -279,6 +295,10 @@ final class SceneViewModel {
 
     private func decodePreflight(_ message: EngineMessage) throws -> PreflightResponse {
         try decodeResult(message, as: PreflightResponse.self)
+    }
+
+    private func decodeStageResolution(_ message: EngineMessage) throws -> StageResolution {
+        try decodeResult(message, as: StageResolution.self)
     }
 
     private func decodeStageCatalog(_ message: EngineMessage) throws -> StageCatalogResponse {

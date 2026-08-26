@@ -73,6 +73,9 @@ def test_engine_catalog_and_typed_sharpframes_start_use_engine_resolved_options(
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
+        def command_for(self, request):
+            return ["sharpframes", *request.arguments, "--scene", str(self.scene.root)]
+
         def run(self, request, *, on_line, cancel_event, inherited_fds):
             received.append(request.arguments)
             return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
@@ -80,6 +83,15 @@ def test_engine_catalog_and_typed_sharpframes_start_use_engine_resolved_options(
     engine = GausserEngine(controller_factory=Controller)
     engine.dispatch({"id": "catalog", "method": "stage_catalog", "params": {"scene": str(scene)}}, events.append)
     assert events.pop()["result"]["stages"]["sharpframes"]["version"] == 1
+
+    engine.dispatch(
+        {
+            "id": "resolve", "method": "resolve_stage",
+            "params": {"scene": str(scene), "stage": "sharpframes", "options": {"source": "/tmp/clips", "fps": 2}},
+        },
+        events.append,
+    )
+    assert events.pop()["result"]["command"][:3] == ["sharpframes", "/tmp/clips", "--fps"]
 
     engine.dispatch(
         {
