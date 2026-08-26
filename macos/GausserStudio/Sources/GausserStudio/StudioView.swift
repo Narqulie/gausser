@@ -129,6 +129,9 @@ private struct SceneDashboard: View {
     @State private var model: SceneViewModel
     @State private var requestedStage: StageReadiness?
     @State private var requestedArguments: [String] = []
+    @State private var requestedOptions: [String: JSONValue]?
+    @State private var sharpFramesSource: URL?
+    @State private var presentsSharpFramesWorkspace = false
     @State private var samPrompt = ""
     @State private var matcher = "sequential"
     @State private var maxSplats = "1500000"
@@ -165,6 +168,16 @@ private struct SceneDashboard: View {
         .navigationTitle(scene.lastPathComponent)
         .task { model.refresh() }
         .onDisappear { model.stopObservingEvents() }
+        .sheet(isPresented: $presentsSharpFramesWorkspace) {
+            if let source = sharpFramesSource, let definition = model.stageCatalog["sharpframes"] {
+                SharpFramesWorkspace(definition: definition, source: source) { options in
+                    requestedOptions = options
+                    requestedStage = StageReadiness(stage: "sharpframes", state: "ready", detail: source.path)
+                }
+            } else {
+                ContentUnavailableView("Sharp Frames settings unavailable", systemImage: "exclamationmark.triangle")
+            }
+        }
         .fileImporter(
             isPresented: $isChoosingEditedExport,
             allowedContentTypes: [.data],
@@ -221,8 +234,12 @@ private struct SceneDashboard: View {
                 .disabled(model.isIngesting || model.activeRun != nil)
                 Button("Import Video / Sharp Frames…", systemImage: "film") {
                     guard let source = SourcePicker.chooseSharpFramesSource() else { return }
-                    requestedArguments = [source.path]
-                    requestedStage = StageReadiness(stage: "sharpframes", state: "ready", detail: source.path)
+                    guard model.stageCatalog["sharpframes"] != nil else {
+                        model.errorMessage = "Sharp Frames settings are still loading. Refresh and try again."
+                        return
+                    }
+                    sharpFramesSource = source
+                    presentsSharpFramesWorkspace = true
                 }
                 .disabled(model.activeRun != nil || !model.toolAvailable(for: "sharpframes") || !model.stageReady(for: "sharpframes"))
             }
@@ -288,6 +305,7 @@ private struct SceneDashboard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("Run \(stage.stage.capitalized)") {
                 requestedArguments = []
+                requestedOptions = nil
                 requestedStage = stage
             }
             .disabled(!canRequest(stage))
@@ -335,6 +353,7 @@ private struct SceneDashboard: View {
                         if artifact.format == "ply" || artifact.format == "sog" {
                             Button("Create LOD") {
                                 requestedArguments = [artifact.relativePath]
+                                requestedOptions = nil
                                 requestedStage = StageReadiness(stage: "lod", state: "ready", detail: artifact.relativePath)
                             }
                             .disabled(model.activeRun != nil || !model.toolAvailable(for: "lod"))
@@ -430,11 +449,17 @@ private struct SceneDashboard: View {
     private func startRequestedStage() {
         guard let stage = requestedStage else { return }
         let arguments = requestedArguments
+        let options = requestedOptions
         requestedStage = nil
         requestedArguments = []
+        requestedOptions = nil
         switch stage.stage {
         case "sharpframes":
-            model.start(stage: stage.stage, arguments: arguments)
+            guard let options else {
+                model.errorMessage = "Choose a Sharp Frames source and settings before launching."
+                return
+            }
+            model.start(stage: stage.stage, options: options)
         case "sammer":
             guard !samPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 model.errorMessage = "Enter a SAM3 prompt before starting masking."

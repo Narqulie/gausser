@@ -63,6 +63,40 @@ def test_engine_starts_stage_after_acknowledging_and_streams_result(scene: Path)
     assert finished["run"]["result"]["command"] == ["sammer"]
 
 
+def test_engine_catalog_and_typed_sharpframes_start_use_engine_resolved_options(scene: Path):
+    from gausser.engine import GausserEngine
+
+    events: list[dict] = []
+    received: list[tuple[str, ...]] = []
+
+    class Controller:
+        def __init__(self, paths: ScenePaths) -> None:
+            self.scene = paths
+
+        def run(self, request, *, on_line, cancel_event, inherited_fds):
+            received.append(request.arguments)
+            return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
+
+    engine = GausserEngine(controller_factory=Controller)
+    engine.dispatch({"id": "catalog", "method": "stage_catalog", "params": {"scene": str(scene)}}, events.append)
+    assert events.pop()["result"]["stages"]["sharpframes"]["version"] == 1
+
+    engine.dispatch(
+        {
+            "id": "start", "method": "start",
+            "params": {"scene": str(scene), "stage": "sharpframes", "options": {"source": "/tmp/clips", "fps": 2}},
+        },
+        events.append,
+    )
+    _wait_for(events, "finished")
+
+    assert received == [
+        ("/tmp/clips", "--fps", "2", "--num-frames", "300", "--min-buffer", "3", "--format", "jpg",
+         "--selection-method", "best-n", "--batch-size", "5", "--batch-buffer", "2", "--outlier-window-size", "15",
+         "--outlier-sensitivity", "60", "--width", "0"),
+    ]
+
+
 def test_engine_initializes_explicit_empty_scene(tmp_path: Path):
     from gausser.engine import GausserEngine
 

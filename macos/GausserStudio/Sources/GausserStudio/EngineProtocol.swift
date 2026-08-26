@@ -57,6 +57,46 @@ struct EngineRun: Codable, Equatable, Sendable {
     let state: String?
 }
 
+struct StageCatalogResponse: Decodable, Equatable, Sendable {
+    let stages: [String: StageDefinition]
+}
+
+struct StageDefinition: Decodable, Equatable, Sendable {
+    let version: Int
+    let title: String
+    let description: String
+    let preset: String
+    let presets: [StagePreset]
+    let fields: [StageField]
+}
+
+struct StagePreset: Decodable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let description: String
+    let values: [String: JSONValue]
+}
+
+struct StageField: Decodable, Equatable, Sendable, Identifiable {
+    let key: String
+    let label: String
+    let type: String
+    let defaultValue: JSONValue
+    let required: Bool?
+    let minimum: Int?
+    let maximum: Int?
+    let choices: [String]?
+    let help: String?
+    let advanced: Bool?
+
+    var id: String { key }
+
+    enum CodingKeys: String, CodingKey {
+        case key, label, type, required, minimum, maximum, choices, help, advanced
+        case defaultValue = "default"
+    }
+}
+
 struct EngineError: Decodable, Equatable, Sendable {
     let code: String
     let message: String

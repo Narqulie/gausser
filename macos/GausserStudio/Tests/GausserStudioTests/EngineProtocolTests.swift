@@ -26,6 +26,17 @@ import Testing
     #expect(message.result == .object(["scene": .string("/tmp/scene")]))
 }
 
+@Test func stageCatalogDecodesEngineOwnedSharpFramesDefaults() throws {
+    let data = Data("""
+    {"stages":{"sharpframes":{"version":1,"title":"Sharp Frames","description":"Select frames","preset":"upstream-defaults","presets":[],"fields":[{"key":"fps","label":"Frames per second","type":"integer","default":10,"minimum":1}]}}}
+    """.utf8)
+
+    let catalog = try JSONDecoder().decode(StageCatalogResponse.self, from: data)
+    let sharpFrames = try #require(catalog.stages["sharpframes"])
+    #expect(sharpFrames.fields[0].defaultValue == .number(10))
+    #expect(sharpFrames.fields[0].minimum == 1)
+}
+
 @Test @MainActor func recentScenePersistsAndResolvesBookmark() throws {
     let suite = "GausserStudioTests.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suite))

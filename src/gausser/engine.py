@@ -24,6 +24,7 @@ from .preflight import inspect_scene, inspect_tools
 from .process import CommandResult
 from .scene import SceneError, ScenePaths, initialize_scene
 from .scene_lock import SceneLock, SceneLockError
+from .stage_options import StageOptionError, catalog, resolve_options
 from .supersplat import reimport_edited_export
 
 
@@ -76,6 +77,9 @@ class GausserEngine:
             if method == "preflight":
                 scene = self._scene_from_params(params)
                 emit({"id": request_id, "result": self._preflight(scene)})
+            elif method == "stage_catalog":
+                self._scene_from_params(params)
+                emit({"id": request_id, "result": {"stages": catalog()}})
             elif method == "status":
                 self._require_empty_params(params)
                 emit({"id": request_id, "result": {"active_runs": self._active_descriptors()}})
@@ -141,8 +145,9 @@ class GausserEngine:
         except SceneError as exc:
             code = "scene_initialization_failed" if method == "initialize" else "scene_error"
             emit({"id": request_id, "error": {"code": code, "message": str(exc)}})
-        except RequestError as exc:
-            emit({"id": request_id, "error": {"code": exc.code, "message": str(exc)}})
+        except (RequestError, StageOptionError) as exc:
+            code = exc.code if isinstance(exc, RequestError) else "invalid_options"
+            emit({"id": request_id, "error": {"code": code, "message": str(exc)}})
         except Exception as exc:  # Defensive boundary: a client request never kills the service.
             emit({"id": request_id, "error": {"code": "internal_error", "message": str(exc)}})
 
@@ -211,9 +216,20 @@ class GausserEngine:
         stage_name = self._required_string(params, "stage")
         if stage_name not in _STAGE_NAMES:
             raise RequestError(f"unsupported stage: {stage_name}")
-        raw_arguments = params.get("arguments", [])
-        if not isinstance(raw_arguments, list) or any(not isinstance(item, str) or "\0" in item for item in raw_arguments):
-            raise RequestError("arguments must be an array of strings without NUL bytes")
+        has_arguments = "arguments" in params
+        has_options = "options" in params
+        if has_arguments and has_options:
+            raise RequestError("start accepts either arguments or options, not both")
+        if has_options:
+            raw_options = params["options"]
+            if not isinstance(raw_options, dict):
+                raise RequestError("options must be an object")
+            resolved = resolve_options(stage_name, raw_options)
+            raw_arguments = list(resolved.arguments)
+        else:
+            raw_arguments = params.get("arguments", [])
+            if not isinstance(raw_arguments, list) or any(not isinstance(item, str) or "\0" in item for item in raw_arguments):
+                raise RequestError("arguments must be an array of strings without NUL bytes")
 
         self._require_no_local_run(scene)
         scene_lock = SceneLock(scene.root)

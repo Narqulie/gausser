@@ -43,6 +43,10 @@ final class EngineClient {
         send(method: "preflight", params: ["scene": .string(scene.path)], completion: completion)
     }
 
+    func stageCatalog(scene: URL, completion: @escaping (Result<EngineMessage, Error>) -> Void) {
+        send(method: "stage_catalog", params: ["scene": .string(scene.path)], completion: completion)
+    }
+
     func artifacts(scene: URL, completion: @escaping (Result<EngineMessage, Error>) -> Void) {
         send(method: "artifacts", params: ["scene": .string(scene.path)], completion: completion)
     }
@@ -93,6 +97,23 @@ final class EngineClient {
                 "scene": .string(scene.path),
                 "stage": .string(stage),
                 "arguments": .array(arguments.map(JSONValue.string)),
+            ],
+            completion: completion
+        )
+    }
+
+    func start(
+        scene: URL,
+        stage: String,
+        options: [String: JSONValue],
+        completion: @escaping (Result<EngineMessage, Error>) -> Void
+    ) {
+        send(
+            method: "start",
+            params: [
+                "scene": .string(scene.path),
+                "stage": .string(stage),
+                "options": .object(options),
             ],
             completion: completion
         )

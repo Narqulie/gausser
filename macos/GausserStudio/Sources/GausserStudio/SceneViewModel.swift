@@ -62,6 +62,7 @@ final class SceneViewModel {
     private(set) var sceneReadiness: [StageReadiness] = []
     private(set) var toolReadiness: [StageReadiness] = []
     private(set) var artifacts: [ArtifactSummary] = []
+    private(set) var stageCatalog: [String: StageDefinition] = [:]
     private(set) var activeRun: EngineRun?
     private(set) var logs: [String] = []
     private(set) var isRefreshing = false
@@ -101,6 +102,19 @@ final class SceneViewModel {
 
     func refresh() {
         isRefreshing = true
+        engine.stageCatalog(scene: scene) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let message):
+                do {
+                    self.stageCatalog = try self.decodeStageCatalog(message).stages
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                }
+            case .failure(let error):
+                self.errorMessage = error.localizedDescription
+            }
+        }
         engine.preflight(scene: scene) { [weak self] result in
             guard let self else { return }
             self.isRefreshing = false
@@ -207,6 +221,17 @@ final class SceneViewModel {
         }
     }
 
+    func start(stage: String, options: [String: JSONValue]) {
+        guard activeRun == nil else {
+            errorMessage = "Wait for the active stage to finish or cancel it first."
+            return
+        }
+        logs.removeAll()
+        engine.start(scene: scene, stage: stage, options: options) { [weak self] result in
+            self?.receiveStartResult(stage: stage, result: result)
+        }
+    }
+
     func cancel() {
         guard let activeRun else { return }
         engine.cancel(runID: activeRun.id) { [weak self] result in
@@ -234,6 +259,19 @@ final class SceneViewModel {
         }
     }
 
+    private func receiveStartResult(stage: String, result: Result<EngineMessage, Error>) {
+        switch result {
+        case .success(let message):
+            guard let runID = message.result?.objectValue?["run_id"]?.stringValue else {
+                errorMessage = "The engine accepted a stage without returning a run identifier."
+                return
+            }
+            activeRun = EngineRun(id: runID, scene: scene.path, stage: stage, state: "queued")
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func belongsToScene(_ run: EngineRun) -> Bool {
         URL(fileURLWithPath: run.scene).standardizedFileURL.resolvingSymlinksInPath()
             == scene.standardizedFileURL.resolvingSymlinksInPath()
@@ -241,6 +279,10 @@ final class SceneViewModel {
 
     private func decodePreflight(_ message: EngineMessage) throws -> PreflightResponse {
         try decodeResult(message, as: PreflightResponse.self)
+    }
+
+    private func decodeStageCatalog(_ message: EngineMessage) throws -> StageCatalogResponse {
+        try decodeResult(message, as: StageCatalogResponse.self)
     }
 
     private func decodeArtifacts(_ message: EngineMessage) throws -> ArtifactResponse {

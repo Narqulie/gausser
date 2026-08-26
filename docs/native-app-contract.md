@@ -95,10 +95,12 @@ The engine presents `sharpframes`, `sammer`, `colmap`, `brush`, `msplat`, and
 the native client is built; otherwise the controller no longer represents all
 workflow stages.
 
-Protocol arguments are parsed and validated as JSON arrays of strings. The
-next protocol revision should replace generic arguments with stage-specific
-option objects; it must retain the ability to run exactly the commands exposed
-by the headless CLI.
+`stage_catalog` returns Python-owned, versioned field definitions, defaults,
+presets, constraints, and help for migrated Studio stages. Studio renders the
+catalog and submits a typed `options` object to `start`; the engine validates
+and resolves it into the headless command. Sharp Frames is the first migrated
+stage. Generic `arguments` remains temporarily for unmigrated stages and is
+mutually exclusive with `options`.
 
 ## Acceptance constraints
 
