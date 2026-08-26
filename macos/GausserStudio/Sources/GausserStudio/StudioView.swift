@@ -134,7 +134,6 @@ private struct SceneDashboard: View {
     @State private var presentsSharpFramesWorkspace = false
     @State private var workspaceStage: String?
     @State private var presentsStageWorkspace = false
-    @State private var maxSplats = "1500000"
     @State private var msplatDownscale = "4"
     @State private var ingestPolicy = "copy"
     @State private var reimportSource: ArtifactSummary?
@@ -267,11 +266,6 @@ private struct SceneDashboard: View {
     private var settings: some View {
         GroupBox("Run settings") {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
-                GridRow {
-                    Text("Brush maximum splats")
-                    TextField("1500000", text: $maxSplats)
-                        .textFieldStyle(.roundedBorder)
-                }
                 GridRow {
                     Text("Msplat downscale")
                     TextField("4", text: $msplatDownscale)
@@ -522,11 +516,11 @@ private struct SceneDashboard: View {
             }
             model.start(stage: stage.stage, options: options)
         case "brush":
-            guard let value = Int(maxSplats), value > 0 else {
-                model.errorMessage = "Brush maximum splats must be a positive integer."
+            guard let options else {
+                model.errorMessage = "Validate Brush settings before launching."
                 return
             }
-            model.start(stage: stage.stage, arguments: ["--max-splats", maxSplats])
+            model.start(stage: stage.stage, options: options)
         case "msplat":
             guard let value = Int(msplatDownscale), value > 0 else {
                 model.errorMessage = "Msplat downscale must be a positive integer."

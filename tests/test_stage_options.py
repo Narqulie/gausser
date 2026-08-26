@@ -5,6 +5,20 @@ import pytest
 from gausser.stage_options import StageOptionError, catalog, resolve_options
 
 
+def test_brush_options_default_to_bounded_apple_silicon_safe_training():
+    resolved = resolve_options("brush", {})
+    assert resolved.preset == "apple-silicon-safe"
+    assert resolved.arguments == (
+        "--total-train-iters", "30000", "--export-every", "5000", "--eval-every", "1000",
+        "--refine-every", "200", "--max-splats", "1500000",
+    )
+
+
+def test_brush_options_reject_export_after_training_ends():
+    with pytest.raises(StageOptionError, match="export_every must be less"):
+        resolve_options("brush", {"total_train_iters": 1000, "export_every": 1000})
+
+
 def test_sammer_options_resolve_standard_and_coverage_presets():
     standard = resolve_options("sammer", {"prompt": "fountain"})
     assert standard.preset == "standard-mask"

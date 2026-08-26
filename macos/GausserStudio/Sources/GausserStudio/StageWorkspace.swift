@@ -217,6 +217,10 @@ struct StageWorkspace: View {
 
     private func textBinding(_ field: StageField) -> Binding<String> {
         Binding(get: { stringValue(field.key) }, set: { text in
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, field.defaultValue == .null {
+                model.set(.null, for: field.key)
+                return
+            }
             switch field.type {
             case "integer": model.set(Int(text).map { .number(Double($0)) } ?? .string(text), for: field.key)
             case "decimal": model.set(Double(text).map(JSONValue.number) ?? .string(text), for: field.key)

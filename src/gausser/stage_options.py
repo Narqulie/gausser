@@ -21,6 +21,17 @@ class ResolvedStageOptions:
     arguments: tuple[str, ...]
 
 
+_BRUSH_DEFAULTS: dict[str, Any] = {
+    "total_train_iters": 30000,
+    "export_every": 5000,
+    "eval_every": 1000,
+    "refine_every": 200,
+    "max_splats": 1500000,
+    "max_resolution": None,
+    "eval_split_every": None,
+}
+
+
 _SAMMER_DEFAULTS: dict[str, Any] = {
     "prompt": "",
     "score_threshold": 0.5,
@@ -71,6 +82,7 @@ def catalog() -> dict[str, dict[str, Any]]:
     return {
         "sammer": _sammer_definition(),
         "colmap": _colmap_definition(),
+        "brush": _brush_definition(),
         "sharpframes": {
             "version": 1,
             "title": "Sharp Frames",
@@ -118,6 +130,8 @@ def catalog() -> dict[str, dict[str, Any]]:
 
 def resolve_options(stage: str, options: Mapping[str, object]) -> ResolvedStageOptions:
     """Validate Studio options and produce deterministic CLI arguments."""
+    if stage == "brush":
+        return _resolve_brush(options)
     if stage == "sammer":
         return _resolve_sammer(options)
     if stage == "colmap":
@@ -125,6 +139,64 @@ def resolve_options(stage: str, options: Mapping[str, object]) -> ResolvedStageO
     if stage == "sharpframes":
         return _resolve_sharpframes(options)
     raise StageOptionError(f"typed options are not available for {stage}")
+
+
+def _brush_definition() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "title": "Brush Training",
+        "description": "Train a masked, scene-owned Gaussian splat export from the validated COLMAP model.",
+        "preset": "apple-silicon-safe",
+        "groups": [
+            {"id": "training", "title": "Training", "description": "Training duration and artifact cadence."},
+            {"id": "density", "title": "Density and memory", "description": "Controls that bound Gaussian growth and image memory."},
+            {"id": "advanced", "title": "Advanced", "description": "Evaluation and refinement cadence.", "advanced": True},
+        ],
+        "presets": [
+            {"recommended": True, "id": "apple-silicon-safe", "title": "Apple Silicon safe", "description": "30k iterations with a 1.5M-splat ceiling to avoid the observed unbounded-density Metal stall.", "values": _BRUSH_DEFAULTS},
+        ],
+        "warnings": [
+            {"level": "warning", "message": "Brush 0.3.0 may stall after density growth on Metal when splat count is unbounded. Keep a finite max-splats value unless you accept that upstream risk."},
+        ],
+        "fields": [
+            _field("total_train_iters", "Training iterations", "integer", 30000, minimum=1, group="training", help="Total optimization steps."),
+            _field("export_every", "Export every", "integer", 5000, minimum=1, group="training", help="Write a PLY checkpoint at this interval; it must be smaller than total iterations."),
+            _field("max_splats", "Maximum splats", "integer", 1500000, minimum=1, group="density", help="Finite growth ceiling; 1.5M is the tested Apple-Silicon-safe setting."),
+            _field("max_resolution", "Maximum image resolution", "integer", None, minimum=1, group="density", help="Optional longest-side image cap; leave blank to use source resolution."),
+            _field("eval_every", "Evaluate every", "integer", 1000, minimum=1, group="advanced", advanced=True, help="Run held-out evaluation at this interval."),
+            _field("refine_every", "Refine every", "integer", 200, minimum=1, group="advanced", advanced=True, help="Densification/refinement interval."),
+            _field("eval_split_every", "Hold out every Nth image", "integer", None, minimum=2, group="advanced", advanced=True, help="Optional evaluation split; leave blank to use Brush defaults."),
+        ],
+    }
+
+
+def _resolve_brush(options: Mapping[str, object]) -> ResolvedStageOptions:
+    unexpected = sorted(set(options) - set(_BRUSH_DEFAULTS))
+    if unexpected:
+        raise StageOptionError(f"unsupported brush options: {', '.join(unexpected)}")
+    values: dict[str, Any] = dict(_BRUSH_DEFAULTS)
+    values.update(options)
+    for key in ("total_train_iters", "export_every", "eval_every", "refine_every", "max_splats"):
+        _positive_integer(values, key, minimum=1)
+    if values["export_every"] >= values["total_train_iters"]:
+        raise StageOptionError("export_every must be less than total_train_iters")
+    for key, minimum in (("max_resolution", 1), ("eval_split_every", 2)):
+        if values[key] is not None:
+            _positive_integer(values, key, minimum=minimum)
+
+    arguments: list[str] = [
+        "--total-train-iters", str(values["total_train_iters"]),
+        "--export-every", str(values["export_every"]),
+        "--eval-every", str(values["eval_every"]),
+        "--refine-every", str(values["refine_every"]),
+        "--max-splats", str(values["max_splats"]),
+    ]
+    if values["max_resolution"] is not None:
+        arguments.extend(["--max-resolution", str(values["max_resolution"])])
+    if values["eval_split_every"] is not None:
+        arguments.extend(["--eval-split-every", str(values["eval_split_every"])])
+    preset = "apple-silicon-safe" if values == _BRUSH_DEFAULTS else "custom"
+    return ResolvedStageOptions("brush", 1, preset, values, tuple(arguments))
 
 
 def _sammer_definition() -> dict[str, Any]:
