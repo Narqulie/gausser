@@ -158,6 +158,9 @@ public struct SplatViewerHost: NSViewRepresentable {
         private var commandQueue: MTLCommandQueue?
         private var renderer: SplatRenderer?
         private var camera = SplatViewerCamera.default
+        private var yaw: Float = 0
+        private var pitch: Float = 0
+        private var zoom: Float = 1
         private var activeRequest: SplatViewerLoadRequest?
         private var loadingTask: Task<Void, Never>?
 
@@ -170,6 +173,8 @@ public struct SplatViewerHost: NSViewRepresentable {
             view.enableSetNeedsDisplay = false
             view.isPaused = true
             view.delegate = self
+            view.addGestureRecognizer(NSPanGestureRecognizer(target: self, action: #selector(handlePan(_:))))
+            view.addGestureRecognizer(NSMagnificationGestureRecognizer(target: self, action: #selector(handleMagnify(_:))))
             metalView = view
             commandQueue = view.device?.makeCommandQueue()
             return view
@@ -222,6 +227,9 @@ public struct SplatViewerHost: NSViewRepresentable {
                     guard let self, self.activeRequest == request else { return }
                     self.renderer = renderer
                     self.camera = SplatViewerCamera(points: points)
+                    self.yaw = 0
+                    self.pitch = 0
+                    self.zoom = 1
                     model?.finish(request, splatCount: points.count)
                     self.metalView?.isPaused = false
                 } catch is CancellationError {
@@ -237,6 +245,22 @@ public struct SplatViewerHost: NSViewRepresentable {
             loadingTask?.cancel()
             loadingTask = nil
             activeRequest = nil
+        }
+
+        @objc private func handlePan(_ gesture: NSPanGestureRecognizer) {
+            guard let view = metalView else { return }
+            let translation = gesture.translation(in: view)
+            yaw += Float(translation.x) * 0.008
+            pitch = min(max(pitch + Float(translation.y) * 0.008, -1.45), 1.45)
+            gesture.setTranslation(.zero, in: view)
+            view.draw()
+        }
+
+        @objc private func handleMagnify(_ gesture: NSMagnificationGestureRecognizer) {
+            guard let view = metalView else { return }
+            zoom = min(max(zoom * (1 - Float(gesture.magnification)), 0.15), 8)
+            gesture.magnification = 0
+            view.draw()
         }
 
         public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -266,7 +290,7 @@ public struct SplatViewerHost: NSViewRepresentable {
                     zfar: 1
                 ),
                 projectionMatrix: camera.projection(aspectRatio: Float(view.drawableSize.width / view.drawableSize.height)),
-                viewMatrix: camera.viewMatrix,
+                viewMatrix: camera.viewMatrix(yaw: yaw, pitch: pitch, zoom: zoom),
                 screenSize: SIMD2(Int(view.drawableSize.width), Int(view.drawableSize.height))
             )
 
@@ -345,12 +369,32 @@ private struct SplatViewerCamera {
         farZ = distance + radius * 4
     }
 
-    var viewMatrix: simd_float4x4 {
+    func viewMatrix(yaw: Float, pitch: Float, zoom: Float) -> simd_float4x4 {
+        translation(0, 0, -distance * zoom)
+            * rotationX(pitch)
+            * rotationY(yaw)
+            * translation(-center.x, -center.y, -center.z)
+    }
+
+    private func translation(_ x: Float, _ y: Float, _ z: Float) -> simd_float4x4 {
         simd_float4x4(columns: (
-            SIMD4(1, 0, 0, 0),
-            SIMD4(0, 1, 0, 0),
-            SIMD4(0, 0, 1, 0),
-            SIMD4(-center.x, -center.y, -center.z - distance, 1)
+            SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(x, y, z, 1)
+        ))
+    }
+
+    private func rotationX(_ radians: Float) -> simd_float4x4 {
+        let sinus = sin(radians)
+        let cosinus = cos(radians)
+        return simd_float4x4(columns: (
+            SIMD4(1, 0, 0, 0), SIMD4(0, cosinus, sinus, 0), SIMD4(0, -sinus, cosinus, 0), SIMD4(0, 0, 0, 1)
+        ))
+    }
+
+    private func rotationY(_ radians: Float) -> simd_float4x4 {
+        let sinus = sin(radians)
+        let cosinus = cos(radians)
+        return simd_float4x4(columns: (
+            SIMD4(cosinus, 0, -sinus, 0), SIMD4(0, 1, 0, 0), SIMD4(sinus, 0, cosinus, 0), SIMD4(0, 0, 0, 1)
         ))
     }
 

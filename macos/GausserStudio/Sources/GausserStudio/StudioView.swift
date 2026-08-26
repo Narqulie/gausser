@@ -376,8 +376,13 @@ private struct SceneDashboard: View {
             }
         case .loaded(let url, let splatCount):
             GroupBox("Native viewer · \(url.lastPathComponent) · \(splatCount.formatted()) splats") {
-                SplatViewerHost(model: viewer)
-                    .frame(minHeight: 440)
+                VStack(alignment: .leading) {
+                    SplatViewerHost(model: viewer)
+                        .frame(minHeight: 440)
+                    Text("Drag to orbit · pinch to zoom")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         case .failed(_, let message):
             GroupBox("Native viewer") {
