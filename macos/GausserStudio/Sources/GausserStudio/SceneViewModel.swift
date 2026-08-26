@@ -130,19 +130,7 @@ final class SceneViewModel {
 
     func refresh() {
         isRefreshing = true
-        engine.stageCatalog(scene: scene) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let message):
-                do {
-                    self.stageCatalog = try self.decodeStageCatalog(message).stages
-                } catch {
-                    self.errorMessage = error.localizedDescription
-                }
-            case .failure(let error):
-                self.errorMessage = error.localizedDescription
-            }
-        }
+        refreshStageCatalog { _ in }
         engine.preflight(scene: scene) { [weak self] result in
             guard let self else { return }
             self.isRefreshing = false
@@ -203,6 +191,28 @@ final class SceneViewModel {
                 }
             case .failure(let error):
                 self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Fetches the engine-owned catalog on demand. This protects settings sheets
+    /// from an initial refresh racing a newly-created scene's presentation.
+    func stageDefinition(named stage: String, completion: @escaping (Result<StageDefinition, Error>) -> Void) {
+        if let definition = stageCatalog[stage] {
+            completion(.success(definition))
+            return
+        }
+        refreshStageCatalog { [weak self] result in
+            switch result {
+            case .success(let catalog):
+                guard let definition = catalog[stage] else {
+                    completion(.failure(EngineClientError(message: "The engine does not define settings for \(stage).")))
+                    return
+                }
+                completion(.success(definition))
+            case .failure(let error):
+                self?.errorMessage = error.localizedDescription
+                completion(.failure(error))
             }
         }
     }
@@ -362,6 +372,26 @@ final class SceneViewModel {
     private func belongsToScene(_ run: EngineRun) -> Bool {
         URL(fileURLWithPath: run.scene).standardizedFileURL.resolvingSymlinksInPath()
             == scene.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    private func refreshStageCatalog(completion: @escaping (Result<[String: StageDefinition], Error>) -> Void) {
+        engine.stageCatalog(scene: scene) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let message):
+                do {
+                    let catalog = try self.decodeStageCatalog(message).stages
+                    self.stageCatalog = catalog
+                    completion(.success(catalog))
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                    completion(.failure(error))
+                }
+            case .failure(let error):
+                self.errorMessage = error.localizedDescription
+                completion(.failure(error))
+            }
+        }
     }
 
     private func decodePreflight(_ message: EngineMessage) throws -> PreflightResponse {

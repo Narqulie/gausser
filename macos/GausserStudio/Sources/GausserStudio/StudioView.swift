@@ -241,12 +241,15 @@ private struct SceneDashboard: View {
                 Button("Import Videos / Sharp Frames…", systemImage: "film") {
                     do {
                         guard let source = try SourcePicker.chooseSharpFramesSource() else { return }
-                        guard model.stageCatalog["sharpframes"] != nil else {
-                            model.errorMessage = "Sharp Frames settings are still loading. Refresh and try again."
-                            return
+                        model.stageDefinition(named: "sharpframes") { result in
+                            switch result {
+                            case .success:
+                                sharpFramesSource = source
+                                presentsSharpFramesWorkspace = true
+                            case .failure(let error):
+                                model.errorMessage = error.localizedDescription
+                            }
                         }
-                        sharpFramesSource = source
-                        presentsSharpFramesWorkspace = true
                     } catch {
                         model.errorMessage = error.localizedDescription
                     }
