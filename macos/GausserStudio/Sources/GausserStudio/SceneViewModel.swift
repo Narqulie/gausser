@@ -56,6 +56,7 @@ final class SceneViewModel {
     private(set) var activeRun: EngineRun?
     private(set) var logs: [String] = []
     private(set) var isRefreshing = false
+    private(set) var isIngesting = false
     var errorMessage: String?
 
     init(scene: URL, engine: EngineClient) {
@@ -104,6 +105,24 @@ final class SceneViewModel {
                 } catch {
                     self.errorMessage = error.localizedDescription
                 }
+            case .failure(let error):
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func ingestPhotos(from source: URL, policy: String) {
+        guard !isIngesting, activeRun == nil else {
+            errorMessage = "Wait for the active operation to finish first."
+            return
+        }
+        isIngesting = true
+        engine.ingestPhotos(scene: scene, source: source, policy: policy) { [weak self] result in
+            guard let self else { return }
+            self.isIngesting = false
+            switch result {
+            case .success:
+                self.refresh()
             case .failure(let error):
                 self.errorMessage = error.localizedDescription
             }

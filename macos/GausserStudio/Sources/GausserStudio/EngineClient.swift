@@ -32,6 +32,19 @@ final class EngineClient {
         send(method: "artifacts", params: ["scene": .string(scene.path)], completion: completion)
     }
 
+    func ingestPhotos(
+        scene: URL,
+        source: URL,
+        policy: String,
+        completion: @escaping (Result<EngineMessage, Error>) -> Void
+    ) {
+        send(
+            method: "ingest_photos",
+            params: ["scene": .string(scene.path), "source": .string(source.path), "policy": .string(policy)],
+            completion: completion
+        )
+    }
+
     func start(
         scene: URL,
         stage: String,

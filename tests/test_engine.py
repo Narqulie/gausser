@@ -106,6 +106,34 @@ def test_engine_reports_nonempty_project_initialization_as_a_domain_error(tmp_pa
     }]
 
 
+def test_engine_ingests_photo_directory_with_explicit_policy(scene: Path, tmp_path: Path):
+    from PIL import Image
+    from gausser.engine import GausserEngine
+    from gausser.scene import initialize_scene
+
+    scene = tmp_path / "initialized"
+    scene.mkdir()
+    initialize_scene(scene)
+    source = tmp_path / "source"
+    source.mkdir()
+    Image.new("RGB", (3, 2)).save(source / "photo.jpg")
+    emitted: list[dict] = []
+
+    GausserEngine().dispatch(
+        {
+            "id": "ingest-1",
+            "method": "ingest_photos",
+            "params": {"scene": str(scene), "source": str(source), "policy": "copy"},
+        },
+        emitted.append,
+    )
+
+    assert emitted[0]["id"] == "ingest-1"
+    assert emitted[0]["result"]["policy"] == "copy"
+    assert emitted[0]["result"]["image_count"] == 1
+    assert (scene / "images" / "photo.jpg").is_file()
+
+
 def test_engine_lists_scene_owned_artifacts(scene: Path):
     from gausser.engine import GausserEngine
 

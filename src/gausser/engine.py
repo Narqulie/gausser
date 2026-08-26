@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from .artifacts import list_artifacts
 from .controller import SceneController, Stage, StageRequest
+from .ingest import ingest_photo_directory
 from .preflight import inspect_scene, inspect_tools
 from .process import CommandResult
 from .scene import SceneError, ScenePaths, initialize_scene
@@ -65,6 +66,7 @@ class GausserEngine:
     def dispatch(self, request: object, emit: EventSink) -> None:
         """Handle one request without allowing malformed input to stop the engine."""
         request_id: object = None
+        method: str | None = None
         try:
             request_id, method, params = self._validate_envelope(request)
             if method == "preflight":
@@ -83,6 +85,19 @@ class GausserEngine:
             elif method == "artifacts":
                 scene = self._scene_from_params(params)
                 emit({"id": request_id, "result": {"artifacts": [asdict(item) for item in list_artifacts(scene)]}})
+            elif method == "ingest_photos":
+                scene = self._scene_from_params(params)
+                source = self._required_string(params, "source")
+                policy = self._required_string(params, "policy")
+                result = ingest_photo_directory(scene, source, policy=policy)
+                emit({
+                    "id": request_id,
+                    "result": {
+                        "source": str(result.source),
+                        "policy": result.policy.value,
+                        "image_count": len(result.images),
+                    },
+                })
             elif method == "start":
                 active = self._reserve_run(params)
                 # Acknowledge before launching the thread so clients always observe
@@ -95,7 +110,8 @@ class GausserEngine:
             else:
                 raise RequestError(f"unsupported method: {method}")
         except SceneError as exc:
-            emit({"id": request_id, "error": {"code": "scene_initialization_failed", "message": str(exc)}})
+            code = "scene_initialization_failed" if method == "initialize" else "scene_error"
+            emit({"id": request_id, "error": {"code": code, "message": str(exc)}})
         except RequestError as exc:
             emit({"id": request_id, "error": {"code": exc.code, "message": str(exc)}})
         except Exception as exc:  # Defensive boundary: a client request never kills the service.

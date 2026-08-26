@@ -133,6 +133,9 @@ private struct SceneDashboard: View {
     @State private var matcher = "sequential"
     @State private var maxSplats = "1500000"
     @State private var msplatDownscale = "4"
+    @State private var ingestPolicy = "copy"
+    @State private var isChoosingPhotoSource = false
+    @State private var viewer = SplatViewerModel()
 
     init(scene: URL, engine: EngineClient) {
         self.scene = scene
@@ -144,9 +147,11 @@ private struct SceneDashboard: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header
+                sourceImport
                 settings
                 pipeline
                 artifacts
+                viewerSection
                 if let activeRun = model.activeRun {
                     activeRunView(activeRun)
                 }
@@ -158,6 +163,15 @@ private struct SceneDashboard: View {
         }
         .navigationTitle(scene.lastPathComponent)
         .task { model.refresh() }
+        .fileImporter(
+            isPresented: $isChoosingPhotoSource,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let source = urls.first {
+                model.ingestPhotos(from: source, policy: ingestPolicy)
+            }
+        }
         .toolbar {
             Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
                 .disabled(model.isRefreshing || model.activeRun != nil)
@@ -184,6 +198,26 @@ private struct SceneDashboard: View {
             Text(scene.path)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
+        }
+    }
+
+    private var sourceImport: some View {
+        GroupBox("Sources") {
+            HStack {
+                Text("Import a photo directory into this empty scene.")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("Import policy", selection: $ingestPolicy) {
+                    Text("Copy files").tag("copy")
+                    Text("Link files").tag("link")
+                }
+                .labelsHidden()
+                Button("Import Photos", systemImage: "photo.on.rectangle") {
+                    isChoosingPhotoSource = true
+                }
+                .disabled(model.isIngesting || model.activeRun != nil)
+            }
+            .padding(.top, 4)
         }
     }
 
@@ -272,7 +306,17 @@ private struct SceneDashboard: View {
                         }
                         Spacer()
                         Button("Reveal") {
-                            NSWorkspace.shared.activateFileViewerSelecting([scene.appending(path: artifact.relativePath)])
+                            NSWorkspace.shared.activateFileViewerSelecting([artifactURL(artifact)])
+                        }
+                        if supportsNativeViewer(artifact) {
+                            Button("View") {
+                                viewer.load(artifactURL(artifact))
+                            }
+                        }
+                        if supportsEditorHandoff(artifact) {
+                            Button("SuperSplat") {
+                                handoffToSuperSplat(artifact)
+                            }
                         }
                         if artifact.format == "ply" || artifact.format == "sog" {
                             Button("Create LOD") {
@@ -285,6 +329,55 @@ private struct SceneDashboard: View {
                     .padding(.vertical, 4)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var viewerSection: some View {
+        switch viewer.state {
+        case .idle:
+            EmptyView()
+        case .loading(let url):
+            GroupBox("Native viewer") {
+                HStack { ProgressView(); Text("Loading \(url.lastPathComponent)…") }
+                    .padding(.top, 4)
+            }
+        case .loaded(let url, let splatCount):
+            GroupBox("Native viewer · \(url.lastPathComponent) · \(splatCount.formatted()) splats") {
+                SplatViewerHost(model: viewer)
+                    .frame(minHeight: 440)
+            }
+        case .failed(_, let message):
+            GroupBox("Native viewer") {
+                Text(message).foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func artifactURL(_ artifact: ArtifactSummary) -> URL {
+        scene.appending(path: artifact.relativePath)
+    }
+
+    private func supportsNativeViewer(_ artifact: ArtifactSummary) -> Bool {
+        ["ply", "spz", "splat"].contains(artifact.format)
+    }
+
+    private func supportsEditorHandoff(_ artifact: ArtifactSummary) -> Bool {
+        ["ply", "sog", "spz", "splat"].contains(artifact.format)
+    }
+
+    private func handoffToSuperSplat(_ summary: ArtifactSummary) {
+        do {
+            let artifact = try SceneExportArtifact(scene: scene, artifact: artifactURL(summary))
+            Task {
+                do {
+                    try await SuperSplatHandoff.perform(SuperSplatHandoff.primaryAction(for: artifact))
+                } catch {
+                    model.errorMessage = error.localizedDescription
+                }
+            }
+        } catch {
+            model.errorMessage = error.localizedDescription
         }
     }
 
