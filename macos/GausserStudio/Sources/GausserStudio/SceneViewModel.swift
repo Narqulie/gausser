@@ -156,6 +156,9 @@ final class SceneViewModel {
     private(set) var stageCatalog: [String: StageDefinition] = [:]
     private(set) var activeRun: EngineRun?
     private(set) var activeRunStartedAt: Date?
+    /// The terminal result remains visible with its diagnostic tail. Fast failures
+    /// must not disappear merely because their process has already exited.
+    private(set) var latestCompletedRun: EngineRun?
     private(set) var telemetry = StageTelemetryState()
     private(set) var logs: [String] = []
     /// Covers the asynchronous gap between a confirmed launch and the engine's
@@ -485,6 +488,7 @@ final class SceneViewModel {
             if let values = message.values { telemetry.values.merge(values) { _, newest in newest } }
         case "finished":
             guard let run = message.run, belongsToScene(run), run.id == activeRun?.id else { return }
+            latestCompletedRun = run
             activeRun = nil
             activeRunStartedAt = nil
             refresh()
@@ -499,6 +503,7 @@ final class SceneViewModel {
             return false
         }
         isStartingStage = true
+        latestCompletedRun = nil
         logs.removeAll()
         telemetry = StageTelemetryState()
         return true

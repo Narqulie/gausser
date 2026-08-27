@@ -13,6 +13,9 @@ struct ReconstructionPreview: View {
     let pointCount: Int
 
     @State private var orbit = ReconstructionOrbit()
+    /// COLMAP's reconstruction-world axes have no canonical gravity/up direction.
+    /// This is a view-only presentation preference, not a mutation of the model.
+    @State private var axisConvention: SparsePreviewAxisConvention = .opencvFriendly
     @State private var previousDrag = CGSize.zero
     @State private var pinchStartZoom: Double?
 
@@ -27,7 +30,7 @@ struct ReconstructionPreview: View {
                     .padding(.vertical, 24)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
-                    SparseModelCanvas(cameras: cameras, points: points, orbit: orbit)
+                    SparseModelCanvas(cameras: cameras, points: points, orbit: orbit, axisConvention: axisConvention)
                         .frame(minHeight: 340)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay {
@@ -46,12 +49,14 @@ struct ReconstructionPreview: View {
                                 .foregroundStyle(.secondary)
                             Spacer()
                             previewCounts
+                            axisConventionButton
                             resetViewButton
                         }
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 orbitControls
                                 Spacer()
+                                axisConventionButton
                                 resetViewButton
                             }
                             HStack {
@@ -105,6 +110,14 @@ struct ReconstructionPreview: View {
         .controlGroupStyle(.compactMenu)
     }
 
+    private var axisConventionButton: some View {
+        Button(axisConvention == .opencvFriendly ? "Use Raw COLMAP Axes" : "Use OpenCV Display Axes") {
+            axisConvention.toggle()
+        }
+        .buttonStyle(.borderless)
+        .accessibilityHint("Changes only the reconstruction preview orientation; it does not modify the COLMAP model")
+    }
+
     private var previewCounts: some View {
         Text("\(points.count.formatted()) of \(pointCount.formatted()) points · \(cameras.count.formatted()) of \(cameraCount.formatted()) cameras")
             .font(.caption.monospacedDigit())
@@ -134,7 +147,9 @@ struct ReconstructionPreview: View {
             MagnifyGesture()
                 .onChanged { value in
                     if pinchStartZoom == nil { pinchStartZoom = orbit.zoom }
-                    orbit.zoom = min(max((pinchStartZoom ?? 1) / Double(value.magnification), 0.45), 3.5)
+                    // A larger macOS magnification means the fingers moved apart:
+                    // match the explicit Zoom In control rather than reversing it.
+                    orbit.zoom = min(max((pinchStartZoom ?? 1) * Double(value.magnification), 0.45), 3.5)
                 }
                 .onEnded { _ in pinchStartZoom = nil }
         )
@@ -145,6 +160,7 @@ private struct SparseModelCanvas: View {
     let cameras: [ReconstructionCamera]
     let points: [ReconstructionPoint]
     let orbit: ReconstructionOrbit
+    let axisConvention: SparsePreviewAxisConvention
 
     var body: some View {
         let viewport = ReconstructionViewport(cameras: cameras, points: points)
@@ -172,7 +188,7 @@ private struct SparseModelCanvas: View {
 
     private func drawPoints(in context: inout GraphicsContext, size: CGSize, viewport: ReconstructionViewport) {
         for point in points {
-            guard let projected = viewport.project(point.position, size: size, orbit: orbit) else { continue }
+            guard let projected = viewport.project(point.position, size: size, orbit: orbit, axisConvention: axisConvention) else { continue }
             let depthOpacity = min(max(0.22 + projected.depth * 0.14, 0.24), 0.9)
             let radius = min(max(0.8 + projected.depth * 0.35, 0.9), 2.0)
             let rect = CGRect(
@@ -194,7 +210,7 @@ private struct SparseModelCanvas: View {
 
     private func drawCameras(in context: inout GraphicsContext, size: CGSize, viewport: ReconstructionViewport) {
         for camera in cameras {
-            guard let projected = viewport.project(camera.position, size: size, orbit: orbit) else { continue }
+            guard let projected = viewport.project(camera.position, size: size, orbit: orbit, axisConvention: axisConvention) else { continue }
             let radius: CGFloat = 4
             let rect = CGRect(
                 x: projected.position.x - radius,
@@ -229,8 +245,8 @@ struct ReconstructionViewport {
         scale = 1 / max(simd_length(maximum - minimum) / 2, 0.001)
     }
 
-    fileprivate func project(_ position: SIMD3<Double>, size: CGSize, orbit: ReconstructionOrbit) -> ProjectedReconstructionPoint? {
-        var point = (position - center) * scale
+    fileprivate func project(_ position: SIMD3<Double>, size: CGSize, orbit: ReconstructionOrbit, axisConvention: SparsePreviewAxisConvention) -> ProjectedReconstructionPoint? {
+        var point = axisConvention.transform((position - center) * scale)
         let yawCosine = cos(orbit.yaw)
         let yawSine = sin(orbit.yaw)
         point = SIMD3(
@@ -270,6 +286,29 @@ private struct ReconstructionOrbit {
 
     mutating func reset() {
         self = ReconstructionOrbit()
+    }
+}
+
+/// A display preference for the arbitrary reconstruction-world axes. COLMAP's
+/// +X-right/+Y-down/+Z-forward OpenCV convention is camera-local; its world
+/// coordinate system has no guaranteed upright direction. This transform is
+/// therefore optional and only changes the Studio preview.
+enum SparsePreviewAxisConvention: Equatable {
+    case opencvFriendly
+    case rawCOLMAP
+
+    mutating func toggle() {
+        self = self == .opencvFriendly ? .rawCOLMAP : .opencvFriendly
+    }
+
+    func transform(_ position: SIMD3<Double>) -> SIMD3<Double> {
+        switch self {
+        case .opencvFriendly:
+            // A handedness-preserving 180° display rotation about X.
+            SIMD3(position.x, -position.y, -position.z)
+        case .rawCOLMAP:
+            position
+        }
     }
 }
 

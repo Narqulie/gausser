@@ -127,3 +127,18 @@ func sceneViewModelAcceptsEventsForItsCanonicalScene() {
 
     #expect(model.activeRun?.id == "run-a")
 }
+
+@Test @MainActor
+func sceneViewModelRetainsTerminalRunAndLogsForFastFailures() {
+    let model = SceneViewModel(scene: URL(fileURLWithPath: "/tmp/scene-a"), engine: EngineClient())
+    let running = EngineRun(id: "run-a", scene: "/tmp/scene-a", stage: "sammer", state: "running")
+    let failed = EngineRun(id: "run-a", scene: "/tmp/scene-a", stage: "sammer", state: "failed")
+
+    model.receive(EngineMessage(id: nil, event: "started", result: nil, error: nil, run: running, runID: nil, line: nil))
+    model.receive(EngineMessage(id: nil, event: "log", result: nil, error: nil, run: nil, runID: "run-a", line: "SAM 3 is not installed"))
+    model.receive(EngineMessage(id: nil, event: "finished", result: nil, error: nil, run: failed, runID: nil, line: nil))
+
+    #expect(model.activeRun == nil)
+    #expect(model.latestCompletedRun == failed)
+    #expect(model.logs == ["SAM 3 is not installed"])
+}

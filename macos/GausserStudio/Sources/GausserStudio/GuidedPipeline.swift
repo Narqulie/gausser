@@ -1,4 +1,5 @@
 import AppKit
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -81,6 +82,9 @@ struct SceneNavigator: View {
         VStack(spacing: 0) {
             if let activeRun = model.activeRun {
                 PipelineRunStrip(model: model, run: activeRun)
+                Divider()
+            } else if let completedRun = model.latestCompletedRun {
+                PipelineCompletionStrip(model: model, run: completedRun)
                 Divider()
             }
             Group {
@@ -500,9 +504,14 @@ private struct SceneHero: View {
                     .foregroundStyle(.tint)
                     .frame(width: 52, height: 52)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 7) {
                     Text(scene.lastPathComponent).font(.largeTitle.weight(.semibold))
                     Text(scene.path).font(.callout.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    Button("Reveal Source Folder", systemImage: "folder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([scene.appendingPathComponent("images", isDirectory: true)])
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityHint("Reveals this project’s published images folder in Finder")
                 }
             }
             ScrollView(.horizontal, showsIndicators: false) {
@@ -585,6 +594,52 @@ private struct TrainerChoiceCard: View {
             .studioCardSurface()
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct PipelineCompletionStrip: View {
+    let model: SceneViewModel
+    let run: EngineRun
+    @State private var showsLogs = true
+
+    private var state: String { run.state?.capitalized ?? "Finished" }
+    private var succeeded: Bool { run.state == "succeeded" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(succeeded ? .green : .orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(studioStageTitle(run.stage)) \(state.lowercased())")
+                        .font(.callout.weight(.semibold))
+                    Text(succeeded ? "The run output remains available below." : "The run ended before producing its expected output. Review the diagnostic tail below.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            if !model.recentLogs.isEmpty {
+                DisclosureGroup("Run log (\(model.logs.count) lines)", isExpanded: $showsLogs) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(model.recentLogs.enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 180)
+                    .padding(.top, 6)
+                }
+                .font(.callout.weight(.medium))
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(succeeded ? Color.green.opacity(0.08) : Color.orange.opacity(0.1))
     }
 }
 
