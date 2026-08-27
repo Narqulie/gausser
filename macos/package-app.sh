@@ -24,7 +24,12 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin_path/GausserStudio" "$app/Contents/MacOS/GausserStudio"
 engine_dir=$(dirname "$engine")
-printf '#!/bin/sh\nexport PATH=%q:"${PATH:-}"\nexec %q "$@"\n' "$engine_dir" "$engine" > "$app/Contents/Resources/gausser-engine"
+# The system's editable gausser-engine lives beside a second `sammer` entry
+# point that lacks the Automask-GS SAM3 environment.  Prefer the maintained
+# wrapper, just as `EngineClient.launchEnvironment` does, before the engine
+# directory. Finder launches otherwise resolve the wrong entry point.
+sammer_wrapper_dir="$HOME/.cargo/bin"
+printf '#!/bin/sh\nexport PATH=%q:%q:"${PATH:-}"\nexec %q "$@"\n' "$sammer_wrapper_dir" "$engine_dir" "$engine" > "$app/Contents/Resources/gausser-engine"
 chmod +x "$app/Contents/Resources/gausser-engine"
 find "$bin_path" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$app/Contents/Resources/" \;
 

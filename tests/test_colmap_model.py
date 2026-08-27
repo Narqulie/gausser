@@ -3,6 +3,8 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+import pytest
+
 from gausser.colmap_model import read_camera_positions, read_model_stats, read_reconstruction_preview, read_sparse_points
 
 
@@ -94,6 +96,25 @@ def test_read_camera_positions_converts_colmap_world_to_camera_pose(tmp_path: Pa
     assert cameras is not None
     assert cameras[0].name == "frame.jpg"
     assert (cameras[0].x, cameras[0].y, cameras[0].z) == (-1.0, -2.0, -3.0)
+
+
+def test_reconstruction_preview_uses_camera_optical_ray_focus_as_pivot(tmp_path: Path):
+    write_binary_model(tmp_path, images=2, points=1)
+    # Two non-parallel cameras look toward the origin. COLMAP stores
+    # world-to-camera qvec/tvec, from which their optical rays are recovered.
+    records = b"".join([
+        struct.pack("<I7dI", 1, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1)
+        + b"near.jpg\0" + struct.pack("<Q", 0),
+        struct.pack("<I7dI", 2, 2**-0.5, 2**-0.5, 0.0, 0.0, 0.0, 0.0, 1.0, 1)
+        + b"far.jpg\0" + struct.pack("<Q", 0),
+    ])
+    (tmp_path / "images.bin").write_bytes(struct.pack("<Q", 2) + records)
+
+    preview = read_reconstruction_preview(tmp_path)
+
+    assert preview is not None
+    assert preview.focus is not None
+    assert preview.focus == pytest.approx((0.0, 0.0, 0.0))
 
 
 def test_read_reconstruction_preview_returns_a_bounded_stable_model_snapshot(tmp_path: Path):

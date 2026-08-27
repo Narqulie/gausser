@@ -21,12 +21,15 @@ class ModelStats:
 
 @dataclass(frozen=True)
 class CameraPosition:
-    """One COLMAP camera centre in the reconstruction coordinate system."""
+    """One COLMAP camera centre and optical-axis direction in world coordinates."""
 
     name: str
     x: float
     y: float
     z: float
+    forward_x: float = 0.0
+    forward_y: float = 0.0
+    forward_z: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,7 @@ class ReconstructionPreview:
     points: list[SparsePoint]
     camera_count: int
     point_count: int
+    focus: tuple[float, float, float] | None = None
 
 
 _REQUIRED = ("cameras", "images", "points3D")
@@ -329,7 +333,55 @@ def read_reconstruction_preview(
     after = _model_fingerprint(directory)
     if before != after or stats is None or cameras is None or points is None:
         return None
-    return ReconstructionPreview(cameras, points, stats.images, stats.points)
+    return ReconstructionPreview(cameras, points, stats.images, stats.points, _camera_ray_focus(cameras))
+
+
+def _camera_ray_focus(cameras: list[CameraPosition]) -> tuple[float, float, float] | None:
+    """Return the least-squares intersection of camera optical rays.
+
+    Sparse-model world axes are arbitrary, but each COLMAP pose supplies an
+    optical ray in that frame. The point closest to all sampled rays is a stable
+    preview pivot and does not redefine or mutate the reconstruction origin.
+    """
+    if len(cameras) < 2:
+        return None
+    matrix = [[0.0] * 3 for _ in range(3)]
+    vector = [0.0] * 3
+    usable = 0
+    for camera in cameras:
+        direction = (camera.forward_x, camera.forward_y, camera.forward_z)
+        length = sum(value * value for value in direction) ** 0.5
+        if length < 1e-12:
+            continue
+        unit = tuple(value / length for value in direction)
+        projector = [[(1.0 if row == column else 0.0) - unit[row] * unit[column] for column in range(3)] for row in range(3)]
+        centre = (camera.x, camera.y, camera.z)
+        for row in range(3):
+            for column in range(3):
+                matrix[row][column] += projector[row][column]
+            vector[row] += sum(projector[row][column] * centre[column] for column in range(3))
+        usable += 1
+    if usable < 2:
+        return None
+    return _solve_3x3(matrix, vector)
+
+
+def _solve_3x3(matrix: list[list[float]], vector: list[float]) -> tuple[float, float, float] | None:
+    """Solve a small linear system, rejecting near-parallel/degenerate camera rays."""
+    augmented = [row[:] + [value] for row, value in zip(matrix, vector)]
+    for column in range(3):
+        pivot = max(range(column, 3), key=lambda row: abs(augmented[row][column]))
+        if abs(augmented[pivot][column]) < 1e-10:
+            return None
+        augmented[column], augmented[pivot] = augmented[pivot], augmented[column]
+        scale = augmented[column][column]
+        augmented[column] = [value / scale for value in augmented[column]]
+        for row in range(3):
+            if row == column:
+                continue
+            factor = augmented[row][column]
+            augmented[row] = [value - factor * pivot_value for value, pivot_value in zip(augmented[row], augmented[column])]
+    return tuple(augmented[row][3] for row in range(3))
 
 
 def _camera_center(name: str, qw: float, qx: float, qy: float, qz: float, tx: float, ty: float, tz: float) -> CameraPosition:
@@ -338,11 +390,16 @@ def _camera_center(name: str, qw: float, qx: float, qy: float, qz: float, tx: fl
     xx, yy, zz = qx * qx, qy * qy, qz * qz
     xy, xz, yz = qx * qy, qx * qz, qy * qz
     wx, wy, wz = qw * qx, qw * qy, qw * qz
+    # COLMAP stores world-to-camera R, t. The camera's forward optical axis in
+    # world coordinates is Rᵀ·(0, 0, 1), the third row of R.
     return CameraPosition(
         name,
         -((1 - 2 * (yy + zz)) * tx + 2 * (xy + wz) * ty + 2 * (xz - wy) * tz),
         -(2 * (xy - wz) * tx + (1 - 2 * (xx + zz)) * ty + 2 * (yz + wx) * tz),
         -(2 * (xz + wy) * tx + 2 * (yz - wx) * ty + (1 - 2 * (xx + yy)) * tz),
+        2 * (xz - wy),
+        2 * (yz + wx),
+        1 - 2 * (xx + yy),
     )
 
 

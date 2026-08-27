@@ -363,6 +363,7 @@ def test_engine_returns_sampled_sparse_model_for_completed_reconstruction(scene:
         "points": [{"x": 4.0, "y": 5.0, "z": 6.0, "red": 10, "green": 20, "blue": 30}],
         "camera_count": 1,
         "point_count": 100,
+        "focus": None,
     }}]
 
 

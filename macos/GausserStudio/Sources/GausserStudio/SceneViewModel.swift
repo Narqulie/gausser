@@ -78,6 +78,12 @@ struct ReconstructionCamera: Decodable, Identifiable, Equatable {
 
 /// A bounded colour-bearing sample from COLMAP's canonical sparse/0 point cloud.
 /// It is preview data only; the engine never writes a duplicate PLY for the UI.
+struct ReconstructionFocus: Decodable, Equatable {
+    let x: Double
+    let y: Double
+    let z: Double
+}
+
 struct ReconstructionPoint: Decodable, Identifiable, Equatable {
     let x: Double
     let y: Double
@@ -94,9 +100,10 @@ struct ReconstructionResponse: Decodable {
     let points: [ReconstructionPoint]
     let cameraCount: Int
     let pointCount: Int
+    let focus: ReconstructionFocus?
 
     enum CodingKeys: String, CodingKey {
-        case cameras, points
+        case cameras, points, focus
         case cameraCount = "camera_count"
         case pointCount = "point_count"
     }
@@ -153,6 +160,7 @@ final class SceneViewModel {
     private(set) var reconstructionPoints: [ReconstructionPoint] = []
     private(set) var reconstructionCameraCount = 0
     private(set) var reconstructionPointCount = 0
+    private(set) var reconstructionFocus: ReconstructionFocus?
     private(set) var stageCatalog: [String: StageDefinition] = [:]
     private(set) var activeRun: EngineRun?
     private(set) var activeRunStartedAt: Date?
@@ -272,6 +280,7 @@ final class SceneViewModel {
                     self.reconstructionPoints = reconstruction.points
                     self.reconstructionCameraCount = reconstruction.cameraCount
                     self.reconstructionPointCount = reconstruction.pointCount
+                    self.reconstructionFocus = reconstruction.focus
                 } catch {
                     self.errorMessage = error.localizedDescription
                 }

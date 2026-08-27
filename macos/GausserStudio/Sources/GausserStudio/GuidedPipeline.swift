@@ -157,7 +157,8 @@ struct SceneNavigator: View {
                     cameras: model.reconstructionCameras,
                     points: model.reconstructionPoints,
                     cameraCount: model.reconstructionCameraCount,
-                    pointCount: model.reconstructionPointCount
+                    pointCount: model.reconstructionPointCount,
+                    focus: model.reconstructionFocus
                 )
                 artifactsSummary
                 viewerSection

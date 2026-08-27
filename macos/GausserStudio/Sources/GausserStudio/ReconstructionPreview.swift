@@ -11,6 +11,23 @@ struct ReconstructionPreview: View {
     let points: [ReconstructionPoint]
     let cameraCount: Int
     let pointCount: Int
+    /// The least-squares intersection of COLMAP camera optical rays, when the
+    /// reconstruction has enough non-parallel poses to derive one.
+    let focus: ReconstructionFocus?
+
+    init(
+        cameras: [ReconstructionCamera],
+        points: [ReconstructionPoint],
+        cameraCount: Int,
+        pointCount: Int,
+        focus: ReconstructionFocus? = nil
+    ) {
+        self.cameras = cameras
+        self.points = points
+        self.cameraCount = cameraCount
+        self.pointCount = pointCount
+        self.focus = focus
+    }
 
     @State private var orbit = ReconstructionOrbit()
     /// COLMAP's reconstruction-world axes have no canonical gravity/up direction.
@@ -30,7 +47,7 @@ struct ReconstructionPreview: View {
                     .padding(.vertical, 24)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
-                    SparseModelCanvas(cameras: cameras, points: points, orbit: orbit, axisConvention: axisConvention)
+                    SparseModelCanvas(cameras: cameras, points: points, focus: focus, orbit: orbit, axisConvention: axisConvention)
                         .frame(minHeight: 340)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay {
@@ -159,11 +176,12 @@ struct ReconstructionPreview: View {
 private struct SparseModelCanvas: View {
     let cameras: [ReconstructionCamera]
     let points: [ReconstructionPoint]
+    let focus: ReconstructionFocus?
     let orbit: ReconstructionOrbit
     let axisConvention: SparsePreviewAxisConvention
 
     var body: some View {
-        let viewport = ReconstructionViewport(cameras: cameras, points: points)
+        let viewport = ReconstructionViewport(cameras: cameras, points: points, focus: focus)
         Canvas { context, size in
             context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(red: 0.035, green: 0.045, blue: 0.065)))
             drawReferenceGrid(in: &context, size: size)
@@ -228,7 +246,7 @@ struct ReconstructionViewport {
     let center: SIMD3<Double>
     let scale: Double
 
-    init(cameras: [ReconstructionCamera], points: [ReconstructionPoint]) {
+    init(cameras: [ReconstructionCamera], points: [ReconstructionPoint], focus: ReconstructionFocus? = nil) {
         let positions = cameras.map(\.position) + points.map(\.position)
         guard let first = positions.first else {
             center = .zero
@@ -241,8 +259,15 @@ struct ReconstructionViewport {
             minimum = simd_min(minimum, position)
             maximum = simd_max(maximum, position)
         }
-        center = (minimum + maximum) / 2
-        scale = 1 / max(simd_length(maximum - minimum) / 2, 0.001)
+        // COLMAP's world origin is arbitrary. When the engine can derive a
+        // least-squares optical-ray intersection, orbit and zoom about that
+        // actual camera focal point rather than an unrelated bounding-box centre.
+        let resolvedCenter = focus.map { SIMD3($0.x, $0.y, $0.z) } ?? (minimum + maximum) / 2
+        let farthest = positions.reduce(0.0) { greatest, position in
+            max(greatest, simd_length(position - resolvedCenter))
+        }
+        center = resolvedCenter
+        scale = 1 / max(farthest, 0.001)
     }
 
     fileprivate func project(_ position: SIMD3<Double>, size: CGSize, orbit: ReconstructionOrbit, axisConvention: SparsePreviewAxisConvention) -> ProjectedReconstructionPoint? {

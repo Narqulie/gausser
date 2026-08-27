@@ -147,14 +147,23 @@ class GausserEngine:
                 preview = read_reconstruction_preview(scene.sparse / "0")
                 if preview is None:
                     emit({"id": request_id, "result": {
-                        "cameras": [], "points": [], "camera_count": 0, "point_count": 0,
+                        "cameras": [], "points": [], "camera_count": 0, "point_count": 0, "focus": None,
                     }})
                 else:
                     emit({"id": request_id, "result": {
-                        "cameras": [asdict(camera) for camera in preview.cameras],
+                        # Optical directions are used only by the engine to derive
+                        # the view pivot; the native canvas needs camera centres.
+                        "cameras": [
+                            {"name": camera.name, "x": camera.x, "y": camera.y, "z": camera.z}
+                            for camera in preview.cameras
+                        ],
                         "points": [asdict(point) for point in preview.points],
                         "camera_count": preview.camera_count,
                         "point_count": preview.point_count,
+                        "focus": (
+                            {"x": preview.focus[0], "y": preview.focus[1], "z": preview.focus[2]}
+                            if preview.focus is not None else None
+                        ),
                     }})
             elif method == "ingest_photos":
                 scene = self._scene_from_params(params)
