@@ -6,7 +6,7 @@ from PIL import Image
 import pytest
 
 from gausser.dataset import list_dataset_images
-from gausser.scene import ScenePaths
+from gausser.scene import ScenePaths, initialize_scene
 
 
 def _image(path: Path, name: str, color: str) -> None:
@@ -35,9 +35,22 @@ def test_dataset_images_reject_invalid_pagination(scene: Path):
     paths = ScenePaths.from_root(scene)
 
     for offset, limit in ((-1, 1), (0, 0), (0, 501)):
-        try:
+        with pytest.raises(ValueError):
             list_dataset_images(paths, offset=offset, limit=limit)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("invalid page bounds must be rejected")
+
+
+def test_dataset_images_expose_only_matching_scene_owned_masks_and_revision_changes(tmp_path: Path):
+    root = tmp_path / "scene"
+    root.mkdir()
+    paths = initialize_scene(root)
+    Image.new("RGB", (2, 2)).save(paths.images / "frame.jpg")
+
+    initial = list_dataset_images(paths)
+    assert initial.images[0].mask_relative_path is None
+
+    paths.brush_masks.mkdir()
+    Image.new("L", (2, 2), color=255).save(paths.brush_masks / "frame.png")
+    with_mask = list_dataset_images(paths)
+
+    assert with_mask.images[0].mask_relative_path == "masks/frame.png"
+    assert with_mask.revision != initial.revision

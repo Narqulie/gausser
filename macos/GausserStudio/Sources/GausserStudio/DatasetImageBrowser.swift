@@ -2,9 +2,8 @@ import AppKit
 import ImageIO
 import SwiftUI
 
-/// A lazy, read-only gallery of the exact images published in ``images/``.
-/// Image paths come from the engine; the native client never scans or mutates
-/// the dataset independently.
+/// Browses and edits the exact scene-owned dataset. The engine remains the
+/// authority for image discovery, selection mutation, and downstream invalidation.
 struct DatasetImageBrowser: View {
     let scene: URL
     let images: [DatasetImageSummary]
@@ -12,9 +11,18 @@ struct DatasetImageBrowser: View {
     let imageCount: Int
     let hasMore: Bool
     let isLoading: Bool
+    let isMutating: Bool
     let onLoadMore: () -> Void
+    let onAdd: ([URL]) -> Void
+    let onRemove: ([String]) -> Void
 
     @State private var selectedImage: DatasetImageSummary?
+    @State private var selectedPaths = Set<String>()
+    @State private var selectionAnchor: Int?
+    @State private var showMaskOverlay = true
+    @State private var confirmsRemoval = false
+
+    private var maskCount: Int { images.filter { $0.maskRelativePath != nil }.count }
 
     var body: some View {
         StudioContentCard("Published image dataset", systemImage: "photo.on.rectangle.angled") {
@@ -26,27 +34,32 @@ struct DatasetImageBrowser: View {
                 )
             } else {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("\(imageCount) canonical images · \(images.count) shown")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-
+                    header
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 142, maximum: 190), spacing: 12)], spacing: 12) {
                         ForEach(images) { image in
-                            Button {
-                                selectedImage = image
-                            } label: {
-                                DatasetThumbnail(url: imageURL(for: image), name: image.name, revision: revision)
-                                    // A transactional republish can replace a filename.
-                                    .id(DatasetImageCacheKey(path: image.relativePath, revision: revision))
+                            Button { select(image) } label: {
+                                DatasetThumbnail(
+                                    url: imageURL(for: image),
+                                    maskURL: maskURL(for: image),
+                                    name: image.name,
+                                    revision: revision,
+                                    showMaskOverlay: showMaskOverlay
+                                )
+                                .id(DatasetImageCacheKey(path: image.relativePath, revision: revision))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(selectedPaths.contains(image.relativePath) ? Color.accentColor : .clear, lineWidth: 3)
+                                }
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("Preview \(image.name)")
+                            .accessibilityLabel(selectedPaths.contains(image.relativePath) ? "Selected \(image.name)" : "Select \(image.name)")
+                            .accessibilityHint("Command-click selects multiple images. Shift-click selects a range. Use Inspect Selection to preview one image.")
                         }
                     }
 
                     if hasMore {
                         Button("Show more images", systemImage: "plus") { onLoadMore() }
-                            .disabled(isLoading)
+                            .disabled(isLoading || isMutating)
                             .buttonStyle(.bordered)
                     } else if isLoading {
                         ProgressView("Loading images…")
@@ -54,13 +67,100 @@ struct DatasetImageBrowser: View {
                 }
             }
         }
+        .onChange(of: revision) { _, _ in
+            selectedPaths.removeAll()
+            selectionAnchor = nil
+            selectedImage = nil
+        }
+        .onDeleteCommand { requestRemoval() }
+        .confirmationDialog(
+            "Remove \(selectedPaths.count) photo\(selectedPaths.count == 1 ? "" : "s")?",
+            isPresented: $confirmsRemoval,
+            titleVisibility: .visible
+        ) {
+            Button("Remove and reset derived outputs", role: .destructive) {
+                let removals = images.filter { selectedPaths.contains($0.relativePath) }.map(\.name)
+                selectedPaths.removeAll()
+                selectionAnchor = nil
+                onRemove(removals)
+            }
+        } message: {
+            Text("The selected published photos will be removed. Existing masks, COLMAP reconstruction, and training or LOD outputs are archived because they no longer match the dataset.")
+        }
         .sheet(item: $selectedImage) { image in
-            DatasetImageDetail(image: image, url: imageURL(for: image), revision: revision)
+            DatasetImageDetail(
+                image: image,
+                url: imageURL(for: image),
+                maskURL: maskURL(for: image),
+                revision: revision
+            )
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(imageCount) canonical images · \(images.count) shown")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Add Photos…", systemImage: "plus") {
+                    let photos = SourcePicker.choosePhotoFiles()
+                    guard !photos.isEmpty else { return }
+                    onAdd(photos)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isMutating)
+
+                Button("Inspect Selection", systemImage: "eye") {
+                    selectedImage = images.first { selectedPaths.contains($0.relativePath) }
+                }
+                .buttonStyle(.bordered)
+                .disabled(selectedPaths.count != 1 || isMutating)
+
+                Button("Remove Selection", systemImage: "trash") { requestRemoval() }
+                    .buttonStyle(.bordered)
+                    .disabled(selectedPaths.isEmpty || isMutating)
+            }
+            if maskCount > 0 {
+                Toggle("Show SAM masks on thumbnails (\(maskCount) available)", isOn: $showMaskOverlay)
+                    .font(.callout)
+            }
+        }
+    }
+
+    private func requestRemoval() {
+        guard !selectedPaths.isEmpty, !isMutating else { return }
+        confirmsRemoval = true
+    }
+
+    private func select(_ image: DatasetImageSummary) {
+        guard let index = images.firstIndex(where: { $0.relativePath == image.relativePath }) else { return }
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.shift), let selectionAnchor {
+            let range = min(selectionAnchor, index)...max(selectionAnchor, index)
+            if flags.contains(.command) {
+                selectedPaths.formUnion(range.map { images[$0].relativePath })
+            } else {
+                selectedPaths = Set(range.map { images[$0].relativePath })
+            }
+        } else if flags.contains(.command) {
+            if !selectedPaths.insert(image.relativePath).inserted {
+                selectedPaths.remove(image.relativePath)
+            }
+            selectionAnchor = index
+        } else {
+            selectedPaths = [image.relativePath]
+            selectionAnchor = index
         }
     }
 
     private func imageURL(for image: DatasetImageSummary) -> URL {
         scene.appending(path: image.relativePath)
+    }
+
+    private func maskURL(for image: DatasetImageSummary) -> URL? {
+        image.maskRelativePath.map { scene.appending(path: $0) }
     }
 }
 
@@ -71,13 +171,16 @@ private struct DatasetImageCacheKey: Hashable {
 
 private struct DatasetThumbnail: View {
     let url: URL
+    let maskURL: URL?
     let name: String
     let revision: String
+    let showMaskOverlay: Bool
     @State private var thumbnail: NSImage?
+    @State private var maskThumbnail: NSImage?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Group {
+            ZStack {
                 if let thumbnail {
                     Image(nsImage: thumbnail)
                         .resizable()
@@ -85,6 +188,9 @@ private struct DatasetThumbnail: View {
                 } else {
                     ContentUnavailableView("", systemImage: "photo")
                         .symbolRenderingMode(.hierarchical)
+                }
+                if showMaskOverlay, let maskThumbnail {
+                    MaskTint(image: maskThumbnail)
                 }
             }
             .frame(height: 106)
@@ -100,7 +206,11 @@ private struct DatasetThumbnail: View {
         }
         .task(id: DatasetImageCacheKey(path: url.path, revision: revision)) {
             thumbnail = nil
+            maskThumbnail = nil
             thumbnail = await DatasetImageDecoder.shared.thumbnail(for: url)
+            if let maskURL {
+                maskThumbnail = await DatasetImageDecoder.shared.thumbnail(for: maskURL)
+            }
         }
     }
 }
@@ -114,9 +224,11 @@ private struct DatasetImageDetail: View {
 
     let image: DatasetImageSummary
     let url: URL
+    let maskURL: URL?
     let revision: String
     @Environment(\.dismiss) private var dismiss
     @State private var previewState = PreviewState.loading
+    @State private var maskPreviewState = PreviewState.loading
     @State private var retryID = UUID()
 
     var body: some View {
@@ -140,9 +252,15 @@ private struct DatasetImageDetail: View {
         .padding(28)
         .task(id: DatasetImageCacheKey(path: url.path, revision: "\(revision):\(retryID.uuidString)")) {
             previewState = .loading
+            maskPreviewState = .loading
             let preview = await DatasetImageDecoder.shared.preview(for: url)
             guard !Task.isCancelled else { return }
             previewState = preview.map(PreviewState.loaded) ?? .failed
+            if let maskURL {
+                let mask = await DatasetImageDecoder.shared.preview(for: maskURL)
+                guard !Task.isCancelled else { return }
+                maskPreviewState = mask.map(PreviewState.loaded) ?? .failed
+            }
         }
     }
 
@@ -152,10 +270,33 @@ private struct DatasetImageDetail: View {
         case .loading:
             ProgressView("Loading preview…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .loaded(let image):
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
+        case .loaded(let source):
+            if let maskURL {
+                HStack(spacing: 18) {
+                    previewImage(source, label: "Source image")
+                    switch maskPreviewState {
+                    case .loading:
+                        ProgressView("Loading SAM mask…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                    case .loaded(let mask):
+                        ZStack {
+                            Image(nsImage: source).resizable().scaledToFit()
+                            MaskTint(image: mask)
+                        }
+                        .accessibilityLabel("Source image with SAM mask")
+                    case .failed:
+                        ContentUnavailableView("Mask preview unavailable", systemImage: "exclamationmark.triangle")
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    Button("Reveal Mask", systemImage: "folder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([maskURL])
+                    }
+                    .buttonStyle(.bordered)
+                    .padding(8)
+                }
+            } else {
+                previewImage(source, label: "Source image")
+            }
         case .failed:
             ContentUnavailableView {
                 Label("Preview unavailable", systemImage: "exclamationmark.triangle")
@@ -167,6 +308,25 @@ private struct DatasetImageDetail: View {
         }
     }
 
+    private func previewImage(_ image: NSImage, label: String) -> some View {
+        Image(nsImage: image)
+            .resizable()
+            .scaledToFit()
+            .accessibilityLabel(label)
+    }
+}
+
+private struct MaskTint: View {
+    let image: NSImage
+
+    var body: some View {
+        Image(nsImage: image)
+            .renderingMode(.template)
+            .resizable()
+            .scaledToFit()
+            .foregroundStyle(Color.red.opacity(0.48))
+            .accessibilityHidden(true)
+    }
 }
 
 /// Serializes bounded ImageIO decoding away from the UI actor. A dismissed

@@ -15,6 +15,19 @@ enum SourcePicker {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
+    /// Select one or several photos to copy into the published scene dataset.
+    static func choosePhotoFiles() -> [URL] {
+        let panel = NSOpenPanel()
+        panel.title = "Add Photos to Dataset"
+        panel.message = "Choose image files to copy into this scene. Changing the dataset archives derived masks, reconstruction, and training outputs."
+        panel.prompt = "Add Photos"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.image]
+        return panel.runModal() == .OK ? panel.urls : []
+    }
+
     /// Select an empty destination folder for a new Gausser project.
     static func chooseNewProjectDirectory() -> URL? {
         let panel = NSOpenPanel()

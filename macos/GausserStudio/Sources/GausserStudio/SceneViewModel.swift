@@ -35,13 +35,22 @@ struct DatasetImageSummary: Decodable, Identifiable, Equatable {
     let relativePath: String
     let name: String
     let sizeBytes: Int
+    let maskRelativePath: String?
 
     var id: String { relativePath }
+
+    init(relativePath: String, name: String, sizeBytes: Int, maskRelativePath: String? = nil) {
+        self.relativePath = relativePath
+        self.name = name
+        self.sizeBytes = sizeBytes
+        self.maskRelativePath = maskRelativePath
+    }
 
     enum CodingKeys: String, CodingKey {
         case name
         case relativePath = "relative_path"
         case sizeBytes = "size_bytes"
+        case maskRelativePath = "mask_relative_path"
     }
 }
 
@@ -154,6 +163,7 @@ final class SceneViewModel {
     private(set) var isStartingStage = false
     private(set) var isRefreshing = false
     private(set) var isIngesting = false
+    private(set) var isMutatingDataset = false
     private(set) var isLoadingDatasetImages = false
     private var datasetRequestGeneration = 0
     private(set) var isReimporting = false
@@ -198,12 +208,16 @@ final class SceneViewModel {
 
     /// Configuration is read-only until its explicit Run action. It must remain
     /// available even when a stage's execution prerequisites are not met.
+    private var hasActiveSceneMutation: Bool {
+        activeRun != nil || isStartingStage || isIngesting || isMutatingDataset || isReimporting
+    }
+
     var canConfigureStages: Bool {
-        activeRun == nil && !isStartingStage
+        !hasActiveSceneMutation
     }
 
     var canStartStage: Bool {
-        activeRun == nil && !isStartingStage
+        !hasActiveSceneMutation
     }
 
     /// The engine keeps a 300-line diagnostic tail; the live strip presents a
@@ -359,6 +373,28 @@ final class SceneViewModel {
         engine.ingestPhotos(scene: scene, source: source, policy: policy) { [weak self] result in
             guard let self else { return }
             self.isIngesting = false
+            switch result {
+            case .success:
+                self.refresh()
+            case .failure(let error):
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func mutateDataset(additions: [URL], removals: [String], policy: String = "copy") {
+        guard !isMutatingDataset, canConfigureStages else {
+            errorMessage = "Wait for the active operation to finish first."
+            return
+        }
+        guard let revision = datasetRevision else {
+            errorMessage = "Reload the dataset before editing it."
+            return
+        }
+        isMutatingDataset = true
+        engine.mutateDataset(scene: scene, additions: additions, removals: removals, policy: policy, revision: revision) { [weak self] result in
+            guard let self else { return }
+            self.isMutatingDataset = false
             switch result {
             case .success:
                 self.refresh()
@@ -557,6 +593,14 @@ final class SceneViewModel {
             let url = scene.appending(path: image.relativePath).standardizedFileURL
             guard url.deletingLastPathComponent() == imageDirectory else {
                 throw EngineClientError(message: "The engine returned a dataset image outside this scene.")
+            }
+            if let maskRelativePath = image.maskRelativePath {
+                let expectedMask = "masks/\(URL(fileURLWithPath: image.name).deletingPathExtension().lastPathComponent).png"
+                let maskURL = scene.appending(path: maskRelativePath).standardizedFileURL
+                let masksDirectory = scene.appending(path: "masks", directoryHint: .isDirectory).standardizedFileURL
+                guard maskRelativePath == expectedMask, maskURL.deletingLastPathComponent() == masksDirectory else {
+                    throw EngineClientError(message: "The engine returned an invalid dataset mask path.")
+                }
             }
             return image
         }

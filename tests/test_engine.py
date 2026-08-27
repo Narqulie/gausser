@@ -462,3 +462,73 @@ def test_engine_cancel_sets_the_stage_cancellation_event(scene: Path):
     assert observed_cancel.is_set()
     assert events[-2] == {"id": "cancel", "result": {"run_id": run_id, "cancellation_requested": True}}
     assert finished["run"]["state"] == "cancelled"
+
+
+def test_engine_mutates_dataset_and_archives_derived_outputs(tmp_path: Path):
+    from PIL import Image
+    from gausser.dataset import list_dataset_images
+    from gausser.engine import GausserEngine
+    from gausser.scene import initialize_scene
+
+    root = tmp_path / "editable"
+    root.mkdir()
+    paths = initialize_scene(root)
+    scene = paths.root
+    Image.new("RGB", (2, 2)).save(paths.images / "old.jpg")
+    paths.brush_masks.mkdir()
+    (paths.brush_masks / "old.png").write_bytes(b"mask")
+    paths.sparse.mkdir()
+    (paths.sparse / "model.bin").write_bytes(b"model")
+    source = tmp_path / "new.jpg"
+    Image.new("RGB", (2, 2)).save(source)
+    revision = list_dataset_images(paths).revision
+
+    events: list[dict] = []
+    GausserEngine().dispatch(
+        {"id": "edit-dataset", "method": "mutate_dataset", "params": {
+            "scene": str(scene), "additions": [str(source)], "removals": ["old.jpg"],
+            "policy": "copy", "revision": revision,
+        }},
+        events.append,
+    )
+
+    assert events[0]["id"] == "edit-dataset"
+    assert events[0]["result"]["added"] == ["new.jpg"]
+    assert events[0]["result"]["removed"] == ["old.jpg"]
+    assert (paths.images / "new.jpg").is_file()
+    assert not (paths.images / "old.jpg").exists()
+    archive = paths.root / events[0]["result"]["archive"]
+    assert (archive / "masks" / "old.png").is_file()
+    assert (archive / "sparse" / "model.bin").is_file()
+
+
+def test_engine_rejects_stale_dataset_mutation(tmp_path: Path):
+    from PIL import Image
+    from gausser.dataset import list_dataset_images
+    from gausser.engine import GausserEngine
+    from gausser.ingest import mutate_photo_dataset
+    from gausser.scene import initialize_scene
+
+    root = tmp_path / "editable"
+    root.mkdir()
+    paths = initialize_scene(root)
+    scene = paths.root
+    Image.new("RGB", (2, 2)).save(paths.images / "first.jpg")
+    stale_revision = list_dataset_images(paths).revision
+    source = tmp_path / "new.jpg"
+    Image.new("RGB", (2, 2)).save(source)
+    mutate_photo_dataset(paths, additions=[source], removals=[], policy="copy")
+
+    events: list[dict] = []
+    GausserEngine().dispatch(
+        {"id": "stale-edit", "method": "mutate_dataset", "params": {
+            "scene": str(scene), "additions": [], "removals": ["first.jpg"],
+            "policy": "copy", "revision": stale_revision,
+        }},
+        events.append,
+    )
+
+    assert events == [{"id": "stale-edit", "error": {
+        "code": "dataset_changed", "message": "dataset changed; reload it before editing",
+    }}]
+    assert (paths.images / "first.jpg").is_file()

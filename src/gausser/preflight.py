@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import importlib.util
 from pathlib import Path
 import shutil
+import subprocess
 
 from .colmap_model import read_model_stats
 from .scene import SceneError, ScenePaths
@@ -51,6 +52,21 @@ def inspect_scene(paths: ScenePaths) -> list[Readiness]:
     ]
 
 
+def _sammer_runtime_status(command: str | None) -> Readiness:
+    if not command:
+        return Readiness("sammer", "unavailable", "Install the sammer command and SAM3 runtime")
+    try:
+        result = subprocess.run(
+            [command, "--check-runtime"], capture_output=True, text=True, timeout=20, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return Readiness("sammer", "unavailable", f"SAM3 runtime check failed: {exc}")
+    if result.returncode == 0:
+        return Readiness("sammer", "ready", "sammer + compatible SAM3 runtime")
+    detail = (result.stderr or result.stdout).strip().splitlines()
+    return Readiness("sammer", "unavailable", detail[-1] if detail else "SAM3 runtime check failed")
+
+
 def inspect_tools() -> list[Readiness]:
     # Check the executables SceneController will actually launch.  Checking
     # implementation modules such as ``sam3`` reports false negatives for the
@@ -64,9 +80,9 @@ def inspect_tools() -> list[Readiness]:
         "ready" if shutil.which("sharpframes") and shutil.which("sharp-frames") else "unavailable",
         "sharpframes + sharp-frames" if shutil.which("sharpframes") and shutil.which("sharp-frames") else "Install Sharp Frames with `pip install sharp-frames`",
     )
-    readiness = [sharpframes, *[
+    readiness = [sharpframes, _sammer_runtime_status(shutil.which("sammer")), *[
         Readiness(stage, "ready" if shutil.which(binary) else "unavailable", binary)
-        for stage, binary in tools
+        for stage, binary in tools if stage != "sammer"
     ]]
     if importlib.util.find_spec("msplat") is None:
         return [

@@ -243,7 +243,10 @@ struct SceneNavigator: View {
                         imageCount: model.datasetImageCount,
                         hasMore: model.nextDatasetImageOffset != nil,
                         isLoading: model.isLoadingDatasetImages,
-                        onLoadMore: model.loadMoreDatasetImages
+                        isMutating: !model.canConfigureStages,
+                        onLoadMore: model.loadMoreDatasetImages,
+                        onAdd: { model.mutateDataset(additions: $0, removals: []) },
+                        onRemove: { model.mutateDataset(additions: [], removals: $0) }
                     )
                     StepNavigation(next: .sammer) { step = $0 }
                 }
@@ -323,6 +326,7 @@ struct SceneNavigator: View {
                 definition: model.stageCatalog[stage],
                 pendingRun: pendingRun,
                 isStarting: model.isStartingStage,
+                canLaunch: model.canStartStage,
                 onBackToSettings: { navigation.returnedToSettings() },
                 onRun: {
                     requestedStage = pendingRun.stage

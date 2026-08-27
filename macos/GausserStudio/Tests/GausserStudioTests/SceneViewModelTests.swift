@@ -105,10 +105,14 @@ func sceneViewModelRejectsDatasetPathsOutsideItsImagesDirectory() throws {
     let model = SceneViewModel(scene: scene, engine: EngineClient())
     let valid = DatasetImageSummary(relativePath: "images/frame.jpg", name: "frame.jpg", sizeBytes: 1)
     let escaping = DatasetImageSummary(relativePath: "images/../../outside.jpg", name: "outside.jpg", sizeBytes: 1)
+    let invalidMask = DatasetImageSummary(relativePath: "images/frame.jpg", name: "frame.jpg", sizeBytes: 1, maskRelativePath: "masks/../../outside.png")
 
     #expect(try model.validateDatasetImages([valid]) == [valid])
     #expect(throws: EngineClientError.self) {
         try model.validateDatasetImages([escaping])
+    }
+    #expect(throws: EngineClientError.self) {
+        try model.validateDatasetImages([invalidMask])
     }
 }
 

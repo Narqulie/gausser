@@ -60,17 +60,20 @@ Requests:
 {"id":"req-4","method":"reconstruction","params":{"scene":"/absolute/scene"}}
 {"id":"req-5","method":"dataset_images","params":{"scene":"/absolute/scene","offset":0,"limit":200}}
 {"id":"req-6","method":"ingest_photos","params":{"scene":"/absolute/scene","source":"/absolute/photos","policy":"copy"}}
-{"id":"req-7","method":"reimport_supersplat","params":{"scene":"/absolute/scene","source":"runs/brush/run/exports/scene.ply","edited":"/absolute/edited.ply"}}
-{"id":"req-8","method":"resolve_stage","params":{"scene":"/absolute/scene","stage":"sharpframes","options":{"source":"/absolute/clips","fps":2}}}
-{"id":"req-9","method":"start","params":{"scene":"/absolute/scene","stage":"sharpframes","options":{"source":"/absolute/clips","fps":2}}}
-{"id":"req-10","method":"start","params":{"scene":"/absolute/scene","stage":"colmap","arguments":["--matcher","sequential"]}}
-{"id":"req-11","method":"cancel","params":{"run_id":"run-123"}}
-{"id":"req-12","method":"status","params":{}}
+{"id":"req-7","method":"mutate_dataset","params":{"scene":"/absolute/scene","additions":["/absolute/new.jpg"],"removals":["old.jpg"],"policy":"copy"}}
+{"id":"req-8","method":"reimport_supersplat","params":{"scene":"/absolute/scene","source":"runs/brush/run/exports/scene.ply","edited":"/absolute/edited.ply"}}
+{"id":"req-9","method":"resolve_stage","params":{"scene":"/absolute/scene","stage":"sharpframes","options":{"source":"/absolute/clips","fps":2}}}
+{"id":"req-10","method":"start","params":{"scene":"/absolute/scene","stage":"sharpframes","options":{"source":"/absolute/clips","fps":2}}}
+{"id":"req-11","method":"start","params":{"scene":"/absolute/scene","stage":"colmap","arguments":["--matcher","sequential"]}}
+{"id":"req-12","method":"cancel","params":{"run_id":"run-123"}}
+{"id":"req-13","method":"status","params":{}}
 ```
 
 `reconstruction` returns a fingerprint-stable, structurally validated completed `sparse/0` model's camera centres plus deterministic bounded samples of cameras (750 maximum) and coloured `points3D` geometry (4,000 maximum), alongside the full counts. This is view-only preview data—not a generated PLY artifact—and is intentionally not a claim of live COLMAP mapping: COLMAP writes stable geometry and poses when the mapper publishes its model.
 
-`dataset_images` returns a page of authoritative direct `images/` children (`relative_path`, name, and byte size), the complete count, an optional `next_offset`, and a generation `revision`. Later pages send that revision; the engine rejects a changed dataset rather than allowing the client to mix generations. It does not scan source folders or transmit image bytes. The native client validates returned paths as direct children before resolving them through its already-authorized scene URL and produces bounded thumbnails locally.
+`dataset_images` returns a page of authoritative direct `images/` children (`relative_path`, name, byte size, and an optional direct `masks/<stem>.png` SAM-mask path), the complete count, an optional `next_offset`, and a generation `revision`. Later pages send that revision; the engine rejects a changed dataset rather than allowing the client to mix generations. It does not scan source folders or transmit image bytes. The native client validates returned paths as direct children before resolving them through its already-authorized scene URL and produces bounded thumbnails locally.
+
+`mutate_dataset` atomically adds copied or linked photo files and/or removes canonical file names. It validates the replacement dataset first, then archives the prior masks, COLMAP artifacts, and training/LOD runs under `.gausser/invalidated/` because they no longer match the source image set. Manifest recording occurs inside the publication transaction; failure restores every original path.
 
 Synchronous responses use `{ "id": ..., "result": ... }` or
 `{ "id": ..., "error": { "code": ..., "message": ... } }`.

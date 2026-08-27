@@ -41,6 +41,7 @@ from .engine import (
     ImageResult,
     Sam3Predictor,
     resolve_device,
+    validate_sam3_runtime,
     save_brush_mask,
     save_colmap_mask,
 )
@@ -169,7 +170,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         description="Mask images with SAM3 for 3D Gaussian Splatting pipelines.",
     )
     parser.add_argument(
-        "--prompt", "-p", required=True,
+        "--check-runtime", action="store_true",
+        help="Validate the installed SAM3 Python API without loading model weights",
+    )
+    parser.add_argument(
+        "--prompt", "-p", required=False,
         help="Subject description for SAM3 (e.g. 'fountain', 'statue')",
     )
     parser.add_argument(
@@ -214,6 +219,16 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
 
     args = parser.parse_args(argv)
+    if args.check_runtime:
+        try:
+            validate_sam3_runtime()
+        except ImportError as exc:
+            console.print(f"[bold red]SAM3 runtime unavailable:[/bold red] {exc}")
+            raise SystemExit(1) from exc
+        console.print("[green]SAM3 runtime import is ready.[/green]")
+        return
+    if not args.prompt:
+        parser.error("--prompt is required unless --check-runtime is used")
 
     # ── Resolve paths ──────────────────────────────────────────────────────────
     if args.scene and args.output:

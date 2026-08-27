@@ -94,6 +94,27 @@ final class EngineClient {
         )
     }
 
+    func mutateDataset(
+        scene: URL,
+        additions: [URL],
+        removals: [String],
+        policy: String,
+        revision: String,
+        completion: @escaping (Result<EngineMessage, Error>) -> Void
+    ) {
+        send(
+            method: "mutate_dataset",
+            params: [
+                "scene": .string(scene.path),
+                "additions": .array(additions.map { .string($0.path) }),
+                "removals": .array(removals.map(JSONValue.string)),
+                "policy": .string(policy),
+                "revision": .string(revision),
+            ],
+            completion: completion
+        )
+    }
+
     func reimportSuperSplat(
         scene: URL,
         sourceRelativePath: String,

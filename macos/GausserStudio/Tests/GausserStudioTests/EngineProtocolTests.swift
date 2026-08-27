@@ -79,12 +79,12 @@ import Testing
 
 @Test func datasetImageResponseDecodesEngineOwnedRelativePaths() throws {
     let data = Data("""
-    {"images":[{"relative_path":"images/frame_0001.jpg","name":"frame_0001.jpg","size_bytes":1234}],"image_count":425,"next_offset":200,"revision":"dataset-v1"}
+    {"images":[{"relative_path":"images/frame_0001.jpg","name":"frame_0001.jpg","size_bytes":1234,"mask_relative_path":"masks/frame_0001.png"}],"image_count":425,"next_offset":200,"revision":"dataset-v1"}
     """.utf8)
 
     let response = try JSONDecoder().decode(DatasetImageResponse.self, from: data)
 
-    #expect(response.images == [DatasetImageSummary(relativePath: "images/frame_0001.jpg", name: "frame_0001.jpg", sizeBytes: 1234)])
+    #expect(response.images == [DatasetImageSummary(relativePath: "images/frame_0001.jpg", name: "frame_0001.jpg", sizeBytes: 1234, maskRelativePath: "masks/frame_0001.png")])
     #expect(response.imageCount == 425)
     #expect(response.nextOffset == 200)
     #expect(response.revision == "dataset-v1")

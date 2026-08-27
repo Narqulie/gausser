@@ -22,7 +22,7 @@ from .artifacts import list_artifacts
 from .colmap_model import read_reconstruction_preview
 from .controller import SceneController, Stage, StageRequest
 from .dataset import DatasetChangedError, list_dataset_images
-from .ingest import ingest_photo_directory
+from .ingest import ingest_photo_directory, mutate_photo_dataset
 from .manifest import record_run_finished, record_run_started
 from .preflight import inspect_scene, inspect_tools
 from .process import CommandResult
@@ -137,7 +137,7 @@ class GausserEngine:
                     revision=revision,
                 )
                 emit({"id": request_id, "result": {
-                    "images": [asdict(image) for image in page.images],
+                    "images": [{key: value for key, value in asdict(image).items() if value is not None} for image in page.images],
                     "image_count": page.total_count,
                     "next_offset": page.next_offset,
                     "revision": page.revision,
@@ -168,6 +168,25 @@ class GausserEngine:
                         "source": str(result.source),
                         "policy": result.policy.value,
                         "image_count": len(result.images),
+                    },
+                })
+            elif method == "mutate_dataset":
+                scene = self._scene_from_params(params)
+                additions = self._string_array(params, "additions")
+                removals = self._string_array(params, "removals")
+                policy = self._required_string(params, "policy")
+                expected_revision = self._required_string(params, "revision")
+                with self._scene_mutation(scene):
+                    current_revision = list_dataset_images(scene, offset=0, limit=1).revision
+                    if expected_revision != current_revision:
+                        raise DatasetChangedError("dataset changed; reload it before editing")
+                    result = mutate_photo_dataset(scene, additions=additions, removals=removals, policy=policy)
+                emit({
+                    "id": request_id,
+                    "result": {
+                        "added": list(result.added),
+                        "removed": list(result.removed),
+                        "archive": str(scene.relative_path(result.archive)),
                     },
                 })
             elif method == "reimport_supersplat":
@@ -248,6 +267,13 @@ class GausserEngine:
         value = params.get(name)
         if not isinstance(value, str) or not value:
             raise RequestError(f"{name} must be a non-empty string")
+        return value
+
+    @staticmethod
+    def _string_array(params: dict[str, object], name: str) -> list[str]:
+        value = params.get(name, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+            raise RequestError(f"{name} must be an array of non-empty strings")
         return value
 
     @staticmethod

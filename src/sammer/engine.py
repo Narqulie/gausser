@@ -30,6 +30,20 @@ def resolve_device(device: str) -> str:
 # ── SAM 3 predictor ──────────────────────────────────────────────────────────────
 
 
+def validate_sam3_runtime() -> None:
+    """Raise a clear error unless the external SAM3 API is import-compatible."""
+    try:
+        from sam3.model_builder import build_sam3_image_model  # noqa: F401
+        from sam3.model.sam3_image_processor import Sam3Processor  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "SAM 3 is not installed or is incompatible. Install it with:\n"
+            "  pip install git+https://github.com/facebookresearch/sam3.git\n"
+            "Then authenticate:\n"
+            "  hf auth login"
+        ) from exc
+
+
 class SegmentResult(NamedTuple):
     mask: np.ndarray   # bool (H, W)
     box: np.ndarray    # float (4,) [x1, y1, x2, y2]
@@ -51,16 +65,9 @@ class Sam3Predictor:
         self._load_model(checkpoint)
 
     def _load_model(self, checkpoint: str | None) -> None:
-        try:
-            from sam3.model_builder import build_sam3_image_model
-            from sam3.model.sam3_image_processor import Sam3Processor
-        except ImportError as exc:
-            raise ImportError(
-                "SAM 3 is not installed. Install it with:\n"
-                "  pip install git+https://github.com/facebookresearch/sam3.git\n"
-                "Then authenticate:\n"
-                "  hf auth login"
-            ) from exc
+        validate_sam3_runtime()
+        from sam3.model_builder import build_sam3_image_model
+        from sam3.model.sam3_image_processor import Sam3Processor
 
         local_path = Path(checkpoint) if checkpoint else None
         use_local = (
