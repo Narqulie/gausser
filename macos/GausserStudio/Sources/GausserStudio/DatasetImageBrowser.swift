@@ -35,7 +35,11 @@ struct DatasetImageBrowser: View {
             } else {
                 VStack(alignment: .leading, spacing: 14) {
                     header
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 142, maximum: 190), spacing: 12)], spacing: 12) {
+                    // A fixed tile height gives LazyVGrid a stable row measure while
+                    // ImageIO thumbnails arrive asynchronously. Without it, AppKit can
+                    // briefly reuse a zero-height row during an invalidation and stack
+                    // the next row over it.
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 142, maximum: 190), spacing: 16)], spacing: 16) {
                         ForEach(images) { image in
                             Button { select(image) } label: {
                                 DatasetThumbnail(
@@ -46,6 +50,7 @@ struct DatasetImageBrowser: View {
                                     showMaskOverlay: showMaskOverlay
                                 )
                                 .id(DatasetImageCacheKey(path: image.relativePath, revision: revision))
+                                .frame(height: 150, alignment: .top)
                                 .overlay {
                                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                                         .stroke(selectedPaths.contains(image.relativePath) ? Color.accentColor : .clear, lineWidth: 3)
@@ -193,16 +198,17 @@ private struct DatasetThumbnail: View {
                     MaskTint(image: maskThumbnail)
                 }
             }
-            .frame(height: 106)
+            .frame(height: 112)
             .frame(maxWidth: .infinity)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
             Text(name)
                 .font(.caption)
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.middle)
                 .foregroundStyle(.primary)
+                .frame(height: 30, alignment: .topLeading)
         }
         .task(id: DatasetImageCacheKey(path: url.path, revision: revision)) {
             thumbnail = nil
