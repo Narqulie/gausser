@@ -5,7 +5,6 @@ import argparse
 import os
 import sys
 import time
-import shutil
 from pathlib import Path
 
 from gausser.colmap_model import model_format, read_model_stats as _read_model_stats
@@ -49,22 +48,23 @@ def has_colmap_structure(scene: Path) -> bool:
     return False
 
 
+def _is_export_file(path: Path) -> bool:
+    """Exclude macOS metadata that can change independently of real exports."""
+    return path.is_file() and path.name != ".DS_Store" and not path.name.startswith("._")
+
+
 def find_files(scene: Path) -> set[Path]:
-    """Recursively list all files (skipping .DS_Store)."""
-    files = set()
-    for f in scene.rglob("*"):
-        if f.is_file() and f.name != ".DS_Store":
-            files.add(f)
-    return files
+    """Recursively list real export files, excluding macOS metadata sidecars."""
+    return {path for path in scene.rglob("*") if _is_export_file(path)}
 
 
 def get_mtime_snapshot(scene: Path) -> dict[Path, float]:
-    """Get {path: mtime} for all files."""
+    """Get real export-file modification times, excluding macOS metadata."""
     snap = {}
-    for f in scene.rglob("*"):
-        if f.is_file() and f.name != ".DS_Store":
+    for path in scene.rglob("*"):
+        if _is_export_file(path):
             try:
-                snap[f] = os.path.getmtime(f)
+                snap[path] = os.path.getmtime(path)
             except OSError:
                 pass
     return snap
@@ -135,7 +135,7 @@ def wait_for_export(scene: Path) -> bool:
     print(f"┌─ Scene: {scene}")
     print(f"├─ {scene_summary(scene)}")
     print(f"├─ Polling every {POLL_INTERVAL}s, stability window {STABILITY_WINDOW}s")
-    print(f"└─ Waiting up to 3 hours...")
+    print("└─ Waiting up to 3 hours...")
     print()
 
     # Phase 1: Wait for any new files to appear (export to start)
@@ -164,7 +164,7 @@ def wait_for_export(scene: Path) -> bool:
         # After initial delay, check if export already happened
         if elapsed > INITIAL_START_DELAY:
             if has_colmap_structure(scene):
-                print(f"  ✓ COLMAP structure already present!")
+                print("  ✓ COLMAP structure already present!")
                 return True
 
         time.sleep(POLL_INTERVAL)

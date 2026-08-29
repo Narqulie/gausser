@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 from colmapper import cli
-from colmapper.cli import ColmapError, _prepare_artifacts, resolve_gpu
+from colmapper.cli import ColmapError, _stage_artifacts, resolve_gpu
+from gausser.scene import ScenePaths
 
 
 def test_macos_defaults_to_cpu(monkeypatch):
@@ -18,29 +19,34 @@ def test_no_gpu_flag_always_disables_gpu(monkeypatch):
     assert not resolve_gpu(no_gpu=True)
 
 
-def test_existing_artifacts_require_an_explicit_policy(tmp_path: Path):
-    database = tmp_path / "database.db"
-    database.write_text("old")
-    sparse = tmp_path / "sparse"
-    sparse.mkdir()
-    (sparse / "partial").write_text("old")
+def test_existing_artifacts_require_an_explicit_non_destructive_staging_policy(tmp_path: Path):
+    paths = ScenePaths.from_root(tmp_path)
+    paths.database.write_text("old")
+    paths.sparse.mkdir()
+    (paths.sparse / "partial").write_text("old")
 
     with pytest.raises(ColmapError, match="--existing"):
-        _prepare_artifacts(database, sparse, "error")
+        _stage_artifacts(paths, paths.staging_attempt("colmap", "error"), "error")
 
-    _prepare_artifacts(database, sparse, "resume")
-    assert database.exists()
-    assert sparse.exists()
+    staged_database, staged_sparse = _stage_artifacts(
+        paths, paths.staging_attempt("colmap", "resume"), "resume"
+    )
+    assert staged_database.read_text() == "old"
+    assert (staged_sparse / "partial").read_text() == "old"
 
-    _prepare_artifacts(database, sparse, "replace")
-    assert not database.exists()
-    assert not sparse.exists()
+    clean_database, clean_sparse = _stage_artifacts(
+        paths, paths.staging_attempt("colmap", "replace"), "replace"
+    )
+    assert not clean_database.exists()
+    assert not clean_sparse.exists()
+    assert paths.database.read_text() == "old"
+    assert (paths.sparse / "partial").read_text() == "old"
 
 
 def test_vocab_tree_matching_requires_an_existing_tree(monkeypatch, scene):
-    monkeypatch.setattr(cli.shutil, "which", lambda _: "/fake/colmap")
+    monkeypatch.setattr(cli, "resolve_command", lambda _: "/fake/colmap")
 
     with pytest.raises(SystemExit) as exc_info:
         cli.main(["--scene", str(scene), "--matcher", "vocab_tree"])
 
-    assert exc_info.value.code == 1
+    assert exc_info.value.code == 2

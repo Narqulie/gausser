@@ -33,7 +33,14 @@ public enum SplatViewerLoadState: Equatable {
 @MainActor @Observable
 public final class SplatViewerModel {
     public private(set) var state: SplatViewerLoadState = .idle
+    public private(set) var camera = SplatCameraPose.default
+    public private(set) var presentationOrigin = SIMD3<Float>.zero
 
+    private(set) var nearZ: Float = 0.01
+    private(set) var farZ: Float = 100
+    private var sceneRadius: Float = 1
+    private var preferredCamera: SplatCameraPose?
+    private var preferredPivot: SIMD3<Float>?
     private var requestID = 0
 
     public init() {}
@@ -43,6 +50,10 @@ public final class SplatViewerModel {
         do {
             let url = try Self.validatedArtifactURL(artifactURL)
             requestID += 1
+            camera = .default
+            presentationOrigin = .zero
+            preferredCamera = nil
+            preferredPivot = nil
             state = .loading(url)
         } catch {
             state = .failed(artifactURL, message: error.localizedDescription)
@@ -51,7 +62,48 @@ public final class SplatViewerModel {
 
     public func clear() {
         requestID += 1
+        camera = .default
+        presentationOrigin = .zero
+        preferredCamera = nil
+        preferredPivot = nil
         state = .idle
+    }
+
+    public func restoreCamera(_ pose: SplatCameraPose) {
+        guard pose.isValid else { return }
+        camera = pose.normalized
+        preferredCamera = camera
+        preferredPivot = nil
+        updateClipping()
+    }
+
+    public func restorePivot(_ pivot: SIMD3<Float>) {
+        guard isFiniteVector(pivot) else { return }
+        let offset = camera.position - camera.target
+        camera.target = pivot
+        camera.position = pivot + offset
+        preferredPivot = pivot
+        preferredCamera = nil
+        updateClipping()
+    }
+
+    public func setPresentationOrigin(_ origin: SIMD3<Float>) {
+        guard isFiniteVector(origin) else { return }
+        presentationOrigin = origin
+    }
+
+    public func orbit(horizontal: Float, vertical: Float) {
+        camera.orbit(horizontal: horizontal, vertical: vertical)
+    }
+
+    public func pan(horizontal: Float, vertical: Float) {
+        camera.pan(horizontal: horizontal, vertical: vertical)
+    }
+
+    public func zoom(by factor: Float) {
+        guard factor.isFinite, factor > 0 else { return }
+        camera.zoom(by: factor)
+        updateClipping()
     }
 
     fileprivate var pendingRequest: SplatViewerLoadRequest? {
@@ -70,9 +122,26 @@ public final class SplatViewerModel {
         }
     }
 
-    fileprivate func finish(_ request: SplatViewerLoadRequest, splatCount: Int) {
+    fileprivate func finish(_ request: SplatViewerLoadRequest, points: [SplatPoint]) {
         guard request == pendingRequest else { return }
-        state = .loaded(request.url, splatCount: splatCount)
+        let framing = SplatCameraFraming(points: points)
+        sceneRadius = framing.radius
+        nearZ = framing.nearZ
+        farZ = framing.farZ
+        camera = preferredCamera ?? framing.camera
+        if preferredCamera == nil, let preferredPivot {
+            let offset = camera.position - camera.target
+            camera.target = preferredPivot
+            camera.position = preferredPivot + offset
+        }
+        updateClipping()
+        state = .loaded(request.url, splatCount: points.count)
+    }
+
+    private func updateClipping() {
+        let distance = max(simd_distance(camera.position, camera.target), 0.001)
+        nearZ = max(min(distance * 0.01, distance - sceneRadius * 1.5), 0.001)
+        farZ = max(distance + sceneRadius * 4, nearZ + 1)
     }
 
     fileprivate func fail(_ request: SplatViewerLoadRequest, error: Error) {
@@ -157,10 +226,7 @@ public struct SplatViewerHost: NSViewRepresentable {
         private var metalView: MTKView?
         private var commandQueue: MTLCommandQueue?
         private var renderer: SplatRenderer?
-        private var camera = SplatViewerCamera.default
-        private var yaw: Float = 0
-        private var pitch: Float = 0
-        private var zoom: Float = 1
+        private weak var model: SplatViewerModel?
         private var activeRequest: SplatViewerLoadRequest?
         private var loadingTask: Task<Void, Never>?
 
@@ -181,7 +247,11 @@ public struct SplatViewerHost: NSViewRepresentable {
         }
 
         fileprivate func loadIfNeeded(_ request: SplatViewerLoadRequest?, into model: SplatViewerModel) {
-            guard request != activeRequest else { return }
+            self.model = model
+            guard request != activeRequest else {
+                metalView?.draw()
+                return
+            }
             cancelLoad()
             activeRequest = request
             renderer = nil
@@ -227,11 +297,7 @@ public struct SplatViewerHost: NSViewRepresentable {
 
                     guard let self, self.activeRequest == request else { return }
                     self.renderer = renderer
-                    self.camera = SplatViewerCamera(points: points)
-                    self.yaw = 0
-                    self.pitch = 0
-                    self.zoom = 1
-                    model?.finish(request, splatCount: points.count)
+                    model?.finish(request, points: points)
                     self.metalView?.isPaused = false
                 } catch is CancellationError {
                     // A newer explicit selection superseded this request.
@@ -249,17 +315,28 @@ public struct SplatViewerHost: NSViewRepresentable {
         }
 
         @objc private func handlePan(_ gesture: NSPanGestureRecognizer) {
-            guard let view = metalView else { return }
+            guard let view = metalView, let model else { return }
             let translation = gesture.translation(in: view)
-            yaw += Float(translation.x) * 0.008
-            pitch = min(max(pitch + Float(translation.y) * 0.008, -1.45), 1.45)
+            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                let distance = simd_distance(model.camera.position, model.camera.target)
+                let scale = max(distance, 0.001) / Float(max(view.bounds.height, 1)) * 1.6
+                model.pan(
+                    horizontal: -Float(translation.x) * scale,
+                    vertical: Float(translation.y) * scale
+                )
+            } else {
+                model.orbit(
+                    horizontal: Float(translation.x) * 0.008,
+                    vertical: Float(translation.y) * 0.008
+                )
+            }
             gesture.setTranslation(.zero, in: view)
             view.draw()
         }
 
         @objc private func handleMagnify(_ gesture: NSMagnificationGestureRecognizer) {
-            guard let view = metalView else { return }
-            zoom = min(max(zoom * (1 - Float(gesture.magnification)), 0.15), 8)
+            guard let view = metalView, let model else { return }
+            model.zoom(by: min(max(1 - Float(gesture.magnification), 0.15), 8))
             gesture.magnification = 0
             view.draw()
         }
@@ -281,6 +358,7 @@ public struct SplatViewerHost: NSViewRepresentable {
             }
 
             guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+            guard let model else { return }
             let viewport = SplatRenderer.ViewportDescriptor(
                 viewport: MTLViewport(
                     originX: 0,
@@ -290,8 +368,12 @@ public struct SplatViewerHost: NSViewRepresentable {
                     znear: 0,
                     zfar: 1
                 ),
-                projectionMatrix: camera.projection(aspectRatio: Float(view.drawableSize.width / view.drawableSize.height)),
-                viewMatrix: camera.viewMatrix(yaw: yaw, pitch: pitch, zoom: zoom),
+                projectionMatrix: model.camera.projection(
+                    aspectRatio: Float(view.drawableSize.width / view.drawableSize.height),
+                    nearZ: model.nearZ,
+                    farZ: model.farZ
+                ),
+                viewMatrix: model.camera.viewMatrix,
                 screenSize: SIMD2(Int(view.drawableSize.width), Int(view.drawableSize.height))
             )
 
@@ -343,25 +425,123 @@ func awaitCancellableReader<Value: Sendable>(_ readerTask: Task<Value, Error>) a
     }
 }
 
-private struct SplatViewerCamera {
-    let center: SIMD3<Float>
-    let distance: Float
-    let nearZ: Float
-    let farZ: Float
+public struct SplatCameraPose: Equatable, Sendable {
+    public var position: SIMD3<Float>
+    public var target: SIMD3<Float>
+    public var up: SIMD3<Float>
+    public var verticalFOVDegrees: Float
 
-    static let `default` = SplatViewerCamera(
-        center: .zero,
-        distance: 3,
-        nearZ: 0.01,
-        farZ: 100
+    public static let `default` = SplatCameraPose(
+        position: SIMD3(0, 0, 3),
+        target: .zero,
+        up: SIMD3(0, 1, 0),
+        verticalFOVDegrees: 60
     )
 
-    private init(center: SIMD3<Float>, distance: Float, nearZ: Float, farZ: Float) {
-        self.center = center
-        self.distance = distance
-        self.nearZ = nearZ
-        self.farZ = farZ
+    public init(
+        position: SIMD3<Float>,
+        target: SIMD3<Float>,
+        up: SIMD3<Float>,
+        verticalFOVDegrees: Float
+    ) {
+        self.position = position
+        self.target = target
+        self.up = up
+        self.verticalFOVDegrees = verticalFOVDegrees
     }
+
+    fileprivate var isValid: Bool {
+        let forward = target - position
+        let forwardLength = simd_length(forward)
+        let upLength = simd_length(up)
+        return isFiniteVector(position)
+            && isFiniteVector(target)
+            && isFiniteVector(up)
+            && forwardLength > 0.000_001
+            && upLength > 0.000_001
+            && simd_length(simd_cross(forward, up)) > 0.000_001 * forwardLength * upLength
+            && verticalFOVDegrees.isFinite
+            && (1...179).contains(verticalFOVDegrees)
+    }
+
+    fileprivate var normalized: SplatCameraPose {
+        var result = self
+        result.up = simd_normalize(up)
+        return result
+    }
+
+    fileprivate mutating func orbit(horizontal: Float, vertical: Float) {
+        guard isValid, horizontal.isFinite, vertical.isFinite else { return }
+        let stableUp = simd_normalize(up)
+        var offset = position - target
+        offset = simd_quatf(angle: -horizontal, axis: stableUp).act(offset)
+        let forward = simd_normalize(-offset)
+        let right = simd_cross(forward, stableUp)
+        guard simd_length(right) > 0.000_001 else { return }
+        let pitched = simd_quatf(angle: -vertical, axis: simd_normalize(right)).act(offset)
+        let candidateForward = simd_normalize(-pitched)
+        if abs(simd_dot(candidateForward, stableUp)) < 0.995 {
+            offset = pitched
+        }
+        position = target + offset
+        up = stableUp
+    }
+
+    fileprivate mutating func pan(horizontal: Float, vertical: Float) {
+        guard isValid, horizontal.isFinite, vertical.isFinite else { return }
+        let forward = simd_normalize(target - position)
+        let right = simd_cross(forward, simd_normalize(up))
+        guard simd_length(right) > 0.000_001 else { return }
+        let normalizedRight = simd_normalize(right)
+        let cameraUp = simd_normalize(simd_cross(normalizedRight, forward))
+        let translation = normalizedRight * horizontal + cameraUp * vertical
+        position += translation
+        target += translation
+        up = cameraUp
+    }
+
+    fileprivate mutating func zoom(by factor: Float) {
+        guard isValid, factor.isFinite, factor > 0 else { return }
+        let offset = position - target
+        let distance = min(max(simd_length(offset) * factor, 0.001), 1.0e12)
+        position = target + simd_normalize(offset) * distance
+    }
+
+    var viewMatrix: simd_float4x4 {
+        let forward = simd_normalize(target - position)
+        let right = simd_normalize(simd_cross(forward, up))
+        let cameraUp = simd_cross(right, forward)
+        return simd_float4x4(columns: (
+            SIMD4(right.x, cameraUp.x, -forward.x, 0),
+            SIMD4(right.y, cameraUp.y, -forward.y, 0),
+            SIMD4(right.z, cameraUp.z, -forward.z, 0),
+            SIMD4(-simd_dot(right, position), -simd_dot(cameraUp, position), simd_dot(forward, position), 1)
+        ))
+    }
+
+    func projection(aspectRatio: Float, nearZ: Float, farZ: Float) -> simd_float4x4 {
+        let radians = verticalFOVDegrees * .pi / 180
+        let yScale = 1 / tan(radians / 2)
+        let xScale = yScale / max(aspectRatio, 0.001)
+        let zScale = farZ / (nearZ - farZ)
+        return simd_float4x4(columns: (
+            SIMD4(xScale, 0, 0, 0),
+            SIMD4(0, yScale, 0, 0),
+            SIMD4(0, 0, zScale, -1),
+            SIMD4(0, 0, zScale * nearZ, 0)
+        ))
+    }
+}
+
+private func isFiniteVector(_ value: SIMD3<Float>) -> Bool {
+    value.x.isFinite && value.y.isFinite && value.z.isFinite
+}
+
+private struct SplatCameraFraming {
+    let camera: SplatCameraPose
+    let radius: Float
+    let nearZ: Float
+    let farZ: Float
 
     init(points: [SplatPoint]) {
         var minimum = points[0].position
@@ -371,51 +551,16 @@ private struct SplatViewerCamera {
             maximum = simd_max(maximum, point.position)
         }
 
-        center = (minimum + maximum) / 2
-        let radius = max(simd_length(maximum - minimum) / 2, 0.1)
-        distance = radius / tan(.pi / 6) * 1.25
+        let center = (minimum + maximum) / 2
+        radius = max(simd_length(maximum - minimum) / 2, 0.1)
+        let distance = radius / tan(.pi / 6) * 1.25
         nearZ = max(distance - radius * 2, 0.01)
         farZ = distance + radius * 4
-    }
-
-    func viewMatrix(yaw: Float, pitch: Float, zoom: Float) -> simd_float4x4 {
-        translation(0, 0, -distance * zoom)
-            * rotationX(pitch)
-            * rotationY(yaw)
-            * translation(-center.x, -center.y, -center.z)
-    }
-
-    private func translation(_ x: Float, _ y: Float, _ z: Float) -> simd_float4x4 {
-        simd_float4x4(columns: (
-            SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(x, y, z, 1)
-        ))
-    }
-
-    private func rotationX(_ radians: Float) -> simd_float4x4 {
-        let sinus = sin(radians)
-        let cosinus = cos(radians)
-        return simd_float4x4(columns: (
-            SIMD4(1, 0, 0, 0), SIMD4(0, cosinus, sinus, 0), SIMD4(0, -sinus, cosinus, 0), SIMD4(0, 0, 0, 1)
-        ))
-    }
-
-    private func rotationY(_ radians: Float) -> simd_float4x4 {
-        let sinus = sin(radians)
-        let cosinus = cos(radians)
-        return simd_float4x4(columns: (
-            SIMD4(cosinus, 0, -sinus, 0), SIMD4(0, 1, 0, 0), SIMD4(sinus, 0, cosinus, 0), SIMD4(0, 0, 0, 1)
-        ))
-    }
-
-    func projection(aspectRatio: Float) -> simd_float4x4 {
-        let yScale = 1 / tan(Float.pi / 6)
-        let xScale = yScale / aspectRatio
-        let zScale = farZ / (nearZ - farZ)
-        return simd_float4x4(columns: (
-            SIMD4(xScale, 0, 0, 0),
-            SIMD4(0, yScale, 0, 0),
-            SIMD4(0, 0, zScale, -1),
-            SIMD4(0, 0, zScale * nearZ, 0)
-        ))
+        camera = SplatCameraPose(
+            position: center + SIMD3(0, 0, distance),
+            target: center,
+            up: SIMD3(0, 1, 0),
+            verticalFOVDegrees: 60
+        )
     }
 }

@@ -13,7 +13,7 @@ def _success(command, cwd, output=()):
     return CommandResult(tuple(command), cwd, 0, 0.0, tuple(output), False)
 
 
-def test_lodder_publishes_validated_scene_owned_sog_lod(monkeypatch, scene):
+def test_lodder_publishes_validated_scene_owned_sog_lod(monkeypatch, scene, capsys):
     from lodder import cli
 
     source = scene / "runs" / "brush" / "brush-run" / "exports" / "raatihuoneensuihku.sog"
@@ -35,12 +35,15 @@ def test_lodder_publishes_validated_scene_owned_sog_lod(monkeypatch, scene):
             output.write_text(json.dumps({"lodLevels": 3, "filenames": ["0_0/meta.json"]}), encoding="utf-8")
         return _success(command, cwd)
 
-    monkeypatch.setattr(cli.shutil, "which", lambda _: "/usr/local/bin/splat-transform")
+    monkeypatch.setattr(cli, "resolve_command", lambda _: "/usr/local/bin/splat-transform")
     monkeypatch.setattr(cli, "run_command", fake_run)
     monkeypatch.setattr(ScenePaths, "new_run_id", lambda _: "lod-run")
 
     cli.main([str(source), "--scene", str(scene), "--chunk-count", "1024", "--chunk-extent", "32"])
 
+    rendered = capsys.readouterr().out
+    assert "◈ LODDER // STREAMED ARTIFACT SIGNAL" in rendered
+    assert "◆ LOD ARTIFACT ONLINE" in rendered
     output = scene / "runs" / "lod" / "lod-run"
     assert (output / "lod-meta.json").is_file()
     assert (output / "0_0" / "meta.json").is_file()
@@ -95,10 +98,45 @@ def test_lodder_refuses_incomplete_output(monkeypatch, scene):
             output.write_text(json.dumps({"lodLevels": 3, "filenames": ["0_0/meta.json"]}), encoding="utf-8")
         return _success(command, cwd)
 
-    monkeypatch.setattr(cli.shutil, "which", lambda _: "/usr/local/bin/splat-transform")
+    monkeypatch.setattr(cli, "resolve_command", lambda _: "/usr/local/bin/splat-transform")
     monkeypatch.setattr(cli, "run_command", fake_run)
 
     with pytest.raises(SystemExit, match="1"):
         cli.main([str(source), "--scene", str(scene)])
 
     assert not list((scene / "runs" / "lod").glob("*")) if (scene / "runs" / "lod").exists() else True
+
+
+def test_lodder_rolls_back_artifact_when_manifest_transition_fails(monkeypatch, scene):
+    from lodder import cli
+
+    source = scene / "runs" / "brush" / "brush-run" / "exports" / "source.ply"
+    source.parent.mkdir(parents=True)
+    source.write_text("ply source", encoding="utf-8")
+
+    def fake_run(command, *, cwd, on_line=None, **kwargs):
+        if command[-1] == "--version":
+            return _success(command, cwd, ("splat-transform v3.3.3",))
+        output = Path(command[-1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if "--decimate" in command:
+            output.write_text("ply level", encoding="utf-8")
+        else:
+            (output.parent / "chunk").mkdir()
+            (output.parent / "chunk" / "meta.json").write_text("{}", encoding="utf-8")
+            output.write_text(json.dumps({"lodLevels": 3, "filenames": ["chunk/meta.json"]}), encoding="utf-8")
+        return _success(command, cwd)
+
+    def fail_transition(*_args, **_kwargs):
+        raise OSError("manifest unavailable")
+
+    monkeypatch.setattr(cli, "resolve_command", lambda _: "/usr/local/bin/splat-transform")
+    monkeypatch.setattr(cli, "run_command", fake_run)
+    monkeypatch.setattr("gausser.publish.transition_stage", fail_transition)
+    monkeypatch.setattr(ScenePaths, "new_run_id", lambda _: "manifest-failure")
+
+    with pytest.raises(SystemExit, match="1"):
+        cli.main([str(source), "--scene", str(scene)])
+
+    assert not (scene / "runs" / "lod" / "manifest-failure").exists()
+    assert (scene / ".gausser" / "staging" / "lod-manifest-failure" / "lod-meta.json").is_file()

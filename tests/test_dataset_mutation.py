@@ -97,7 +97,7 @@ def test_dataset_mutation_rolls_back_images_and_dependents_when_manifest_write_f
     def fail_to_record(*args, **kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(ingest, "record_stage", fail_to_record)
+    monkeypatch.setattr("gausser.publish.transition_stage", fail_to_record)
 
     with pytest.raises(OSError, match="disk full"):
         ingest.mutate_photo_dataset(paths, additions=[added], removals=["before.jpg"], policy="copy")
@@ -106,6 +106,9 @@ def test_dataset_mutation_rolls_back_images_and_dependents_when_manifest_write_f
     assert (paths.brush_masks / "before.png").is_file()
     assert paths.manifest.read_bytes() == original_manifest
     assert not (paths.metadata / "invalidated").exists()
+    attempts = list(paths.staging.iterdir())
+    assert len(attempts) == 1
+    assert (attempts[0] / "images" / "after.jpg").is_file()
 
 
 def test_dataset_mutation_requires_direct_supported_additions_and_known_removals(tmp_path: Path):

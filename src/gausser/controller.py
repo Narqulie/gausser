@@ -1,23 +1,22 @@
-"""Stage orchestration boundary shared by Gausser's headless and Textual clients."""
+"""Stage orchestration boundary used by the optional Gausser Studio engine."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from pathlib import Path
 import threading
 from typing import Any, Callable, Literal, Mapping
 
 from .preflight import inspect_scene
 from .process import CommandResult, LineCallback, run_command
-from .scene import ScenePaths
+from .scene import SceneError, ScenePaths
+from .scene_lock import SCENE_LOCK_FD_ENV
 from .stage_events import StageEvent, StageTelemetry
 
 
 Stage = Literal["sharpframes", "sammer", "colmap", "brush", "msplat", "lod"]
-Trainer = Literal["brush", "msplat"]
-_PIPELINE_STAGES: tuple[Stage, Stage] = ("sammer", "colmap")
 StageEventCallback = Callable[[StageEvent], None]
+_MSPLAT_INTERRUPT_GRACE_SECONDS = 300.0
 
 
 class StageUnavailable(RuntimeError):
@@ -59,7 +58,7 @@ class SceneController:
         if request.stage == "brush":
             return ["brusher", str(self.scene.root), *request.arguments]
         if request.stage == "msplat":
-            return ["msplatter", str(self.scene.root), "--allow-unmasked", *request.arguments]
+            return ["msplatter", str(self.scene.root), *request.arguments]
         if request.stage == "lod":
             return ["lodder", "--scene", str(self.scene.root), *request.arguments]
         raise ValueError(f"unknown stage: {request.stage}")
@@ -71,15 +70,19 @@ class SceneController:
         on_line: LineCallback | None = None,
         on_event: StageEventCallback | None = None,
         cancel_event: threading.Event | None = None,
-        inherited_fds: tuple[int, ...] = (),
+        scene_lock_fd: int | None = None,
     ) -> CommandResult:
         state = self.readiness().get(request.stage)
-        if state != "ready":
+        if state not in {"ready", "completed"}:
             raise StageUnavailable(f"{request.stage} is {state}; it cannot be started")
+        try:
+            total_images = len(self.scene.image_files())
+        except SceneError:
+            total_images = 0
         telemetry = StageTelemetry.for_stage(
             request.stage,
             request.arguments,
-            total_images=len(self.scene.image_files()),
+            total_images=total_images,
         )
 
         def handle_line(line: str) -> None:
@@ -89,35 +92,16 @@ class SceneController:
             if event is not None and on_event is not None:
                 on_event(event)
 
+        inherited_fds = (scene_lock_fd,) if scene_lock_fd is not None else ()
+        env = {SCENE_LOCK_FD_ENV: str(scene_lock_fd)} if scene_lock_fd is not None else None
         return self._runner(
             self.command_for(request),
             cwd=self.scene.root,
             on_line=handle_line,
             cancel_event=cancel_event,
+            env=env,
             inherited_fds=inherited_fds,
+            interrupt_grace_seconds=(
+                _MSPLAT_INTERRUPT_GRACE_SECONDS if request.stage == "msplat" else 2.0
+            ),
         )
-
-    def run_pipeline(
-        self,
-        requests: dict[Stage, StageRequest],
-        *,
-        trainer: Trainer = "brush",
-        on_line: LineCallback | None = None,
-        on_event: StageEventCallback | None = None,
-        cancel_event: threading.Event | None = None,
-        inherited_fds: tuple[int, ...] = (),
-    ) -> list[CommandResult]:
-        """Run SAM3, COLMAP, then the explicitly selected trainer."""
-        results: list[CommandResult] = []
-        for stage in (*_PIPELINE_STAGES, trainer):
-            result = self.run(
-                requests[stage],
-                on_line=on_line,
-                on_event=on_event,
-                cancel_event=cancel_event,
-                inherited_fds=inherited_fds,
-            )
-            results.append(result)
-            if not result.succeeded:
-                break
-        return results

@@ -8,8 +8,63 @@ import time
 
 import pytest
 
-from gausser.process import run_command
+from gausser.process import command_environment, resolve_command, run_command
 from gausser.scene_lock import SceneLock, SceneLockError, acquire_scene_lock
+
+
+def test_command_environment_restores_shell_path_after_pyenv_dispatch(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PYENV_ROOT", "/tmp/example-pyenv")
+    monkeypatch.setenv("PYENV_VERSION", "3.12.8")
+    monkeypatch.setenv(
+        "PATH",
+        "/tmp/example-pyenv/versions/3.12.8/bin:/Users/test/.cargo/bin:/tmp/example-pyenv/shims",
+    )
+
+    environment = command_environment()
+
+    assert environment["PATH"] == "/Users/test/.cargo/bin:/tmp/example-pyenv/shims"
+
+
+def test_command_resolution_uses_the_restored_shell_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    pyenv_bin = tmp_path / "pyenv" / "versions" / "3.12.8" / "bin"
+    shell_bin = tmp_path / "shell-bin"
+    pyenv_bin.mkdir(parents=True)
+    shell_bin.mkdir()
+    for directory in (pyenv_bin, shell_bin):
+        command = directory / "stage-command"
+        command.write_text("#!/bin/sh\n")
+        command.chmod(0o755)
+    monkeypatch.setenv("PYENV_ROOT", str(tmp_path / "pyenv"))
+    monkeypatch.setenv("PYENV_VERSION", "3.12.8")
+    monkeypatch.setenv("PATH", f"{pyenv_bin}{os.pathsep}{shell_bin}")
+
+    assert resolve_command("stage-command") == str(shell_bin / "stage-command")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable PATH test")
+def test_runner_resolves_stage_commands_from_the_restored_shell_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    pyenv_bin = tmp_path / "pyenv" / "versions" / "3.12.8" / "bin"
+    shell_bin = tmp_path / "shell-bin"
+    pyenv_bin.mkdir(parents=True)
+    shell_bin.mkdir()
+    for directory, output in ((pyenv_bin, "injected"), (shell_bin, "shell")):
+        command = directory / "stage-command"
+        command.write_text(f"#!/bin/sh\necho {output}\n")
+        command.chmod(0o755)
+    monkeypatch.setenv("PYENV_ROOT", str(tmp_path / "pyenv"))
+    monkeypatch.setenv("PYENV_VERSION", "3.12.8")
+    monkeypatch.setenv("PATH", f"{pyenv_bin}{os.pathsep}{shell_bin}")
+
+    result = run_command(["stage-command"], cwd=tmp_path)
+
+    assert result.succeeded
+    assert result.output_tail == ("shell",)
 
 
 def test_runner_merges_output_and_keeps_a_bounded_tail(tmp_path):

@@ -41,38 +41,6 @@ import Testing
     }
 }
 
-@Test @MainActor func handoffUsesConfiguredApplicationOrSafeFinderAndCopyPathActions() throws {
-    let fixture = try SceneFixture()
-    defer { fixture.remove() }
-    let export = try fixture.write("runs/brush/run-1/exports/training.splat")
-    let artifact = try SceneExportArtifact(scene: fixture.scene, artifact: export)
-    let configuredApp = URL(fileURLWithPath: "/Applications/External Splat Editor.app")
-
-    #expect(
-        SuperSplatHandoff.primaryAction(for: artifact, editor: .init(applicationURL: configuredApp))
-            == .openInConfiguredApplication(artifact: artifact.url, application: configuredApp.standardizedFileURL.resolvingSymlinksInPath())
-    )
-    #expect(SuperSplatHandoff.primaryAction(for: artifact) == .revealInFinder(artifact.url))
-    #expect(SuperSplatHandoff.copyPathAction(for: artifact) == .copyCanonicalPath(artifact.url.path))
-}
-
-@Test func reimportPlanCreatesAFreshDestinationAndRetainsTrainingProvenance() throws {
-    let fixture = try SceneFixture()
-    defer { fixture.remove() }
-    let trainingExport = try fixture.write("runs/brush/run-1/exports/training.ply")
-    let editedExport = try fixture.writeOutside("edited.spz")
-    let source = try SceneExportArtifact(scene: fixture.scene, artifact: trainingExport)
-
-    let plan = try SuperSplatReimportPlan(source: source, editedArtifact: editedExport, importID: "edit-001")
-
-    #expect(plan.destinationURL.path.hasSuffix("runs/supersplat/edit-001/exports/edited.spz"))
-    #expect(plan.destinationURL != source.url)
-    #expect(!FileManager.default.fileExists(atPath: plan.destinationURL.path))
-    #expect(plan.provenance.sourceArtifact == "runs/brush/run-1/exports/training.ply")
-    #expect(plan.provenance.editedArtifactFilename == "edited.spz")
-    #expect(plan.provenance.editor == "SuperSplat")
-}
-
 private struct SceneFixture {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
 

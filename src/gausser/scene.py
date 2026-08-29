@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,7 +20,15 @@ def initialize_scene(root: Path | str) -> "ScenePaths":
     if not paths.root.is_dir():
         raise SceneError(f"Scene root is not a directory: {paths.root}")
 
-    contents = [path for path in paths.root.iterdir() if path.name != ".DS_Store"]
+    contents: list[Path] = []
+    for path in paths.root.iterdir():
+        if path.name == ".DS_Store":
+            continue
+        if path == paths.metadata and path.is_dir():
+            metadata_contents = [child for child in path.iterdir() if child.name != "scene.lock"]
+            contents.extend(metadata_contents)
+            continue
+        contents.append(path)
     if contents:
         raise SceneError(f"New scene directory must be empty: {paths.root}")
 
@@ -36,6 +44,8 @@ def initialize_scene(root: Path | str) -> "ScenePaths":
 
     try:
         for path in (paths.images, paths.runs, paths.metadata, paths.staging):
+            if path.exists():
+                continue
             path.mkdir()
             created.append(path)
         from .manifest import initialize_manifest
@@ -89,6 +99,11 @@ class ScenePaths:
         return self.root / "runs"
 
     @property
+    def presentations(self) -> Path:
+        """Mutable, artifact-bound Scene Composition documents."""
+        return self.root / "presentations"
+
+    @property
     def metadata(self) -> Path:
         return self.root / ".gausser"
 
@@ -111,7 +126,7 @@ class ScenePaths:
         return self.staging / f"{stage}-{attempt_id}"
 
     def new_run_id(self) -> str:
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         return f"{timestamp}-{uuid4().hex[:8]}"
 
     def relative_path(self, path: Path) -> Path:

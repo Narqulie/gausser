@@ -6,8 +6,19 @@ from pathlib import Path
 import threading
 import time
 
+import pytest
+
+from gausser.preflight import Readiness
 from gausser.process import CommandResult
 from gausser.scene import ScenePaths
+
+
+@pytest.fixture(autouse=True)
+def _engine_stage_tools_are_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "gausser.engine.inspect_launch_tool",
+        lambda stage: Readiness(stage, "ready", "test runtime ready"),
+    )
 
 
 def _wait_for(events: list[dict], kind: str, timeout: float = 1.0) -> dict:
@@ -41,7 +52,7 @@ def test_engine_starts_stage_after_acknowledging_and_streams_result(scene: Path)
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
+        def run(self, request, *, on_line, cancel_event, scene_lock_fd, on_event=None):
             on_line("working")
             return CommandResult((request.stage,), self.scene.root, 0, 0.1, ("working",), False)
 
@@ -50,7 +61,7 @@ def test_engine_starts_stage_after_acknowledging_and_streams_result(scene: Path)
         {
             "id": "start-1",
             "method": "start",
-            "params": {"scene": str(scene), "stage": "sammer", "arguments": ["--prompt", "statue"]},
+            "params": {"scene": str(scene), "stage": "sammer", "options": {"prompt": "statue"}},
         },
         events.append,
     )
@@ -61,6 +72,43 @@ def test_engine_starts_stage_after_acknowledging_and_streams_result(scene: Path)
     assert [event["event"] for event in events[1:]] == ["started", "log", "finished"]
     assert finished["run"]["state"] == "succeeded"
     assert finished["run"]["result"]["command"] == ["sammer"]
+
+
+def test_engine_rejects_legacy_raw_stage_arguments(scene: Path):
+    from gausser.engine import GausserEngine
+
+    emitted: list[dict] = []
+    GausserEngine().dispatch(
+        {
+            "id": "legacy",
+            "method": "start",
+            "params": {"scene": str(scene), "stage": "msplat", "arguments": []},
+        },
+        emitted.append,
+    )
+
+    assert emitted == [{
+        "id": "legacy",
+        "error": {
+            "code": "invalid_request",
+            "message": "start accepts typed options only; raw arguments are not supported",
+        },
+    }]
+
+
+def test_engine_requires_typed_options_for_supported_stage(scene: Path):
+    from gausser.engine import GausserEngine
+
+    emitted: list[dict] = []
+    GausserEngine().dispatch(
+        {"id": "missing", "method": "start", "params": {"scene": str(scene), "stage": "brush"}},
+        emitted.append,
+    )
+
+    assert emitted == [{
+        "id": "missing",
+        "error": {"code": "invalid_request", "message": "options must be an object"},
+    }]
 
 
 def test_engine_catalog_and_typed_sharpframes_start_use_engine_resolved_options(scene: Path):
@@ -76,7 +124,7 @@ def test_engine_catalog_and_typed_sharpframes_start_use_engine_resolved_options(
         def command_for(self, request):
             return ["sharpframes", *request.arguments, "--scene", str(self.scene.root)]
 
-        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
+        def run(self, request, *, on_line, cancel_event, scene_lock_fd, on_event=None):
             received.append(request.arguments)
             return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
 
@@ -87,26 +135,169 @@ def test_engine_catalog_and_typed_sharpframes_start_use_engine_resolved_options(
     engine.dispatch(
         {
             "id": "resolve", "method": "resolve_stage",
-            "params": {"scene": str(scene), "stage": "sharpframes", "options": {"source": "/tmp/clips", "fps": 2}},
+            "params": {
+                "scene": str(scene),
+                "stage": "sharpframes",
+                "options": {"source": str(scene), "fps": 2},
+            },
         },
         events.append,
     )
-    assert events.pop()["result"]["command"][:3] == ["sharpframes", "/tmp/clips", "--fps"]
+    assert events.pop()["result"]["command"][:3] == ["sharpframes", str(scene), "--fps"]
 
     engine.dispatch(
         {
             "id": "start", "method": "start",
-            "params": {"scene": str(scene), "stage": "sharpframes", "options": {"source": "/tmp/clips", "fps": 2}},
+            "params": {
+                "scene": str(scene),
+                "stage": "sharpframes",
+                "options": {"source": str(scene), "fps": 2, "force": True},
+            },
         },
         events.append,
     )
     _wait_for(events, "finished")
 
     assert received == [
-        ("/tmp/clips", "--fps", "2", "--num-frames", "300", "--min-buffer", "3", "--format", "jpg",
+        (str(scene), "--fps", "2", "--num-frames", "300", "--min-buffer", "3", "--format", "jpg",
          "--selection-method", "best-n", "--batch-size", "5", "--batch-buffer", "2", "--outlier-window-size", "15",
-         "--outlier-sensitivity", "60", "--width", "0"),
+         "--outlier-sensitivity", "60", "--width", "0", "--force"),
     ]
+
+
+def test_engine_preflight_exposes_required_replacement_policy(scene: Path, monkeypatch):
+    from gausser.engine import GausserEngine
+
+    monkeypatch.setattr("gausser.engine.inspect_tools", lambda: [])
+    emitted: list[dict] = []
+    GausserEngine().dispatch(
+        {"id": "preflight", "method": "preflight", "params": {"scene": str(scene)}},
+        emitted.append,
+    )
+
+    statuses = {
+        item["stage"]: item for item in emitted[0]["result"]["scene_readiness"]
+    }
+    assert statuses["sharpframes"]["required_action"] == "force"
+
+
+def test_engine_rejects_missing_required_replacement_before_reserving_run(
+    scene: Path,
+):
+    from gausser.engine import GausserEngine
+
+    emitted: list[dict] = []
+    GausserEngine().dispatch(
+        {
+            "id": "unsafe-replace",
+            "method": "start",
+            "params": {
+                "scene": str(scene),
+                "stage": "sharpframes",
+                "options": {"source": str(scene)},
+            },
+        },
+        emitted.append,
+    )
+
+    assert emitted == [{
+        "id": "unsafe-replace",
+        "error": {
+            "code": "invalid_request",
+            "message": "Sharp Frames requires explicit replacement confirmation",
+        },
+    }]
+    assert not (scene / ".gausser" / "manifest.json").exists()
+
+
+def test_engine_rejects_missing_colmap_existing_policy_before_reserving_run(
+    scene: Path,
+):
+    from gausser.engine import GausserEngine
+
+    (scene / "database.db").write_bytes(b"partial")
+    emitted: list[dict] = []
+    GausserEngine().dispatch(
+        {
+            "id": "missing-policy",
+            "method": "start",
+            "params": {"scene": str(scene), "stage": "colmap", "options": {}},
+        },
+        emitted.append,
+    )
+
+    assert emitted == [{
+        "id": "missing-policy",
+        "error": {
+            "code": "invalid_request",
+            "message": "COLMAP requires an explicit resume or replace policy",
+        },
+    }]
+    assert not (scene / ".gausser" / "manifest.json").exists()
+
+
+def test_engine_rejects_unavailable_stage_runtime_before_reserving_run(
+    scene: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from gausser.engine import GausserEngine
+
+    monkeypatch.setattr(
+        "gausser.engine.inspect_launch_tool",
+        lambda stage: Readiness(stage, "unavailable", "sammer command is missing"),
+    )
+    emitted: list[dict] = []
+    GausserEngine().dispatch(
+        {
+            "id": "missing-runtime",
+            "method": "start",
+            "params": {
+                "scene": str(scene),
+                "stage": "sammer",
+                "options": {"prompt": "statue"},
+            },
+        },
+        emitted.append,
+    )
+
+    assert emitted == [{
+        "id": "missing-runtime",
+        "error": {
+            "code": "invalid_request",
+            "message": "Sammer is unavailable: sammer command is missing",
+        },
+    }]
+    assert not (scene / ".gausser" / "manifest.json").exists()
+
+
+def test_engine_typed_replacement_passes_force_to_sharpframes(scene: Path):
+    from gausser.engine import GausserEngine
+
+    events: list[dict] = []
+    received: list[tuple[str, ...]] = []
+
+    class Controller:
+        def __init__(self, paths: ScenePaths) -> None:
+            self.scene = paths
+
+        def run(self, request, *, on_line, cancel_event, scene_lock_fd, on_event=None):
+            received.append(request.arguments)
+            return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
+
+    GausserEngine(controller_factory=Controller).dispatch(
+        {
+            "id": "replace",
+            "method": "start",
+            "params": {
+                "scene": str(scene),
+                "stage": "sharpframes",
+                "options": {"source": str(scene), "force": True},
+            },
+        },
+        events.append,
+    )
+    _wait_for(events, "finished")
+
+    assert received and received[0][-1] == "--force"
 
 
 def test_engine_enriches_structured_stage_events_with_run_timing(scene: Path):
@@ -115,14 +306,14 @@ def test_engine_enriches_structured_stage_events_with_run_timing(scene: Path):
 
     class Controller:
         def __init__(self, paths): self.scene = paths
-        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
+        def run(self, request, *, on_line, cancel_event, scene_lock_fd, on_event=None):
             assert on_event is not None
             on_event(StageEvent("progress", {"phase": "reconstruction", "current": 2, "total": 3, "unit": "images", "message": "Processed"}))
             return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
 
     engine = GausserEngine(controller_factory=Controller)
     events: list[dict] = []
-    engine.dispatch({"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "colmap", "arguments": []}}, events.append)
+    engine.dispatch({"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "colmap", "options": {}}}, events.append)
     _wait_for(events, "finished")
 
     progress = next(event for event in events if event.get("event") == "progress")
@@ -137,17 +328,17 @@ def test_engine_records_immutable_resolved_settings_for_every_run(scene: Path):
 
     class Controller:
         def __init__(self, paths): self.scene = paths
-        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
+        def run(self, request, *, on_line, cancel_event, scene_lock_fd, on_event=None):
             return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
 
     engine = GausserEngine(controller_factory=Controller)
     events: list[dict] = []
-    engine.dispatch({"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "colmap", "arguments": ["--matcher", "sequential"]}}, events.append)
+    engine.dispatch({"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "colmap", "options": {"matcher": "sequential"}}}, events.append)
     finished = _wait_for(events, "finished")
 
     manifest = json.loads((scene / ".gausser" / "manifest.json").read_text())
     run = manifest["runs"][finished["run"]["id"]]
-    assert run["settings"] is None
+    assert run["settings"]["values"]["matcher"] == "sequential"
     assert run["state"] == "succeeded"
     assert run["result"]["returncode"] == 0
 
@@ -256,13 +447,21 @@ def test_engine_rejects_photo_ingest_while_a_stage_owns_the_scene(scene: Path):
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
+        def run(self, request, *, on_line, cancel_event, scene_lock_fd, on_event=None):
             release.wait(timeout=1)
             return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
 
     engine = GausserEngine(controller_factory=Controller)
     engine.dispatch(
-        {"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "sharpframes"}},
+        {
+            "id": "start",
+            "method": "start",
+            "params": {
+                "scene": str(scene),
+                "stage": "sammer",
+                "options": {"prompt": "statue"},
+            },
+        },
         events.append,
     )
     _wait_for(events, "started")
@@ -391,12 +590,12 @@ def test_engine_rejects_a_second_active_run_for_the_same_scene(scene: Path):
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
+        def run(self, request, *, on_line, cancel_event, scene_lock_fd, on_event=None):
             release.wait(timeout=1)
             return CommandResult((request.stage,), self.scene.root, 0, 0.0, (), False)
 
     engine = GausserEngine(controller_factory=Controller)
-    start = {"id": "first", "method": "start", "params": {"scene": str(scene), "stage": "sammer"}}
+    start = {"id": "first", "method": "start", "params": {"scene": str(scene), "stage": "sammer", "options": {"prompt": "statue"}}}
     engine.dispatch(start, events.append)
     _wait_for(events, "started")
     engine.dispatch({**start, "id": "second"}, events.append)
@@ -416,7 +615,7 @@ def test_engine_shutdown_cancels_active_work_and_releases_scene(scene: Path):
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
+        def run(self, request, *, on_line, cancel_event, scene_lock_fd, on_event=None):
             assert cancel_event is not None
             assert cancel_event.wait(timeout=1)
             observed_cancel.set()
@@ -424,7 +623,7 @@ def test_engine_shutdown_cancels_active_work_and_releases_scene(scene: Path):
 
     engine = GausserEngine(controller_factory=Controller)
     engine.dispatch(
-        {"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "sammer"}},
+        {"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "sammer", "options": {"prompt": "statue"}}},
         events.append,
     )
     _wait_for(events, "started")
@@ -448,14 +647,14 @@ def test_engine_cancel_sets_the_stage_cancellation_event(scene: Path):
         def __init__(self, paths: ScenePaths) -> None:
             self.scene = paths
 
-        def run(self, request, *, on_line, cancel_event, inherited_fds, on_event=None):
+        def run(self, request, *, on_line, cancel_event, scene_lock_fd, on_event=None):
             assert cancel_event is not None
             assert cancel_event.wait(timeout=1)
             observed_cancel.set()
             return CommandResult((request.stage,), self.scene.root, 130, 0.0, (), True)
 
     engine = GausserEngine(controller_factory=Controller)
-    engine.dispatch({"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "sammer"}}, events.append)
+    engine.dispatch({"id": "start", "method": "start", "params": {"scene": str(scene), "stage": "sammer", "options": {"prompt": "statue"}}}, events.append)
     run_id = _wait_for(events, "started")["run"]["id"]
     engine.dispatch({"id": "cancel", "method": "cancel", "params": {"run_id": run_id}}, events.append)
     finished = _wait_for(events, "finished")

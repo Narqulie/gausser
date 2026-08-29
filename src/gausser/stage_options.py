@@ -1,8 +1,9 @@
-"""Versioned, engine-owned native Studio stage option specifications."""
+"""Versioned, Python-owned stage option specifications for interactive clients."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 
@@ -12,13 +13,21 @@ class StageOptionError(ValueError):
 
 @dataclass(frozen=True)
 class ResolvedStageOptions:
-    """The complete settings snapshot and CLI arguments for one Studio stage run."""
+    """The complete settings snapshot and CLI arguments for one stage run."""
 
     stage: str
     specification_version: int
     preset: str
     values: dict[str, Any]
     arguments: tuple[str, ...]
+
+    def as_settings(self) -> dict[str, Any]:
+        """Return the provenance snapshot passed through controller clients."""
+        return {
+            "specification_version": self.specification_version,
+            "preset": self.preset,
+            "values": dict(self.values),
+        }
 
 
 _LOD_DEFAULTS: dict[str, Any] = {
@@ -33,6 +42,8 @@ _MSPLAT_DEFAULTS: dict[str, Any] = {
     "iterations": 30000,
     "num_downscales": 0,
     "downscale_factor": 4.0,
+    "checkpoint_every": 1000,
+    "run_id": "",
     "no_eval": False,
     "acknowledge_unmasked": False,
 }
@@ -86,15 +97,15 @@ _SHARPFRAMES_DEFAULTS: dict[str, Any] = {
     "outlier_window_size": 15,
     "outlier_sensitivity": 60,
     "width": 0,
+    "force": False,
 }
 
 
 def catalog() -> dict[str, dict[str, Any]]:
-    """Return JSON-compatible definitions for Studio stages with typed options.
+    """Return JSON-compatible definitions for every interactive stage.
 
-    The first migrated stage is Sharp Frames. Definitions are intentionally
-    authoritative Python data so the native app can render them without owning
-    option defaults or command construction.
+    Definitions are authoritative Python data so the launcher and optional
+    native app can render them without owning defaults or command construction.
     """
     return {
         "sammer": _sammer_definition(),
@@ -142,13 +153,21 @@ def catalog() -> dict[str, dict[str, Any]]:
                        help="Higher values remove more outliers."),
                 _field("width", "Output width", "integer", 0, minimum=0, group="advanced", advanced=True,
                        help="Resize output to this width; 0 preserves source resolution."),
+                _field("force", "Replace existing images", "boolean", False, group="advanced", advanced=True,
+                       help="Required when images already exist; publication remains transactional."),
             ],
         },
     }
 
 
-def resolve_options(stage: str, options: Mapping[str, object]) -> ResolvedStageOptions:
-    """Validate Studio options and produce deterministic CLI arguments."""
+def resolve_options(
+    stage: str,
+    options: Mapping[str, object],
+    *,
+    path_base: Path | None = None,
+) -> ResolvedStageOptions:
+    """Validate typed client options and produce deterministic CLI arguments."""
+    base = Path.cwd() if path_base is None else path_base
     if stage == "lod":
         return _resolve_lod(options)
     if stage == "msplat":
@@ -158,9 +177,9 @@ def resolve_options(stage: str, options: Mapping[str, object]) -> ResolvedStageO
     if stage == "sammer":
         return _resolve_sammer(options)
     if stage == "colmap":
-        return _resolve_colmap(options)
+        return _resolve_colmap(options, path_base=base)
     if stage == "sharpframes":
-        return _resolve_sharpframes(options)
+        return _resolve_sharpframes(options, path_base=base)
     raise StageOptionError(f"typed options are not available for {stage}")
 
 
@@ -218,7 +237,7 @@ def _resolve_lod(options: Mapping[str, object]) -> ResolvedStageOptions:
 
 def _msplat_definition() -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "title": "Msplat Training",
         "description": "Experimental unmasked Msplat training from a binary COLMAP model.",
         "preset": "local-memory-safe",
@@ -239,6 +258,8 @@ def _msplat_definition() -> dict[str, Any]:
             _field("iterations", "Training iterations", "integer", 30000, minimum=1, group="training", help="Total Msplat optimization steps."),
             _field("downscale_factor", "Image downscale factor", "decimal", 4.0, minimum=1, group="training", help="Load images at 1/N resolution. Factor 4 is the tested local-safe setting."),
             _field("acknowledge_unmasked", "I understand SAM masks are not used", "boolean", False, group="safety", required=True, help="Required explicit acknowledgement before unmasked training can start."),
+            _field("checkpoint_every", "Checkpoint every", "integer", 1000, minimum=1, group="advanced", advanced=True, help="Completed steps between validated A/B resume checkpoints."),
+            _field("run_id", "Stable run identity", "text", "", group="advanced", advanced=True, help="Optional fixed identity for unattended restart with the identical command."),
             _field("num_downscales", "Internal downscale passes", "integer", 0, minimum=0, group="advanced", advanced=True, help="Additional upstream Msplat resolution passes."),
             _field("no_eval", "Skip final evaluation", "boolean", False, group="advanced", advanced=True, help="Avoid the final metrics pass when only an export is needed."),
         ],
@@ -252,22 +273,34 @@ def _resolve_msplat(options: Mapping[str, object]) -> ResolvedStageOptions:
     values: dict[str, Any] = dict(_MSPLAT_DEFAULTS)
     values.update(options)
     _positive_integer(values, "iterations", minimum=1)
+    _positive_integer(values, "checkpoint_every", minimum=1)
     _positive_integer(values, "num_downscales", minimum=0)
     factor = values["downscale_factor"]
     if isinstance(factor, bool) or not isinstance(factor, (int, float)) or factor < 1:
         raise StageOptionError("downscale_factor must be at least 1")
+    run_id = values["run_id"]
+    if not isinstance(run_id, str) or (run_id and (Path(run_id).name != run_id or run_id in {".", ".."})):
+        raise StageOptionError("run_id must be an empty or single path-safe component")
     for key in ("no_eval", "acknowledge_unmasked"):
         if not isinstance(values[key], bool):
             raise StageOptionError(f"{key} must be a boolean")
     if not values["acknowledge_unmasked"]:
         raise StageOptionError("acknowledge_unmasked must be true because Msplat does not use SAM masks")
-    arguments: list[str] = ["--iterations", str(values["iterations"]), "--num-downscales", str(values["num_downscales"]), "--downscale-factor", str(values["downscale_factor"])]
+    arguments: list[str] = [
+        "--iterations", str(values["iterations"]),
+        "--num-downscales", str(values["num_downscales"]),
+        "--downscale-factor", str(values["downscale_factor"]),
+        "--checkpoint-every", str(values["checkpoint_every"]),
+    ]
+    if run_id:
+        arguments.extend(["--run-id", run_id])
     if values["no_eval"]:
         arguments.append("--no-eval")
+    arguments.append("--allow-unmasked")
     standard = {**_MSPLAT_DEFAULTS, "acknowledge_unmasked": True}
     validation = {**standard, "iterations": 7000}
     preset = "local-memory-safe" if values == standard else "validation-run" if values == validation else "custom"
-    return ResolvedStageOptions("msplat", 1, preset, values, tuple(arguments))
+    return ResolvedStageOptions("msplat", 2, preset, values, tuple(arguments))
 
 
 def _brush_definition() -> dict[str, Any]:
@@ -421,7 +454,9 @@ def _colmap_definition() -> dict[str, Any]:
     }
 
 
-def _resolve_colmap(options: Mapping[str, object]) -> ResolvedStageOptions:
+def _resolve_colmap(
+    options: Mapping[str, object], *, path_base: Path
+) -> ResolvedStageOptions:
     allowed = set(_COLMAP_VIDEO_DEFAULTS)
     unexpected = sorted(set(options) - allowed)
     if unexpected:
@@ -438,6 +473,14 @@ def _resolve_colmap(options: Mapping[str, object]) -> ResolvedStageOptions:
             raise StageOptionError(f"{key} must be a non-empty path or null")
     if values["matcher"] == "vocab_tree" and values["vocab_tree"] is None:
         raise StageOptionError("vocab_tree is required when matcher is vocab_tree")
+    if values["mask_path"] is not None:
+        values["mask_path"] = _existing_path(
+            values["mask_path"], "mask_path", path_base=path_base, directory=True
+        )
+    if values["vocab_tree"] is not None:
+        values["vocab_tree"] = _existing_path(
+            values["vocab_tree"], "vocab_tree", path_base=path_base, file=True
+        )
 
     arguments: list[str] = ["--matcher", values["matcher"], "--existing", values["existing"]]
     if not values["use_gpu"]:
@@ -454,7 +497,9 @@ def _resolve_colmap(options: Mapping[str, object]) -> ResolvedStageOptions:
     return ResolvedStageOptions("colmap", 1, preset, values, tuple(arguments))
 
 
-def _resolve_sharpframes(options: Mapping[str, object]) -> ResolvedStageOptions:
+def _resolve_sharpframes(
+    options: Mapping[str, object], *, path_base: Path
+) -> ResolvedStageOptions:
     allowed = {"source", *_SHARPFRAMES_DEFAULTS}
     unexpected = sorted(set(options) - allowed)
     if unexpected:
@@ -463,9 +508,9 @@ def _resolve_sharpframes(options: Mapping[str, object]) -> ResolvedStageOptions:
     source = options.get("source")
     if not isinstance(source, str) or not source.strip():
         raise StageOptionError("source must be a non-empty path")
+    source = _existing_path(source, "source", path_base=path_base)
 
-    values: dict[str, Any] = {"source": source, **_SHARPFRAMES_DEFAULTS}
-    values.update(options)
+    values: dict[str, Any] = {**_SHARPFRAMES_DEFAULTS, **options, "source": source}
     _positive_integer(values, "fps", minimum=1)
     _positive_integer(values, "num_frames", minimum=1)
     _positive_integer(values, "min_buffer", minimum=0)
@@ -474,6 +519,8 @@ def _resolve_sharpframes(options: Mapping[str, object]) -> ResolvedStageOptions:
     _positive_integer(values, "outlier_window_size", minimum=5, maximum=31)
     _positive_integer(values, "outlier_sensitivity", minimum=0, maximum=100)
     _positive_integer(values, "width", minimum=0)
+    if not isinstance(values["force"], bool):
+        raise StageOptionError("force must be a boolean")
     _enum(values, "format", ("jpg", "png"))
     _enum(values, "selection_method", ("best-n", "batched", "outlier-removal"))
 
@@ -489,6 +536,7 @@ def _resolve_sharpframes(options: Mapping[str, object]) -> ResolvedStageOptions:
         "--outlier-window-size", str(values["outlier_window_size"]),
         "--outlier-sensitivity", str(values["outlier_sensitivity"]),
         "--width", str(values["width"]),
+        *(("--force",) if values["force"] else ()),
     )
     preset = "upstream-defaults" if all(values[key] == value for key, value in _SHARPFRAMES_DEFAULTS.items()) else "custom"
     return ResolvedStageOptions("sharpframes", 1, preset, values, arguments)
@@ -496,6 +544,26 @@ def _resolve_sharpframes(options: Mapping[str, object]) -> ResolvedStageOptions:
 
 def _field(key: str, label: str, kind: str, default: object, **properties: object) -> dict[str, object]:
     return {"key": key, "label": label, "type": kind, "default": default, **properties}
+
+
+def _existing_path(
+    value: object,
+    name: str,
+    *,
+    path_base: Path,
+    file: bool = False,
+    directory: bool = False,
+) -> str:
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = path_base / path
+    if not path.exists():
+        raise StageOptionError(f"{name} does not exist: {path}")
+    if file and not path.is_file():
+        raise StageOptionError(f"{name} must be a file: {path}")
+    if directory and not path.is_dir():
+        raise StageOptionError(f"{name} must be a directory: {path}")
+    return str(path.resolve())
 
 
 def _positive_integer(values: dict[str, Any], name: str, *, minimum: int, maximum: int | None = None) -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -32,10 +32,20 @@ def initialize_manifest(paths: ScenePaths) -> None:
     _write_manifest(paths, {"version": 1, "stages": {}})
 
 
-def record_stage(paths: ScenePaths, stage: str, data: dict[str, Any]) -> None:
+def transition_stage(
+    paths: ScenePaths,
+    stage: str,
+    data: dict[str, Any],
+    *,
+    invalidated_stages: tuple[str, ...] | frozenset[str],
+) -> None:
+    """Atomically replace current-stage metadata for one workflow generation."""
     document = _load_manifest(paths)
-    document["stages"][stage] = {
-        "completed_at": datetime.now(UTC).isoformat(),
+    stages = document["stages"]
+    for invalidated in invalidated_stages:
+        stages.pop(invalidated, None)
+    stages[stage] = {
+        "completed_at": datetime.now(timezone.utc).isoformat(),
         **data,
     }
     _write_manifest(paths, document)
@@ -49,7 +59,7 @@ def record_run_started(paths: ScenePaths, run_id: str, stage: str, settings: dic
         raise ValueError(f"invalid or duplicate manifest run: {run_id}")
     runs[run_id] = {
         "stage": stage,
-        "started_at": datetime.now(UTC).isoformat(),
+        "started_at": datetime.now(timezone.utc).isoformat(),
         "settings": settings,
         "state": "running",
     }
@@ -64,7 +74,7 @@ def record_run_finished(paths: ScenePaths, run_id: str, state: str, result: dict
     if not isinstance(entry, dict):
         raise ValueError(f"unknown manifest run: {run_id}")
     entry["state"] = state
-    entry["finished_at"] = datetime.now(UTC).isoformat()
+    entry["finished_at"] = datetime.now(timezone.utc).isoformat()
     if result is not None:
         entry["result"] = result
     _write_manifest(paths, document)

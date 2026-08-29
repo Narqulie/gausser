@@ -6,13 +6,21 @@ import argparse
 import json
 from pathlib import Path
 import shutil
-import sys
 from typing import Any
 
-from gausser.manifest import fingerprint_file, record_stage
-from gausser.process import run_command
-from gausser.publish import replace_directory
+from rich.text import Text
+
+from gausser.interactive import (
+    BARE_COMMAND_EPILOG,
+    InteractiveUsageError,
+    prepare_stage_arguments,
+)
+from gausser.manifest import fingerprint_file
+from gausser.process import resolve_command, run_command
+from gausser.publish import publish_stage
 from gausser.scene import SceneError, ScenePaths
+from gausser.scene_lock import SceneLockError, acquire_scene_lock
+from gausser.ui import NEON_VIOLET, completion_panel, console, error_console, stage_header, status_text
 
 
 TOOL = "splat-transform"
@@ -20,7 +28,9 @@ TOOL = "splat-transform"
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        prog="lodder",
         description="Create a scene-owned streamed PlayCanvas LOD artifact from an explicit PLY or SOG export.",
+        epilog=BARE_COMMAND_EPILOG,
     )
     parser.add_argument("source", type=Path, help="Exact scene-owned .ply or .sog export to convert")
     parser.add_argument("--scene", type=Path, default=Path.cwd(), help="Scene root (default: current directory)")
@@ -99,17 +109,25 @@ def _validate_output(staged: Path) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = _parser()
-    args = parser.parse_args(argv)
+    try:
+        prepared_argv = prepare_stage_arguments("lod", argv, program="lodder")
+    except InteractiveUsageError as exc:
+        parser.error(str(exc))
+    if prepared_argv is None:
+        return
+    args = parser.parse_args(prepared_argv)
     if args.chunk_count <= 0:
         parser.error("--chunk-count must be positive")
     if args.chunk_extent <= 0:
         parser.error("--chunk-extent must be positive")
-    if shutil.which(TOOL) is None:
+    if resolve_command(TOOL) is None:
         parser.error(f"{TOOL} is not on PATH; install @playcanvas/splat-transform")
     percentages = _parse_percentages(args.lod_percentages, parser)
 
     paths = ScenePaths.from_root(args.scene)
     source = args.source.expanduser().resolve()
+    if not paths.root.is_dir():
+        parser.error(f"scene directory does not exist: {paths.root}")
     if source.suffix.lower() not in {".ply", ".sog"}:
         parser.error(f"source must be a .ply or .sog export: {source}")
     if not source.is_file():
@@ -119,6 +137,20 @@ def main(argv: list[str] | None = None) -> None:
     except SceneError as exc:
         parser.error(str(exc))
 
+    try:
+        with acquire_scene_lock(paths.root):
+            _run(args, paths, source, source_relative, percentages)
+    except SceneLockError as exc:
+        parser.error(str(exc))
+
+
+def _run(
+    args: argparse.Namespace,
+    paths: ScenePaths,
+    source: Path,
+    source_relative: Path,
+    percentages: list[int],
+) -> None:
     source_sha256 = fingerprint_file(source)
     run_id = paths.new_run_id()
     staged = paths.staging_attempt("lod", run_id)
@@ -127,6 +159,19 @@ def main(argv: list[str] | None = None) -> None:
     metadata = staged / "lod-meta.json"
     levels = staged / "levels"
 
+    console.print(stage_header(
+        "LODDER",
+        "Streamed artifact signal",
+        (
+            ("Scene", str(paths.root)),
+            ("Source", str(source_relative)),
+            ("Levels", " → ".join(f"{value}%" for value in percentages)),
+            ("Chunk target", f"{args.chunk_count}K splats · {args.chunk_extent:g}m extent"),
+        ),
+        accent=NEON_VIOLET,
+    ))
+    console.print()
+
     try:
         tool_version = _tool_version(paths)
         level_paths = [source]
@@ -134,8 +179,8 @@ def main(argv: list[str] | None = None) -> None:
             level_path = levels / f"lod-{level}.ply"
             levels.mkdir(parents=True, exist_ok=True)
             command = [TOOL, str(source), "--decimate", f"{percentage}%", str(level_path)]
-            print(f"Creating LOD {level} at {percentage}%…")
-            result = run_command(command, cwd=paths.root, on_line=print)
+            console.print(status_text(f"Creating LOD {level} at {percentage}%", "running"))
+            result = run_command(command, cwd=paths.root, on_line=lambda line: console.print(Text(line)))
             if not result.succeeded or not level_path.is_file():
                 detail = "\n".join(result.output_tail[-20:])
                 raise RuntimeError(f"{TOOL} failed to create LOD {level}" + (f"\n{detail}" if detail else ""))
@@ -145,18 +190,21 @@ def main(argv: list[str] | None = None) -> None:
         for level, level_path in enumerate(level_paths):
             command.extend((str(level_path), "-l", str(level)))
         command.append(str(metadata))
-        print(f"Bundling {len(level_paths)} LOD levels from {source_relative}…")
-        result = run_command(command, cwd=paths.root, on_line=print)
+        console.print(status_text(
+            f"Bundling {len(level_paths)} LOD levels from {source_relative}", "running"
+        ))
+        result = run_command(command, cwd=paths.root, on_line=lambda line: console.print(Text(line)))
         if not result.succeeded:
             detail = "\n".join(result.output_tail[-20:])
             raise RuntimeError(f"{TOOL} failed with exit code {result.returncode}" + (f"\n{detail}" if detail else ""))
         shutil.rmtree(levels)
         document = _validate_output(staged)
-        replace_directory(staged, output)
-        record_stage(
+        publish_stage(
             paths,
             "lod",
-            {
+            generation=None,
+            replacements=((staged, output),),
+            data={
                 "source": str(source_relative),
                 "source_sha256": source_sha256,
                 "tool": TOOL,
@@ -168,11 +216,18 @@ def main(argv: list[str] | None = None) -> None:
                 "output": str(paths.relative_path(output / "lod-meta.json")),
             },
         )
-    except (RuntimeError, ValueError) as exc:
-        print(f"❌ LOD creation failed: {exc}", file=sys.stderr)
+    except (RuntimeError, ValueError, OSError) as exc:
+        error_console.print(status_text(f"LOD creation failed: {exc}", "error"))
         raise SystemExit(1) from exc
 
-    print(f"✅ LOD artifact created: {output / 'lod-meta.json'}")
+    console.print(completion_panel(
+        "LOD artifact online",
+        (
+            ("Metadata", str(output / "lod-meta.json")),
+            ("Levels", str(len(percentages))),
+            ("Tool", f"{TOOL} {tool_version}"),
+        ),
+    ))
 
 
 if __name__ == "__main__":

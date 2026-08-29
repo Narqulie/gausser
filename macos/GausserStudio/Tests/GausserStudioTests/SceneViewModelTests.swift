@@ -2,6 +2,26 @@ import Foundation
 import Testing
 @testable import GausserStudio
 
+@Test
+func stageReadinessDecodesExplicitRequiredActions() throws {
+    let replacement = try JSONDecoder().decode(
+        StageReadiness.self,
+        from: Data(#"{"stage":"sammer","state":"completed","detail":"Masks complete","required_action":"force"}"#.utf8)
+    )
+    let existingPolicy = try JSONDecoder().decode(
+        StageReadiness.self,
+        from: Data(#"{"stage":"colmap","state":"ready","detail":"Partial model","required_action":"existing_policy"}"#.utf8)
+    )
+
+    #expect(replacement.canRun)
+    #expect(replacement.requiredAction == .force)
+    #expect(!replacement.permits(options: [:]))
+    #expect(replacement.permits(options: ["force": .bool(true)]))
+    #expect(existingPolicy.requiredAction == .existingPolicy)
+    #expect(!existingPolicy.permits(options: ["existing": .string("error")]))
+    #expect(existingPolicy.permits(options: ["existing": .string("resume")]))
+}
+
 @Test @MainActor
 func sceneViewModelSubscribesOnceAfterSwiftUIPersistsItsState() {
     let engine = EngineClient()

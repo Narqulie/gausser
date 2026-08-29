@@ -7,7 +7,7 @@ from gausser.process import CommandResult
 
 
 def test_successful_brush_exit_without_export_is_rejected(monkeypatch, scene):
-    monkeypatch.setattr(cli.shutil, "which", lambda _: "/fake/brush")
+    monkeypatch.setattr(cli, "resolve_command", lambda _: "/fake/brush")
     monkeypatch.setattr(
         cli,
         "run_brush",

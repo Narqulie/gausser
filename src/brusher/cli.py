@@ -11,20 +11,32 @@ from threading import Lock
 from typing import Optional
 
 from rich.panel import Panel
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    SpinnerColumn,
-    TaskID,
-    TextColumn,
-    TimeElapsedColumn,
-)
-from rich.table import Table
+from rich.progress import MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+from rich.text import Text
 
-from gausser.manifest import fingerprint_inputs, record_stage
-from gausser.scene import ScenePaths
-from gausser.ui import console, IMAGE_EXTENSIONS, make_summary_table
+from gausser.interactive import (
+    BARE_COMMAND_EPILOG,
+    InteractiveUsageError,
+    prepare_stage_arguments,
+)
+from gausser.manifest import fingerprint_inputs
+from gausser.process import resolve_command
+from gausser.publish import publish_stage
+from gausser.scene import SceneError, ScenePaths
+from gausser.scene_lock import SceneLockError, acquire_scene_lock
+from gausser.ui import (
+    NEON_CYAN,
+    NEON_GREEN,
+    NEON_MAGENTA,
+    NEON_YELLOW,
+    console,
+    make_summary_table,
+    neon_bar,
+    neon_spinner,
+    stage_header,
+    is_image_file,
+    status_text as neon_status_text,
+)
 
 from .runner import TrainProgress, run_brush
 
@@ -33,45 +45,50 @@ from .runner import TrainProgress, run_brush
 
 
 def _has_images(path: Path) -> bool:
-    return any(f.suffix.lower() in IMAGE_EXTENSIONS for f in path.rglob("*") if f.is_file())
+    return any(is_image_file(file) for file in path.rglob("*") if file.is_file())
 
 
 def _make_progress() -> Progress:
     return Progress(
-        SpinnerColumn(),
-        TextColumn("[bold magenta]{task.description}"),
-        BarColumn(bar_width=36),
+        neon_spinner(style=NEON_MAGENTA),
+        TextColumn("{task.description}", style=f"bold {NEON_MAGENTA}", markup=False),
+        neon_bar(),
         MofNCompleteColumn(),
-        TextColumn("[yellow]{task.fields[rate]}"),
-        TextColumn("[green]{task.fields[splats]}"),
-        TextColumn("[cyan]{task.fields[psnr]}"),
+        TextColumn("{task.fields[rate]}", style=NEON_YELLOW, markup=False),
+        TextColumn("{task.fields[splats]}", style=NEON_GREEN, markup=False),
+        TextColumn("{task.fields[psnr]}", style=NEON_CYAN, markup=False),
         TimeElapsedColumn(),
-        TextColumn("[dim]{task.fields[eta]}"),
+        TextColumn("{task.fields[eta]}", style="dim", markup=False),
         console=console,
         transient=False,
     )
 
 
 def _header(scene_path: Path, total_iters: int, export_path: Path) -> Panel:
-    grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="bold cyan", no_wrap=True)
-    grid.add_column()
-    grid.add_row("Scene", str(scene_path))
-    grid.add_row("Total steps", f"{total_iters:,}")
-    grid.add_row("Export path", str(export_path))
-    return Panel(
-        grid, title="[bold]BRUSHER[/bold] · Brush 3DGS Training Pipeline", border_style="magenta",
+    return stage_header(
+        "BRUSHER",
+        "Gaussian training signal",
+        (
+            ("Scene", str(scene_path)),
+            ("Iterations", f"{total_iters:,}"),
+            ("Export", str(export_path)),
+        ),
+        accent=NEON_MAGENTA,
     )
 
 
-def _print_summary(elapsed: float, final: TrainProgress, export_path: Path, success: bool) -> None:
+def _print_summary(
+    elapsed: float, final: TrainProgress, export_path: Path, success: bool
+) -> None:
     console.print()
-    table = make_summary_table("Training Summary")
-    table.add_column("Metric", style="bold")
-    table.add_column("Value", justify="right")
+    table = make_summary_table("Training Summary", accent=NEON_MAGENTA)
 
-    status_str = "[green]✓ Done[/green]" if success else "[red]✗ Failed[/red]"
-    table.add_row("Status", status_str)
+    table.add_row(
+        "Status",
+        neon_status_text("Done", "success")
+        if success
+        else neon_status_text("Failed", "error"),
+    )
     table.add_row("Total steps", f"{final.iter:,} / {final.total:,}")
     if final.splat_count:
         table.add_row("Final splat count", f"{final.splat_count:,}")
@@ -83,7 +100,8 @@ def _print_summary(elapsed: float, final: TrainProgress, export_path: Path, succ
 
     console.print(table)
     if success:
-        console.print(f"\n[bold green]Exports saved to:[/bold green] {export_path}")
+        console.print()
+        console.print(neon_status_text(f"Exports saved to: {export_path}", "success"))
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -91,65 +109,124 @@ def _print_summary(elapsed: float, final: TrainProgress, export_path: Path, succ
 
 def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="brusher", description="Run Brush 3DGS training with a beautiful Rich UI.",
+        prog="brusher",
+        description="Run Brush 3DGS training for one Gausser scene.",
+        epilog=BARE_COMMAND_EPILOG,
     )
-    parser.add_argument("path", metavar="SCENE", nargs="?", default=None, help="Scene folder (default: cwd)")
-    parser.add_argument("--total-train-iters", metavar="N", type=int, default=30000, help="Total training iterations")
-    parser.add_argument("--export-every", metavar="N", type=int, default=5000, help="Export .ply every N steps")
-    parser.add_argument("--export-path", metavar="DIR", default=None, help="Where to write .ply files")
-    parser.add_argument("--eval-every", metavar="N", type=int, default=1000, help="Run eval every N steps")
-    parser.add_argument("--refine-every", metavar="N", type=int, default=200, help="Densification frequency")
-    parser.add_argument("--max-splats", metavar="N", type=int, default=None, help="Maximum number of Gaussians")
-    parser.add_argument("--max-resolution", metavar="N", type=int, default=None, help="Max image resolution")
-    parser.add_argument("--eval-split-every", metavar="N", type=int, default=None, help="Hold out every Nth image")
-    parser.add_argument("--brush", metavar="BIN", default="brush", help="Path to brush binary")
-
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "path",
+        metavar="SCENE",
+        nargs="?",
+        default=None,
+        help="Scene folder (default: cwd)",
+    )
+    parser.add_argument("--total-train-iters", metavar="N", type=int, default=30000)
+    parser.add_argument("--export-every", metavar="N", type=int, default=5000)
+    parser.add_argument(
+        "--export-path",
+        metavar="DIR",
+        default=None,
+        help="Fresh scene-owned runs/brush/<id>/exports path",
+    )
+    parser.add_argument("--eval-every", metavar="N", type=int, default=1000)
+    parser.add_argument("--refine-every", metavar="N", type=int, default=200)
+    parser.add_argument("--max-splats", metavar="N", type=int, default=None)
+    parser.add_argument("--max-resolution", metavar="N", type=int, default=None)
+    parser.add_argument("--eval-split-every", metavar="N", type=int, default=None)
+    parser.add_argument("--brush", metavar="BIN", default="brush")
+    try:
+        prepared_argv = prepare_stage_arguments("brush", argv, program="brusher")
+    except InteractiveUsageError as exc:
+        parser.error(str(exc))
+    if prepared_argv is None:
+        return
+    args = parser.parse_args(prepared_argv)
 
     if args.total_train_iters <= 0:
         parser.error("--total-train-iters must be positive")
     if not 0 < args.export_every < args.total_train_iters:
-        parser.error("--export-every must be positive and less than --total-train-iters")
+        parser.error(
+            "--export-every must be positive and less than --total-train-iters"
+        )
     if args.eval_every <= 0 or args.refine_every <= 0:
         parser.error("--eval-every and --refine-every must be positive")
 
-    # ── Resolve paths ──────────────────────────────────────────────────────────
-    scene_path = Path(args.path).expanduser().resolve() if args.path else Path.cwd()
-    scene_paths = ScenePaths.from_root(scene_path)
-    export_path = (
-        Path(args.export_path).expanduser().resolve()
-        if args.export_path
-        else scene_paths.training_run("brush", scene_paths.new_run_id()) / "exports"
+    scene_path = (
+        Path(args.path).expanduser().resolve() if args.path else Path.cwd().resolve()
     )
-
-    brush_bin = args.brush
-    total_iters = args.total_train_iters
-
-    # ── Validate ───────────────────────────────────────────────────────────────
-    if not shutil.which(brush_bin):
-        console.print(f"[bold red]Error:[/bold red] `{brush_bin}` not found on PATH.")
-        console.print("Install Brush: https://github.com/ArthurBrussee/brush")
-        sys.exit(1)
-
     if not scene_path.is_dir():
-        console.print(f"[bold red]Error:[/bold red] Scene directory not found: {scene_path}")
-        sys.exit(1)
+        parser.error(f"scene directory does not exist: {scene_path}")
+    paths = ScenePaths.from_root(scene_path)
+    brush_bin = resolve_command(args.brush)
+    if brush_bin is None:
+        parser.error(f"{args.brush!r} is not on PATH; install Brush first")
 
+    run_id = paths.new_run_id()
+    destination_run = paths.training_run("brush", run_id)
+    if args.export_path:
+        requested_export = Path(args.export_path).expanduser().resolve()
+        try:
+            relative = paths.relative_path(requested_export)
+        except SceneError as exc:
+            parser.error(str(exc))
+        if (
+            len(relative.parts) != 4
+            or relative.parts[:2] != ("runs", "brush")
+            or relative.parts[3] != "exports"
+        ):
+            parser.error(
+                "--export-path must be a fresh scene-owned runs/brush/<run-id>/exports directory"
+            )
+        run_id = relative.parts[2]
+        destination_run = paths.training_run("brush", run_id)
+    if destination_run.exists():
+        parser.error(f"Brush run destination already exists: {destination_run}")
+
+    try:
+        with acquire_scene_lock(paths.root):
+            _run_brusher(args, paths, brush_bin, run_id, destination_run)
+    except SceneLockError as exc:
+        parser.error(str(exc))
+
+
+def _run_brusher(
+    args: argparse.Namespace,
+    paths: ScenePaths,
+    brush_bin: str,
+    run_id: str,
+    destination_run: Path,
+) -> None:
+    scene_path = paths.root
     has_transforms = (scene_path / "transforms.json").exists()
-    has_colmap = (scene_path / "sparse").is_dir() or (scene_path / "images").is_dir()
+    try:
+        has_colmap = paths.sparse.is_dir() and bool(paths.image_files())
+    except SceneError as exc:
+        console.print(neon_status_text(str(exc), "error"))
+        raise SystemExit(1) from exc
     if not has_transforms and not has_colmap and not _has_images(scene_path):
-        console.print(f"[bold red]Error:[/bold red] No recognisable dataset found in {scene_path}")
-        console.print("Expected: [bold]transforms.json[/bold] (NeRF-style) or [bold]images/[/bold] + [bold]sparse/[/bold] (COLMAP-style).")
+        console.print(
+            neon_status_text(f"No recognisable dataset found in {scene_path}", "error")
+        )
+        console.print("Expected transforms.json or images/ + sparse/.")
         sys.exit(1)
 
-    # ── Build brush command ────────────────────────────────────────────────────
+    attempt = paths.staging_attempt("brush", run_id)
+    staged_run = attempt / "run"
+    staged_export = staged_run / "exports"
+    total_iters = args.total_train_iters
     cmd = [
-        brush_bin, str(scene_path),
-        "--total-train-iters", str(total_iters),
-        "--export-every", str(args.export_every),
-        "--export-path", str(export_path),
-        "--eval-every", str(args.eval_every),
-        "--refine-every", str(args.refine_every),
+        brush_bin,
+        str(scene_path),
+        "--total-train-iters",
+        str(total_iters),
+        "--export-every",
+        str(args.export_every),
+        "--export-path",
+        str(staged_export),
+        "--eval-every",
+        str(args.eval_every),
+        "--refine-every",
+        str(args.refine_every),
     ]
     if args.max_splats is not None:
         cmd += ["--max-splats", str(args.max_splats)]
@@ -158,83 +235,120 @@ def main(argv: Optional[list[str]] = None) -> None:
     if args.eval_split_every is not None:
         cmd += ["--eval-split-every", str(args.eval_split_every)]
 
-    # ── UI setup ───────────────────────────────────────────────────────────────
-    console.print(_header(scene_path, total_iters, export_path))
+    final_export = destination_run / "exports"
+    console.print(_header(scene_path, total_iters, final_export))
     console.print()
-
     progress = _make_progress()
-    task_id = progress.add_task("Initializing", total=total_iters, splats="", psnr="", rate="", eta="")
-
+    task_id = progress.add_task(
+        "Initializing", total=total_iters, splats="", psnr="", rate="", eta=""
+    )
     overall_start = time.monotonic()
     final_state = TrainProgress(total=total_iters)
     lock = Lock()
-    _prev: dict = {"iter": 0, "t": None}
+    previous: dict[str, float | int | None] = {"iter": 0, "time": None}
 
-    def on_progress(p: TrainProgress) -> None:
+    def on_progress(progress_state: TrainProgress) -> None:
         with lock:
-            final_state.iter = p.iter
-            final_state.total = p.total
-            final_state.splat_count = p.splat_count
-            if p.psnr is not None:
-                final_state.psnr = p.psnr
-            if p.ssim is not None:
-                final_state.ssim = p.ssim
-            final_state.phase = p.phase
+            final_state.iter = progress_state.iter
+            final_state.total = progress_state.total
+            final_state.splat_count = progress_state.splat_count
+            if progress_state.psnr is not None:
+                final_state.psnr = progress_state.psnr
+            if progress_state.ssim is not None:
+                final_state.ssim = progress_state.ssim
+            final_state.phase = progress_state.phase
 
             now = time.monotonic()
-            rate_str = ""
-            eta_str = "ETA -:--:--"
-            if _prev["t"] is not None and p.iter > _prev["iter"]:
-                delta_t = now - _prev["t"]
-                delta_i = p.iter - _prev["iter"]
-                if delta_t > 0.01:
-                    its = delta_i / delta_t
-                    rate_str = f"{its:.1f} it/s"
-                    remaining = p.total - p.iter
-                    if its > 0 and remaining > 0:
-                        secs = int(remaining / its)
-                        h, rem = divmod(secs, 3600)
-                        m, s = divmod(rem, 60)
-                        eta_str = f"ETA {h}:{m:02d}:{s:02d}"
+            rate = ""
+            eta = "ETA -:--:--"
+            previous_time = previous["time"]
+            previous_iter = int(previous["iter"] or 0)
+            if isinstance(previous_time, float) and progress_state.iter > previous_iter:
+                delta_time = now - previous_time
+                delta_iterations = progress_state.iter - previous_iter
+                if delta_time > 0.01:
+                    iterations_per_second = delta_iterations / delta_time
+                    rate = f"{iterations_per_second:.1f} it/s"
+                    remaining = progress_state.total - progress_state.iter
+                    if iterations_per_second > 0 and remaining > 0:
+                        seconds = int(remaining / iterations_per_second)
+                        hours, remainder = divmod(seconds, 3600)
+                        minutes, seconds = divmod(remainder, 60)
+                        eta = f"ETA {hours}:{minutes:02d}:{seconds:02d}"
                     elif remaining == 0:
-                        eta_str = ""
-            if p.iter > 0:
-                _prev["iter"] = p.iter
-                _prev["t"] = now
+                        eta = ""
+            if progress_state.iter > 0:
+                previous["iter"] = progress_state.iter
+                previous["time"] = now
 
-            splats_str = f"{p.splat_count:,} splats" if p.splat_count else ""
-            psnr_str = f"PSNR {final_state.psnr:.2f}dB" if final_state.psnr is not None else ""
-
-            desc = {"starting": "Initializing", "loading": "Loading dataset", "training": "Training", "done": "[green]Done[/green]"}.get(p.phase, "Training")
-
-            progress.update(task_id, description=desc, completed=p.iter, rate=rate_str, eta=eta_str, splats=splats_str, psnr=psnr_str)
+            description = {
+                "starting": "Initializing",
+                "loading": "Loading dataset",
+                "training": "Training",
+                "done": "Done",
+            }.get(progress_state.phase, "Training")
+            progress.update(
+                task_id,
+                description=description,
+                completed=progress_state.iter,
+                rate=rate,
+                eta=eta,
+                splats=f"{progress_state.splat_count:,} splats"
+                if progress_state.splat_count
+                else "",
+                psnr=f"PSNR {final_state.psnr:.2f}dB"
+                if final_state.psnr is not None
+                else "",
+            )
 
     with progress:
-        progress.update(task_id, completed=0)
-        result = run_brush(cmd, cwd=scene_path, on_progress=on_progress, total_iters=total_iters)
+        result = run_brush(
+            cmd, cwd=scene_path, on_progress=on_progress, total_iters=total_iters
+        )
         if result.succeeded:
             progress.update(task_id, completed=total_iters)
 
     elapsed = time.monotonic() - overall_start
-    success = result is not None and result.succeeded
-    exports = sorted(export_path.rglob("*.ply")) if success and export_path.is_dir() else []
-    if success and not exports:
-        success = False
-        console.print("\n[bold red]Brush completed without creating any .ply export.[/bold red]")
-
+    staged_exports = (
+        sorted(staged_export.rglob("*.ply"))
+        if result.succeeded and staged_export.is_dir()
+        else []
+    )
+    success = result.succeeded and bool(staged_exports)
+    if result.succeeded and not staged_exports:
+        console.print()
+        console.print(
+            neon_status_text("Brush completed without creating a .ply export", "error")
+        )
     if not success:
-        rc = result.returncode if result is not None else 1
-        console.print(f"\n[bold red]Brush exited with code {rc}.[/bold red]")
-        if result and result.output_tail:
-            console.print("[bold]Last Brush output:[/bold]")
-            console.print("\n".join(result.output_tail[-20:]))
+        console.print()
+        console.print(
+            neon_status_text(f"Brush exited with code {result.returncode}", "error")
+        )
+        if result.output_tail:
+            console.print(neon_status_text("Last Brush output follows", "warning"))
+            console.print(Text("\n".join(result.output_tail[-20:])))
+        console.print(
+            neon_status_text(f"Incomplete run retained at: {attempt}", "muted")
+        )
+        _print_summary(elapsed, final_state, final_export, False)
+        sys.exit(1)
 
-    if success:
-        record_stage(
-            scene_paths,
+    try:
+        image_files = paths.image_files() if paths.images.is_dir() else []
+    except SceneError:
+        image_files = []
+    final_exports = [
+        destination_run / export.relative_to(staged_run) for export in staged_exports
+    ]
+    try:
+        publish_stage(
+            paths,
             "brush",
-            {
-                "inputs": fingerprint_inputs(scene_paths.image_files()),
+            generation=None,
+            replacements=((staged_run, destination_run),),
+            data={
+                "inputs": fingerprint_inputs(image_files),
                 "parameters": {
                     "total_train_iters": total_iters,
                     "export_every": args.export_every,
@@ -245,10 +359,22 @@ def main(argv: Optional[list[str]] = None) -> None:
                     "eval_split_every": args.eval_split_every,
                 },
                 "outputs": {
-                    "run": str(scene_paths.relative_path(export_path.parent)),
-                    "exports": [str(scene_paths.relative_path(path)) for path in exports],
+                    "run": str(paths.relative_path(destination_run)),
+                    "exports": [
+                        str(paths.relative_path(export)) for export in final_exports
+                    ],
                 },
             },
         )
-    _print_summary(elapsed, final_state, export_path, success)
-    sys.exit(0 if success else 1)
+    except Exception as exc:
+        console.print(
+            neon_status_text(f"Brush result could not be published: {exc}", "error")
+        )
+        console.print(
+            neon_status_text(f"Completed staged run retained at: {attempt}", "muted")
+        )
+        sys.exit(1)
+
+    shutil.rmtree(attempt, ignore_errors=True)
+    _print_summary(elapsed, final_state, final_export, True)
+    sys.exit(0)

@@ -381,7 +381,7 @@ def _solve_3x3(matrix: list[list[float]], vector: list[float]) -> tuple[float, f
                 continue
             factor = augmented[row][column]
             augmented[row] = [value - factor * pivot_value for value, pivot_value in zip(augmented[row], augmented[column])]
-    return tuple(augmented[row][3] for row in range(3))
+    return (augmented[0][3], augmented[1][3], augmented[2][3])
 
 
 def _camera_center(name: str, qw: float, qx: float, qy: float, qz: float, tx: float, ty: float, tz: float) -> CameraPosition:
@@ -405,6 +405,8 @@ def _camera_center(name: str, qw: float, qx: float, qy: float, qz: float, tx: fl
 
 def read_model_stats(model_dir: Path) -> ModelStats | None:
     """Read counts only from a complete, structurally parseable sparse model."""
+    images: int | None
+    points: int | None
     fmt = model_format(model_dir)
     if fmt == "binary":
         counts = _binary_model_counts(Path(model_dir))

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from gausser.stage_options import StageOptionError, catalog, resolve_options
@@ -22,7 +24,18 @@ def test_msplat_options_require_an_explicit_unmasked_acknowledgement():
 
     resolved = resolve_options("msplat", {"acknowledge_unmasked": True})
     assert resolved.preset == "local-memory-safe"
-    assert resolved.arguments == ("--iterations", "30000", "--num-downscales", "0", "--downscale-factor", "4.0")
+    assert resolved.specification_version == 2
+    assert resolved.arguments == (
+        "--iterations", "30000", "--num-downscales", "0", "--downscale-factor", "4.0",
+        "--checkpoint-every", "1000", "--allow-unmasked",
+    )
+
+    unattended = resolve_options(
+        "msplat", {"acknowledge_unmasked": True, "run_id": "statue-001"}
+    )
+    assert unattended.arguments[-3:] == (
+        "--run-id", "statue-001", "--allow-unmasked"
+    )
 
 
 def test_brush_options_default_to_bounded_apple_silicon_safe_training():
@@ -55,7 +68,9 @@ def test_sammer_options_reject_invalid_prompt_and_threshold():
         resolve_options("sammer", {"prompt": "fountain", "score_threshold": 1.1})
 
 
-def test_colmap_options_resolve_capture_aware_presets_and_safe_artifact_policy():
+def test_colmap_options_resolve_capture_aware_presets_and_safe_artifact_policy(
+    tmp_path: Path,
+):
     video = resolve_options("colmap", {})
     assert video.preset == "video-sequence"
     assert video.arguments == ("--matcher", "sequential", "--existing", "error")
@@ -64,13 +79,28 @@ def test_colmap_options_resolve_capture_aware_presets_and_safe_artifact_policy()
     assert photos.preset == "photo-set"
     assert photos.arguments == ("--matcher", "exhaustive", "--existing", "error")
 
-    vocab = resolve_options("colmap", {"matcher": "vocab_tree", "vocab_tree": "/models/tree.bin", "use_gpu": False})
-    assert vocab.arguments == ("--matcher", "vocab_tree", "--existing", "error", "--no-gpu", "--vocab-tree", "/models/tree.bin")
+    tree = tmp_path / "tree.bin"
+    tree.write_bytes(b"tree")
+    vocab = resolve_options(
+        "colmap",
+        {"matcher": "vocab_tree", "vocab_tree": str(tree), "use_gpu": False},
+    )
+    assert vocab.arguments == (
+        "--matcher", "vocab_tree", "--existing", "error", "--no-gpu",
+        "--vocab-tree", str(tree),
+    )
 
 
-def test_colmap_options_reject_incomplete_vocabulary_tree_request():
+def test_colmap_options_reject_incomplete_vocabulary_tree_request(tmp_path: Path):
     with pytest.raises(StageOptionError, match="vocab_tree is required"):
         resolve_options("colmap", {"matcher": "vocab_tree"})
+    with pytest.raises(StageOptionError, match="vocab_tree does not exist"):
+        resolve_options(
+            "colmap",
+            {"matcher": "vocab_tree", "vocab_tree": str(tmp_path / "missing.bin")},
+        )
+    with pytest.raises(StageOptionError, match="mask_path does not exist"):
+        resolve_options("colmap", {"mask_path": str(tmp_path / "missing-masks")})
 
 
 def test_sharpframes_catalog_exposes_complete_upstream_controls():
@@ -80,7 +110,7 @@ def test_sharpframes_catalog_exposes_complete_upstream_controls():
     assert definition["preset"] == "upstream-defaults"
     assert [field["key"] for field in definition["fields"]] == [
         "source", "fps", "num_frames", "min_buffer", "format", "selection_method",
-        "batch_size", "batch_buffer", "outlier_window_size", "outlier_sensitivity", "width",
+        "batch_size", "batch_buffer", "outlier_window_size", "outlier_sensitivity", "width", "force",
     ]
     assert definition["fields"][1]["default"] == 10
     assert definition["fields"][1]["minimum"] == 1
@@ -89,11 +119,15 @@ def test_sharpframes_catalog_exposes_complete_upstream_controls():
     assert definition["fields"][6]["advanced"] is True
 
 
-def test_sharpframes_options_resolve_to_reproducible_command_arguments():
+def test_sharpframes_options_resolve_to_reproducible_command_arguments(
+    tmp_path: Path,
+):
+    source = tmp_path / "clips"
+    source.mkdir()
     resolved = resolve_options(
         "sharpframes",
         {
-            "source": "/tmp/clips",
+            "source": str(source),
             "fps": 2,
             "num_frames": 240,
             "selection_method": "batched",
@@ -104,16 +138,36 @@ def test_sharpframes_options_resolve_to_reproducible_command_arguments():
 
     assert resolved.preset == "custom"
     assert resolved.values == {
-        "source": "/tmp/clips", "fps": 2, "num_frames": 240, "min_buffer": 3,
+        "source": str(source), "fps": 2, "num_frames": 240, "min_buffer": 3,
         "format": "jpg", "selection_method": "batched", "batch_size": 8,
         "batch_buffer": 2, "outlier_window_size": 15, "outlier_sensitivity": 60, "width": 1920,
+        "force": False,
     }
     assert resolved.arguments == (
-        "/tmp/clips", "--fps", "2", "--num-frames", "240", "--min-buffer", "3",
+        str(source), "--fps", "2", "--num-frames", "240", "--min-buffer", "3",
         "--format", "jpg", "--selection-method", "batched", "--batch-size", "8",
         "--batch-buffer", "2", "--outlier-window-size", "15", "--outlier-sensitivity", "60",
         "--width", "1920",
     )
+
+    replacement = resolve_options("sharpframes", {"source": str(source), "force": True})
+    assert replacement.arguments[-1] == "--force"
+
+
+def test_guided_paths_resolve_relative_to_the_scene(tmp_path: Path):
+    scene = tmp_path / "scene"
+    scene.mkdir()
+    source = scene / "source.mp4"
+    source.write_bytes(b"video")
+
+    resolved = resolve_options(
+        "sharpframes",
+        {"source": "source.mp4"},
+        path_base=scene,
+    )
+
+    assert resolved.arguments[0] == str(source)
+    assert resolved.values["source"] == str(source)
 
 
 @pytest.mark.parametrize(
@@ -124,6 +178,16 @@ def test_sharpframes_options_resolve_to_reproducible_command_arguments():
         ({"source": "/tmp/clips", "unexpected": True}, "unsupported sharpframes options: unexpected"),
     ],
 )
-def test_sharpframes_options_fail_before_launch(options, message):
+def test_sharpframes_options_fail_before_launch(
+    tmp_path: Path, options, message
+):
+    source = tmp_path / "clips"
+    source.mkdir()
+    options["source"] = str(source)
     with pytest.raises(StageOptionError, match=message):
         resolve_options("sharpframes", options)
+
+
+def test_sharpframes_options_reject_missing_source(tmp_path: Path):
+    with pytest.raises(StageOptionError, match="source does not exist"):
+        resolve_options("sharpframes", {"source": str(tmp_path / "missing.mp4")})

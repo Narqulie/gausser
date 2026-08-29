@@ -1,233 +1,327 @@
-# gausser
+# Gausser
 
-Scene-owned CLI stages that turn photos into 3D Gaussian Splatting `.ply` files.
+Gausser is a CLI-first collection of scene-owned tools for turning photographs
+into 3D Gaussian Splat assets. Each stage is an independent command. Run only
+the stages you need, inspect their files directly, and rerun them explicitly.
 
+```text
+sharpframes (optional) → sammer → colmapper → brusher
+                                      └──────→ msplatter (experimental, unmasked)
+training export ─────────────────────────────→ lodder (optional)
 ```
-sharpframes (optional) → sammer → colmapper → brusher ───┐
-                                      └→ msplatter (experimental, unmasked) ─┴→ lodder (optional streaming LOD)
-```
 
-I built this because the existing pipelines were monolithic scripts that did
-everything at once and were a pain to debug when something went wrong mid-way
-through a 40-minute run. These three tools each do one stage, share a directory
-layout, and you run them in sequence by hand. If masking works but COLMAP fails
-you just fix the images and re-run colmapper, not the whole thing.
+The direct CLIs are the primary product. `gausser` is a lightweight interactive
+launcher for those same commands: it shows scene readiness, lets you choose a
+step, previews the exact command, and returns to the normal terminal after each
+run. The native Gausser Studio app is an optional secondary client. The former
+persistent Textual TUI has been retired.
 
-## What the three tools do
+## Install
 
-**sammer** — runs SAM3 (Meta's segment-anything model) on every photo in your
-scene folder. You give it a text prompt like "fountain" or "statue" and it
-writes a mask for each image showing where that thing is. Writes two sets of
-masks because COLMAP and Brush want different naming conventions.
-
-**colmapper** — wraps COLMAP's SfM pipeline. Extracts features, matches them
-between images, builds a sparse point cloud. Picks the largest reconstruction
-if COLMAP finds multiple (which happens more than you'd think).
-
-**brusher** — runs Brush 3DGS training on the COLMAP output. Writes `.ply`
-checkpoints every N iterations so you can stop early and still have a result.
-
-**sharpframes** — optional pre-processing that selects frames from one video,
-a directory of videos, or an image source into `images/` transactionally before
-the reconstruction stages.
-
-**msplatter** — an experimental Apple-Silicon Msplat backend. It creates an
-isolated run with a PLY export and checkpoint, but is deliberately **not** a
-replacement for Brush: upstream Msplat has no mask-input support.
-
-**lodder** — turns an explicitly selected Brush or Msplat PLY or SOG export into a
-streamed PlayCanvas LOD tree (`lod-meta.json` plus chunk files). By default it
-retains 100%, 50%, and 25% splat levels. It is a deployment derivative, not an
-automatic training step.
-
-Each one has a progress bar that actually shows what's happening, not just a
-spinning cursor.
-
-## When you'd use this
-
-You have a pile of photos of something (a statue, a building, a fountain) and
-you want a 3D model you can view in a splat viewer. You point sammer at the
-photos, colmapper figures out where the camera was for each one, and brusher
-trains the gaussian splat.
-
-## Quick start
+Gausser requires Python 3.10 or newer. From this repository:
 
 ```bash
-cd ~/scenes/my_fountain
+python -m pip install -e .
+```
 
+Install development checks and Sammer's heavyweight Torch runtime when needed:
+
+```bash
+python -m pip install -e '.[test,quality,sammer]'
+```
+
+Msplat is optional and Apple-Silicon-only. Install the checkpoint-compatible
+runtime pinned by Gausser when using `msplatter`:
+
+```bash
+python -m pip install -e '.[msplat]'
+```
+
+SAM3 itself is installed separately because its distribution and model access
+are upstream-controlled. On macOS, use the known-compatible commit:
+
+```bash
+python -m pip install \
+  'git+https://github.com/facebookresearch/sam3.git@d7a33bb3a6a023db88a9'
+hf auth login
+```
+
+External executables are stage-specific:
+
+| Stage | Required executable |
+|---|---|
+| `sharpframes` | `sharp-frames`, plus `ffmpeg` and `ffprobe` |
+| `sammer` | SAM3 Python package and authenticated model access |
+| `colmapper` | `colmap` |
+| `brusher` | `brush` |
+| `msplatter` | optional `msplat==1.1.4` Python package |
+| `lodder` | `splat-transform` |
+
+## Ordinary workflow
+
+A scene is a directory whose canonical inputs live in `images/`:
+
+```bash
+mkdir -p my-scene/images
+cp /path/to/photos/* my-scene/images/
+cd my-scene
+```
+
+Then run a stage without arguments for guided configuration:
+
+```bash
+sammer
+colmapper
+brusher
+```
+
+Each bare stage command inspects the current scene, validates its current
+process plus external dependencies, starts from the authoritative recommended
+preset, asks for required values, previews the resolved shell command, and
+confirms before mutation. It does not require its own launcher executable to be
+rediscovered on `PATH`. Existing images or masks require explicit transactional
+replacement; existing complete or partial COLMAP artifacts require resume or
+replacement selection. Sharp Frames sources and explicit COLMAP mask or
+vocabulary-tree paths must exist before a command can reach confirmation.
+
+Any supplied argument keeps the established deterministic, non-interactive CLI
+contract:
+
+```bash
 sammer --prompt "fountain" --dilation 8 --feather 12
 colmapper --matcher sequential
-brusher
+brusher .
 ```
 
-For a monitored, ordered workflow that selects its trainer explicitly:
+Bare commands prompt only when stdin and stdout are attached to a real terminal.
+In redirected or automated execution they fail clearly instead of hanging or
+starting expensive default work. Automation must therefore pass explicit
+arguments (a scene path such as `brusher .` is sufficient where defaults are
+intended). `--help` and other explicit utility flags never prompt. Back, EOF, or
+Ctrl-C before launch leaves the scene unchanged.
+
+Use `--score-threshold 0.3` when SAM's default threshold misses too many images.
+Video frames generally need `colmapper --matcher sequential`; exhaustive
+matching scales quadratically and is unsuitable for hundreds of adjacent
+frames.
+
+### Guided launcher
+
+Run `gausser` inside an existing scene, or pass its path:
 
 ```bash
-# Brush is the default trainer.
-python ~/Developer/gausser/monitor_and_run.py . --matcher sequential
-
-# Msplat is experimental and unmasked. A safe image divisor is required.
-python ~/Developer/gausser/monitor_and_run.py . --matcher sequential \
-  --trainer msplat --msplat-downscale-factor 4
+gausser /path/to/scene
 ```
 
-The monitor validates an existing COLMAP reconstruction or runs Colmapper, then
-runs exactly the selected trainer. Msplat never consumes SAM masks; `4` loads
-source images at quarter linear resolution and is appropriate for large scenes
-on Apple Silicon.
+The launcher renders a compact Rich overview and offers all six stage commands.
+Unavailable stages remain visible with their readiness reason. Launcher and
+Studio preflight validate the wrapper command they will actually spawn, while a
+direct CLI validates its already-running interpreter and external dependencies.
+The launcher shares the same extracted configurator and Python-owned option
+catalog used by bare stage commands and Studio; required values are requested,
+the shell-quoted command is shown, and execution still goes through the real
+stage CLI.
 
-Create a deployable LOD artifact from an exact completed export; Gausser will
-reject inputs outside the scene root and never guesses the latest checkpoint:
+The launcher and six human-facing stage CLIs share a Synthwave ’84 terminal
+presentation: neon cyan/magenta/violet headers, readable state cards, consistent
+progress bars, and explicit success/warning/error glyphs. Color supplements the
+text instead of carrying state by itself. Rich automatically omits ANSI color in
+redirected output and respects `NO_COLOR`; child-process log payloads are
+rendered literally rather than interpreted as Rich markup. `gausser-engine` remains deliberately
+unstyled because its stdout is a machine-readable JSON-lines protocol.
+
+Three explicit, fail-fast sequences are available:
+
+- **Masked Brush:** `sammer → colmapper → brusher`
+- **Unmasked Msplat:** `colmapper → msplatter`
+- **Brush to streamed LOD:** `brusher → lodder`
+
+Every stage is configured and confirmed just before it runs. Scene preflight
+uses one explicit required action (`none`, `force`, or `existing_policy`), and
+the engine revalidates that action and runtime readiness after acquiring the
+scene lock. The launcher does not hold a chain-wide lock, create pipeline state,
+or infer success from files; each CLI retains its normal validation, scene lock,
+publication, and manifest behavior. Back, EOF, or Ctrl-C at a launcher prompt
+performs no mutation. Ctrl-C
+after a stage starts cancels its process group: canonical published artifacts are
+protected, while incomplete `.gausser/staging/` output may remain for diagnosis.
+Automation should continue to use the direct commands.
+
+Each command accepts an explicit scene when run elsewhere:
 
 ```bash
-lodder runs/brush/<run-id>/exports/export_15000.ply
-# or
-lodder runs/msplat/<run-id>/exports/scene.ply --chunk-count 1024 --chunk-extent 32
-# Use a different descending LOD recipe when the target requires it:
-lodder runs/msplat/<run-id>/exports/scene.ply --lod-percentages 100,40,15
+sammer --scene /path/to/scene --prompt "statue"
+colmapper --scene /path/to/scene --matcher sequential
+brusher /path/to/scene
 ```
 
-If you're working with video frames (like I mostly am) the `--matcher
-sequential` flag is important — the default exhaustive matcher pairs every
-image with every other image and on 500 frames that's 125k pairs, which just
-hangs on MPS.
+### Optional Sharp Frames input
 
-## What you need installed
-
-- Python 3.10+ with torch
-- COLMAP on PATH (`brew install colmap` or download from the website)
-- Brush on PATH (needs a Rust toolchain: `cargo build --release` in the brush
-  repo)
-- SAM3 for sammer (`pip install
-  git+https://github.com/facebookresearch/sam3.git@d7a33bb3a6a023db88a9` then
-  `huggingface-cli login`)
-- Optional Sharp Frames (`pip install sharp-frames`) plus `ffmpeg` and
-  `ffprobe` on PATH
-- Optional Msplat (`pip install msplat`) on Apple Silicon running macOS 14+;
-  it requires COLMAP **binary** sparse output
-- Optional streamed LOD creation: `npm install -g @playcanvas/splat-transform`
-
-The pinned SAM3 commit avoids a triton dependency issue on macOS. The latest
-commit tries to import triton (CUDA-only) at module load time and crashes on
-Apple Silicon.
-
-## Textual control surface
-
-Install the optional UI and launch it from the scene root:
+`sharpframes` transactionally replaces `images/` with a selected frame set:
 
 ```bash
-pip install -e '.[tui]'
-cd ~/scenes/my_fountain
-gausser
+sharpframes /path/to/video.mp4 --scene /path/to/scene
 ```
 
-The terminal UI shows scene/tool readiness and can run SAM3, COLMAP, Brush, an
-ordered pipeline, experimental Msplat, or LOD creation. Enter the SAM3 prompt
-or exact scene-owned PLY or SOG export path as appropriate, then press a stage action
-twice to confirm it. Msplat requires its own second confirmation: it does not
-consume SAM masks and therefore deliberately trains unmasked. `Esc` requests
-cancellation and waits for the shared runner to clean up the complete process
-tree. `r` refreshes readiness and `q` quits. The same scene-owned CLI commands
-remain available for headless use.
+Use `--force` only when deliberately replacing a published image generation.
+The command invokes upstream Sharp Frames with `--force-overwrite`.
 
-## Directory layout the tools expect
+### Experimental Msplat training
 
+Msplat cannot consume SAM/Brush masks. It is never a silent substitute for
+masked Brush training and requires explicit acknowledgement. An unattended
+30,000-step run uses a stable run identity and explicit checkpoint cadence:
+
+```bash
+msplatter /absolute/path/to/scene \
+  --run-id statue-001 \
+  --iterations 30000 \
+  --num-downscales 0 \
+  --downscale-factor 4 \
+  --checkpoint-every 1000 \
+  --allow-unmasked
 ```
-my_scene/
-├── images/              ← put your photos here
-├── masks/               ← created by sammer for Brush
-├── colmap/
-│   └── masks/           ← created by sammer for COLMAP
-├── database.db          ← created by colmapper
-├── sparse/
-│   └── 0/
-│           ├── cameras.bin
-│           ├── images.bin
-│           └── points3D.bin
+
+Rerun that exact command after a signal or failure. Gausser resumes only when
+the run identity, Msplat 1.1.4 runtime, image and binary sparse-model hashes,
+and complete resolved configuration are unchanged. A mismatch is an error; it
+never silently restarts or overwrites the staging attempt.
+
+Checkpoints rotate between two generations. Each save goes to a temporary file,
+is closed and synced, receives a bounded CPU structural validation and SHA-256,
+and is promoted before the atomic resume receipt advances. If the newest slot
+is truncated or its hash differs, the prior slot is used. Checkpoint log lines
+include duration and size because densified checkpoints can be several GB.
+Successful runs publish `checkpoint.msplat` and an immutable
+`checkpoint-receipt.json` containing the complete checkpoint history.
+
+Msplat requires binary `sparse/0` output and does not expose a maximum-splats
+control upstream. Its checkpoint restores model and optimizer state at the exact
+iteration, but upstream does not serialize camera-shuffle RNG/order. Resumed
+training is therefore optimizer-complete, not bit-for-bit trajectory identical.
+
+### Optional streamed LOD
+
+`lodder` accepts an explicit scene-owned PLY or SOG export:
+
+```bash
+lodder runs/brush/<run-id>/exports/<export>.ply
+```
+
+It validates the complete PlayCanvas streamed artifact before publishing it and
+records the actual `splat-transform` version.
+
+## Scene contract
+
+```text
+scene/
+├── images/                       # flat canonical source image generation
+├── masks/                        # Brush masks: <stem>.png
+├── colmap/masks/                 # COLMAP masks: <name>.<ext>.png
+├── database.db                   # COLMAP feature database
+├── sparse/0/                     # selected COLMAP sparse model
 ├── runs/
-│   ├── brush/<run-id>/exports/  ← created by brusher
-│   ├── msplat/<run-id>/          ← experimental PLY export + checkpoint
-│   └── lod/<run-id>/lod-meta.json ← validated streamed LOD derivative
+│   ├── brush/<run-id>/
+│   ├── msplat/<run-id>/
+│   └── lod/<run-id>/
 └── .gausser/
-    ├── manifest.json
-    └── staging/         ← incomplete work; never consumed
+    ├── manifest.json             # stage provenance and current lineage
+    ├── scene.lock                # cross-process mutation lease
+    ├── staging/                  # incomplete or not-yet-published work
+    └── invalidated/              # retired upstream generations/dependents
 ```
 
-Each tool reads from this structure and writes to it. You cd into the scene
-folder and run the commands. No config files, no yaml, no pipeline state.
+All mutating CLIs acquire the same scene lock. An engine-launched CLI adopts the
+engine's inherited lock, so Studio and direct commands cannot concurrently
+modify one scene.
 
-## CLI reference
+Stage publication is transactional: validated files and their manifest
+transition commit together. If publication metadata fails, canonical artifacts
+roll back and completed staging remains available for diagnosis. Replacing an
+upstream generation archives incompatible dependents rather than presenting
+stale masks, reconstruction, or training runs as current:
 
+- replacing `images/` retires masks, COLMAP state, and all runs;
+- replacing masks retires COLMAP state and all runs;
+- replacing reconstruction retires all training and LOD runs.
+
+Failed external computation never replaces the last successful generation.
+
+## Stage notes
+
+### Sammer
+
+- `PYTORCH_ENABLE_MPS_FALLBACK=1` must be set before Torch loads on Apple
+  Silicon. The CLI sets it automatically.
+- Brush masks use `masks/<image-stem>.png`.
+- COLMAP masks use `colmap/masks/<image-name>.<ext>.png`.
+- `--force` replaces both complete mask sets transactionally.
+
+### Colmapper
+
+- macOS defaults to CPU because Homebrew COLMAP has no CUDA implementation.
+- Existing `database.db` or `sparse/` requires an explicit
+  `--existing resume|replace` policy.
+- If COLMAP emits multiple models, the model with the most registered images is
+  normalized to `sparse/0/`.
+- `ImageReader.single_camera=1` is currently part of the pipeline contract.
+
+### Brusher
+
+- `--export-every` must be less than `--total-train-iters`; Brush iterates
+  `0..N-1`.
+- Each invocation trains in staging and publishes a fresh
+  `runs/brush/<run-id>/` only after at least one PLY exists.
+- `--export-path`, when used, must name
+  `runs/brush/<run-id>/exports` inside the scene.
+- Brush progress can remain visually stale between upstream refinement or
+  evaluation events even while training is active.
+
+## Optional native Studio
+
+`macos/GausserStudio/` is a SwiftUI client of the `gausser-engine` JSON-lines
+service. Python remains authoritative for scene paths, manifests, typed stage
+options, processes, cancellation, publication, and mutable presentation-profile
+persistence. The app is optional and secondary to the stage CLIs.
+
+The native **Compose** workspace opens scene-owned PLY, SPZ, and `.splat`
+artifacts without modifying them. It can move and save an orbit pivot, set a
+non-destructive presentation origin, record named focus points, and save named
+portable camera views plus a home view. The viewer projects the saved origin as
+RGB artifact-local axes and labels saved focus points directly over the splat.
+Profiles live under `presentations/`,
+are bound to the artifact path and SHA-256, and use atomic revision-checked
+engine writes.
+
+```bash
+cd macos/GausserStudio
+swift test
+swift build -c release
 ```
-sammer --prompt "fountain" [--scene SCENE] [--path ./images/]
-       [--score-threshold 0.5] [--device auto]
-       [--dilation 8] [--feather 12] [--all-instances] [--force]
 
-colmapper [--scene SCENE] [--path ./images/] [--output ./sparse/]
-          --matcher sequential|exhaustive|vocab_tree [--vocab-tree FILE]
-          [--existing error|resume|replace] [--no-gpu] [--mask-path DIR]
+`macos/package-app.sh` creates an ad-hoc-signed local developer app using the
+active Python environment. It is not a distributable bundle.
 
-brusher [SCENE] [--total-train-iters 30000] [--export-every 5000]
-        [--eval-every 1000] [--refine-every 200]
-        [--max-splats N] [--max-resolution N] [--eval-split-every N]
-        [--export-path DIR]
+## Legacy monitor helper
 
-sharpframes SOURCE [--scene SCENE] [--force] [SHARP-FRAMES OPTIONS]
+`monitor_and_run.py` remains a narrow helper for waiting on a Metashape COLMAP
+export and then invoking one trainer. It delegates to the stage CLIs and is not
+a second workflow authority.
 
-msplatter [SCENE] [--iterations 7000] [--num-downscales 0]
-           [--downscale-factor N] [--no-eval] --allow-unmasked
+## Development checks
 
-lodder SOURCE.{ply,sog} [--scene SCENE] [--chunk-count N] [--chunk-extent METRES]
-       [--lod-percentages 100,50,25]
+```bash
+pytest -q
+ruff check src tests monitor_and_run.py
+mypy src
+./scripts/check-python310.sh  # Docker-backed minimum-version and package gate
+PYTHON=.venv/bin/python ./scripts/build-package.sh  # build, install, and smoke wheel + sdist
 
-python monitor_and_run.py SCENE [--no-wait] [--matcher sequential]
-       [--trainer brush|msplat]
-       [--msplat-iterations 30000] [--msplat-downscale-factor N]
+cd macos/GausserStudio
+swift test
+swift build -c release
 ```
 
-## Why the name
-
-I wanted short commands you type a lot. `-er` suffix for tools that do one
-thing. They share a repo as gausser because they're always used together and
-they share some UI code.
-
-## A real run
-
-On 527 video frames of a fountain (the dataset I built this for):
-
-```
-sammer --prompt "Fountain" --dilation 8 --feather 12
-  524/527 masked, 99.4% hit rate, 50 min
-
-colmapper --matcher sequential
-  527/527 features, 527/527 matched, 524/527 registered, 25 min
-
-brusher
-  writes export_30000.ply, ~15 min
-```
-
-Three commands, about 90 minutes total, you get a .ply you can drag into
-supersplat or play with in the brush viewer.
-
-## Known quirks
-
-- COLMAP's mapper can split your images into multiple sub-models if it thinks
-  they don't connect. colmapper picks the largest one automatically.
-- On macOS without `PYTORCH_ENABLE_MPS_FALLBACK=1` set, SAM3 crashes on every
-  image because of an unsupported MPS operator. sammer sets this automatically
-  at startup.
-- Brush's `--export-every` must be less than `--total-train-iters`. It
-  iterates 0..N-1 so exporting at step N produces nothing.
-- macOS external volumes may contain `._*` AppleDouble metadata sidecars. Gausser
-  ignores them when counting or processing images; raw file counts do not.
-- Msplat cannot consume `masks/` or `colmap/masks/`. `msplatter` requires
-  `--allow-unmasked`, including on scenes that contain SAM masks, so that this
-  semantic difference is never implicit. It supports only upstream binary
-  COLMAP models, not text sparse models. Msplat loads all source images into
-  shared GPU memory; for large scenes use `--downscale-factor N` to load at
-  one-Nth linear resolution (for example, `4` for quarter-resolution inputs).
-- `lodder` creates PlayCanvas LOD streaming data rather than a single PLY. It
-  uses `splat-transform` to derive lower-detail PLY levels, then bundles them
-  transactionally. It requires `splat-transform` on PATH, records its detected
-  version and source hash, and rejects incomplete metadata/chunk output before
-  publication.
+Pytest, Ruff, mypy, the Python 3.10 container gate, clean package-content build,
+and the Swift build/tests are required gates for changes to their respective
+Python or native surfaces.

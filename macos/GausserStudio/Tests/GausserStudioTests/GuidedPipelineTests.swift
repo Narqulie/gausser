@@ -4,7 +4,7 @@ import Testing
 
 @Test
 func guidedPipelineUsesTheApprovedRevisitableOrder() {
-    #expect(SceneStep.allCases == [.overview, .sources, .sammer, .colmap, .training, .publish])
+    #expect(SceneStep.allCases == [.overview, .sources, .sammer, .colmap, .training, .compose, .publish])
 }
 
 @Test
@@ -12,6 +12,7 @@ func guidedPipelineKeepsTrainerChoiceInsideOneTrainingStep() {
     #expect(!SceneStep.allCases.contains { $0.rawValue == "brush" })
     #expect(!SceneStep.allCases.contains { $0.rawValue == "msplat" })
     #expect(SceneStep.training.title == "Training")
+    #expect(SceneStep.compose.title == "Compose")
 }
 
 @Test

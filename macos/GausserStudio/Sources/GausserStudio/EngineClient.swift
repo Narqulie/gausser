@@ -24,7 +24,6 @@ final class EngineClient {
     private var pending: [String: (Result<EngineMessage, Error>) -> Void] = [:]
 
     var isConnected = false
-    var events: [EngineMessage] = []
     private var eventSubscribers: [UUID: (EngineMessage) -> Void] = [:]
 
     /// Internal test seams for lifecycle and duplicate-request regression coverage.
@@ -63,6 +62,39 @@ final class EngineClient {
 
     func reconstruction(scene: URL, completion: @escaping (Result<EngineMessage, Error>) -> Void) {
         send(method: "reconstruction", params: ["scene": .string(scene.path)], completion: completion)
+    }
+
+    func presentation(
+        scene: URL,
+        artifactRelativePath: String,
+        completion: @escaping (Result<EngineMessage, Error>) -> Void
+    ) {
+        send(
+            method: "presentation",
+            params: [
+                "scene": .string(scene.path),
+                "artifact": .string(artifactRelativePath),
+            ],
+            completion: completion
+        )
+    }
+
+    func updatePresentation(
+        scene: URL,
+        presentation: ScenePresentation,
+        completion: @escaping (Result<EngineMessage, Error>) -> Void
+    ) {
+        do {
+            let encoded = try JSONEncoder().encode(presentation)
+            let value = try JSONDecoder().decode(JSONValue.self, from: encoded)
+            send(
+                method: "update_presentation",
+                params: ["scene": .string(scene.path), "presentation": value],
+                completion: completion
+            )
+        } catch {
+            completion(.failure(error))
+        }
     }
 
     func datasetImages(
@@ -127,23 +159,6 @@ final class EngineClient {
                 "scene": .string(scene.path),
                 "source": .string(sourceRelativePath),
                 "edited": .string(edited.path),
-            ],
-            completion: completion
-        )
-    }
-
-    func start(
-        scene: URL,
-        stage: String,
-        arguments: [String],
-        completion: @escaping (Result<EngineMessage, Error>) -> Void
-    ) {
-        send(
-            method: "start",
-            params: [
-                "scene": .string(scene.path),
-                "stage": .string(stage),
-                "arguments": .array(arguments.map(JSONValue.string)),
             ],
             completion: completion
         )
@@ -309,7 +324,6 @@ final class EngineClient {
                     completion(.success(message))
                 }
             } else {
-                events.append(message)
                 eventSubscribers.values.forEach { $0(message) }
             }
         }

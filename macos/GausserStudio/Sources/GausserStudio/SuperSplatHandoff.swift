@@ -75,69 +75,13 @@ struct SceneExportArtifact: Equatable, Sendable {
     }
 }
 
-/// The only stable external-editor configuration available locally: an explicitly configured app bundle.
-///
-/// No SuperSplat application bundle or command-line launch protocol is installed on this workstation.
-/// Consequently Gausser Studio does not guess a browser URL or synthesize a shell command. In the
-/// absence of a configured app, it reveals the selected export in Finder and can copy its canonical path.
-struct SuperSplatEditorConfiguration: Equatable, Sendable {
-    let applicationURL: URL?
-
-    static let finderOnly = Self(applicationURL: nil)
-}
-
-enum SuperSplatHandoffAction: Equatable, Sendable {
-    case openInConfiguredApplication(artifact: URL, application: URL)
-    case revealInFinder(URL)
-    case copyCanonicalPath(String)
-}
-
-enum SuperSplatHandoffError: LocalizedError {
-    case copyPathFailed
-
-    var errorDescription: String? {
-        "Unable to copy the export path to the clipboard."
-    }
-}
-
-/// Plans and performs a safe, explicit handoff. It never invokes a shell or changes the training export.
+/// SuperSplat has no installed app bundle or stable local launch protocol here.
+/// Reveal the canonical scene-owned export without guessing a browser URL,
+/// synthesizing a shell command, or changing the trainer-owned file.
 @MainActor
 enum SuperSplatHandoff {
-    static func primaryAction(
-        for artifact: SceneExportArtifact,
-        editor: SuperSplatEditorConfiguration = .finderOnly
-    ) -> SuperSplatHandoffAction {
-        if let applicationURL = editor.applicationURL {
-            return .openInConfiguredApplication(artifact: artifact.url, application: applicationURL.standardizedFileURL.resolvingSymlinksInPath())
-        }
-        return .revealInFinder(artifact.url)
-    }
-
-    static func copyPathAction(for artifact: SceneExportArtifact) -> SuperSplatHandoffAction {
-        .copyCanonicalPath(artifact.url.path)
-    }
-
-    static func perform(_ action: SuperSplatHandoffAction, workspace: NSWorkspace = .shared) async throws {
-        switch action {
-        case .openInConfiguredApplication(let artifact, let application):
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                workspace.open([artifact], withApplicationAt: application, configuration: .init()) { _, error in
-                    if let error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume(returning: ())
-                    }
-                }
-            }
-        case .revealInFinder(let artifact):
-            workspace.activateFileViewerSelecting([artifact])
-        case .copyCanonicalPath(let path):
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            guard pasteboard.setString(path, forType: .string) else {
-                throw SuperSplatHandoffError.copyPathFailed
-            }
-        }
+    static func revealInFinder(_ artifact: SceneExportArtifact, workspace: NSWorkspace = .shared) {
+        workspace.activateFileViewerSelecting([artifact.url])
     }
 }
 

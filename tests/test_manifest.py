@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from gausser.manifest import record_run_finished, record_run_started, record_stage
+from gausser.manifest import record_run_finished, record_run_started, transition_stage
 from gausser.scene import ScenePaths
 
 
 def test_run_records_preserve_resolved_settings_and_stage_data(tmp_path: Path):
     paths = ScenePaths.from_root(tmp_path)
-    record_stage(paths, "colmap", {"model": "sparse/0"})
+    transition_stage(paths, "colmap", {"model": "sparse/0"}, invalidated_stages=())
     settings = {"specification_version": 1, "preset": "video-sequence", "values": {"matcher": "sequential"}}
 
     record_run_started(paths, "run-1", "colmap", settings)

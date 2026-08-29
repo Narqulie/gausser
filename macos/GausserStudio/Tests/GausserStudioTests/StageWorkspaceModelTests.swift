@@ -25,6 +25,25 @@ import Testing
     #expect(model.values["vocab_tree"] == .null)
 }
 
+@Test @MainActor func stageWorkspaceLocksConfirmedReplacementAcrossPresetsAndEdits() throws {
+    let data = Data("""
+    {"version":1,"title":"SAM3","description":"Mask","preset":"standard","groups":[],"presets":[{"id":"standard","title":"Standard","description":"Base","values":{"force":false}},{"id":"other","title":"Other","description":"Alternate","values":{"force":false}}],"fields":[{"key":"force","label":"Replace masks","type":"boolean","default":false}]}
+    """.utf8)
+    let definition = try JSONDecoder().decode(StageDefinition.self, from: data)
+    let model = StageWorkspaceModel(definition: definition)
+    #expect(model.values["force"] == .bool(false))
+
+    model.updateLockedValues(["force": .bool(true)])
+
+    #expect(model.values["force"] == .bool(true))
+    #expect(model.isLocked("force"))
+
+    model.set(.bool(false), for: "force")
+    model.applyPreset(try #require(definition.presets.last))
+
+    #expect(model.values["force"] == .bool(true))
+}
+
 @Test @MainActor func stageWorkspacePreservesRequiredSubjectWhenChangingPreset() throws {
     let data = Data("""
     {"version":1,"title":"SAM3","description":"Mask","preset":"standard","groups":[],"presets":[{"id":"standard","title":"Standard","description":"Base","values":{"threshold":0.5}},{"id":"coverage","title":"Coverage","description":"Lower","values":{"threshold":0.3}}],"fields":[{"key":"prompt","label":"Prompt","type":"text","default":"","required":true},{"key":"threshold","label":"Threshold","type":"decimal","default":0.5}]}

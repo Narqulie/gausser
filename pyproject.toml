@@ -4,33 +4,46 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gausser"
-version = "0.1.0"
-description = "3D Gaussian Splatting toolchain — sammer, colmapper, brusher"
+version = "0.2.0"
+description = "CLI-first, scene-owned tools for producing 3D Gaussian Splats"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "rich>=13.0",
-    "numpy>=2.5,<3",
+    "questionary>=2,<3",
+    "numpy>=1.26,<2",
     "Pillow>=12.3,<13",
-    "torch>=2.13,<3",
 ]
 
 [project.optional-dependencies]
+sammer = [
+    "numpy>=1.26,<2",
+    "opencv-python>=4.10,<4.12",
+    "setuptools>=74,<81",
+    "torch>=2.10,<2.11",
+    "torchvision>=0.25,<0.26",
+]
+msplat = [
+    "msplat==1.1.4",
+]
 test = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.24",
 ]
-tui = [
-    "textual>=0.58",
+quality = [
+    "build>=1.2,<2",
+    "mypy>=1.19,<2",
+    "ruff>=0.15,<0.16",
 ]
 
 [project.scripts]
+gausser = "gausser.launcher:main"
 sammer = "sammer.cli:main"
 colmapper = "colmapper.cli:main"
 brusher = "brusher.cli:main"
 sharpframes = "sharpframes.cli:main"
 msplatter = "msplatter.cli:main"
 lodder = "lodder.cli:main"
-gausser = "gausser.tui:main"
 gausser-engine = "gausser.engine:main"
 
 [tool.setuptools.packages.find]
@@ -41,3 +54,15 @@ include = ["gausser*", "sammer*", "colmapper*", "brusher*", "sharpframes*", "msp
 testpaths = ["tests"]
 pythonpath = [".", "src"]
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["msplat", "msplat.*", "sam3.*", "torch", "torch.*"]
+ignore_missing_imports = true

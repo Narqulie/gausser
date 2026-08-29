@@ -6,7 +6,7 @@ struct StageRunReviewScreen: View {
     let definition: StageDefinition?
     let pendingRun: PendingStageRun
     let isStarting: Bool
-    let canLaunch: Bool
+    let launchBlockReason: String?
     let onBackToSettings: () -> Void
     let onRun: () -> Void
 
@@ -76,10 +76,10 @@ struct StageRunReviewScreen: View {
             StudioGlassActions {
                 Button("Run \(definition?.title ?? studioStageTitle(pendingRun.stage))", action: onRun)
                     .studioGlassButton()
-                    .disabled(!canLaunch)
+                    .disabled(launchBlockReason != nil)
             }
-            if !canLaunch {
-                Text("Wait for the current scene operation to finish.")
+            if let launchBlockReason {
+                Text(launchBlockReason)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

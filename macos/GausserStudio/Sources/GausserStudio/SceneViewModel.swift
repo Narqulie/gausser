@@ -18,13 +18,48 @@ struct ArtifactSummary: Decodable, Identifiable, Equatable {
     }
 }
 
+enum StageRequiredAction: String, Decodable {
+    case none
+    case force
+    case existingPolicy = "existing_policy"
+}
+
 struct StageReadiness: Decodable, Identifiable, Equatable {
     let stage: String
     let state: String
     let detail: String
+    let requiredAction: StageRequiredAction
 
     var id: String { stage }
-    var canRun: Bool { state == "ready" }
+    var canRun: Bool { state == "ready" || state == "completed" }
+
+    init(
+        stage: String,
+        state: String,
+        detail: String,
+        requiredAction: StageRequiredAction = .none
+    ) {
+        self.stage = stage
+        self.state = state
+        self.detail = detail
+        self.requiredAction = requiredAction
+    }
+
+    func permits(options: [String: JSONValue]) -> Bool {
+        switch requiredAction {
+        case .none:
+            true
+        case .force:
+            options["force"] == .bool(true)
+        case .existingPolicy:
+            options["existing"] == .string("resume") || options["existing"] == .string("replace")
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case stage, state, detail
+        case requiredAction = "required_action"
+    }
 }
 
 private struct ArtifactResponse: Decodable {
@@ -215,6 +250,38 @@ final class SceneViewModel {
 
     func stageReady(for stage: String) -> Bool {
         sceneReadiness.first(where: { $0.stage == stage })?.canRun ?? false
+    }
+
+    func stageRequiredAction(for stage: String) -> StageRequiredAction {
+        sceneReadiness.first(where: { $0.stage == stage })?.requiredAction ?? .none
+    }
+
+    func stageLaunchBlockReason(
+        stage: String,
+        options: [String: JSONValue]
+    ) -> String? {
+        guard canStartStage else {
+            return "Finish or cancel the active scene operation before launching another stage."
+        }
+        guard let sceneStatus = sceneReadiness.first(where: { $0.stage == stage }) else {
+            return "Scene readiness is not available. Refresh before launching this stage."
+        }
+        guard sceneStatus.canRun else { return sceneStatus.detail }
+        guard sceneStatus.permits(options: options) else {
+            switch sceneStatus.requiredAction {
+            case .force:
+                return "Review and confirm replacement of the existing generation."
+            case .existingPolicy:
+                return "Choose Resume or Replace for the existing COLMAP artifacts."
+            case .none:
+                return sceneStatus.detail
+            }
+        }
+        guard let toolStatus = toolReadiness.first(where: { $0.stage == stage }) else {
+            return "Runtime readiness is not available. Refresh before launching this stage."
+        }
+        guard toolStatus.canRun else { return toolStatus.detail }
+        return nil
     }
 
     /// Configuration is read-only until its explicit Run action. It must remain
@@ -431,13 +498,6 @@ final class SceneViewModel {
             case .failure(let error):
                 self.errorMessage = error.localizedDescription
             }
-        }
-    }
-
-    func start(stage: String, arguments: [String] = []) {
-        guard beginStart() else { return }
-        engine.start(scene: scene, stage: stage, arguments: arguments) { [weak self] result in
-            self?.receiveStartResult(stage: stage, result: result)
         }
     }
 

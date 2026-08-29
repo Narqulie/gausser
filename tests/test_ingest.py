@@ -125,14 +125,16 @@ def test_ingest_rolls_back_published_images_when_manifest_recording_fails(tmp_pa
     def fail_to_record(*args, **kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(ingest, "record_stage", fail_to_record)
+    monkeypatch.setattr("gausser.publish.transition_stage", fail_to_record)
 
     with pytest.raises(OSError, match="disk full"):
         ingest.ingest_photo_directory(paths, source, policy=ingest.IngestPolicy.COPY)
 
     assert list(paths.images.iterdir()) == []
     assert paths.manifest.read_bytes() == original_manifest
-    assert list(paths.staging.iterdir()) == []
+    attempts = list(paths.staging.iterdir())
+    assert len(attempts) == 1
+    assert (attempts[0] / "images" / "frame_0001.jpg").is_file()
 
 
 def test_ingest_requires_an_initialized_scene_and_at_least_one_supported_photo(tmp_path: Path):

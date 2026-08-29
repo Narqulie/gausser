@@ -15,7 +15,7 @@ from pathlib import Path
 import sys
 import threading
 import time
-from typing import Any, Callable, TextIO
+from typing import Any, Callable, TextIO, cast
 from uuid import uuid4
 
 from .artifacts import list_artifacts
@@ -24,7 +24,20 @@ from .controller import SceneController, Stage, StageRequest
 from .dataset import DatasetChangedError, list_dataset_images
 from .ingest import ingest_photo_directory, mutate_photo_dataset
 from .manifest import record_run_finished, record_run_started
-from .preflight import inspect_scene, inspect_tools
+from .preflight import (
+    Readiness,
+    inspect_launch_tool,
+    inspect_scene,
+    inspect_tools,
+    validate_stage_readiness,
+)
+from .presentation import (
+    PresentationArtifactChangedError,
+    PresentationChangedError,
+    PresentationValidationError,
+    load_presentation,
+    save_presentation,
+)
 from .process import CommandResult
 from .scene import SceneError, ScenePaths, initialize_scene
 from .scene_lock import SceneLock, SceneLockError
@@ -34,7 +47,16 @@ from .supersplat import reimport_edited_export
 
 EventSink = Callable[[dict[str, Any]], None]
 ControllerFactory = Callable[[ScenePaths], SceneController]
+ToolInspector = Callable[[Stage], Readiness]
 _STAGE_NAMES: frozenset[str] = frozenset({"sharpframes", "sammer", "colmap", "brush", "msplat", "lod"})
+_STAGE_TITLES = {
+    "sharpframes": "Sharp Frames",
+    "sammer": "Sammer",
+    "colmap": "COLMAP",
+    "brush": "Brusher",
+    "msplat": "Msplatter",
+    "lod": "LOD Builder",
+}
 
 
 class RequestError(ValueError):
@@ -81,8 +103,14 @@ class ActiveRun:
 class GausserEngine:
     """Dispatch JSON-compatible requests and stream structured run events."""
 
-    def __init__(self, *, controller_factory: ControllerFactory = SceneController) -> None:
+    def __init__(
+        self,
+        *,
+        controller_factory: ControllerFactory = SceneController,
+        tool_inspector: ToolInspector | None = None,
+    ) -> None:
         self._controller_factory = controller_factory
+        self._tool_inspector = tool_inspector or inspect_launch_tool
         self._active_by_id: dict[str, ActiveRun] = {}
         self._active_by_scene: dict[Path, ActiveRun] = {}
         self._lock = threading.Lock()
@@ -102,7 +130,7 @@ class GausserEngine:
             elif method == "resolve_stage":
                 scene, stage, resolved = self._resolve_stage_options(params)
                 controller = self._controller_factory(scene)
-                request = StageRequest(stage, resolved.arguments, self._settings_snapshot(resolved))
+                request = StageRequest(stage, resolved.arguments, resolved.as_settings())
                 emit({"id": request_id, "result": {
                     "stage": stage,
                     "specification_version": resolved.specification_version,
@@ -165,18 +193,36 @@ class GausserEngine:
                             if preview.focus is not None else None
                         ),
                     }})
+            elif method == "presentation":
+                scene = self._scene_from_params(params)
+                artifact = self._required_string(params, "artifact")
+                emit({
+                    "id": request_id,
+                    "result": {"presentation": load_presentation(scene, artifact)},
+                })
+            elif method == "update_presentation":
+                scene = self._scene_from_params(params)
+                presentation = params.get("presentation")
+                if not isinstance(presentation, dict):
+                    raise RequestError("presentation must be an object")
+                with self._scene_mutation(scene):
+                    saved_presentation = save_presentation(scene, presentation)
+                emit({
+                    "id": request_id,
+                    "result": {"presentation": saved_presentation},
+                })
             elif method == "ingest_photos":
                 scene = self._scene_from_params(params)
                 with self._scene_mutation(scene):
                     source = self._required_string(params, "source")
                     policy = self._required_string(params, "policy")
-                    result = ingest_photo_directory(scene, source, policy=policy)
+                    ingest_result = ingest_photo_directory(scene, source, policy=policy)
                 emit({
                     "id": request_id,
                     "result": {
-                        "source": str(result.source),
-                        "policy": result.policy.value,
-                        "image_count": len(result.images),
+                        "source": str(ingest_result.source),
+                        "policy": ingest_result.policy.value,
+                        "image_count": len(ingest_result.images),
                     },
                 })
             elif method == "mutate_dataset":
@@ -189,13 +235,13 @@ class GausserEngine:
                     current_revision = list_dataset_images(scene, offset=0, limit=1).revision
                     if expected_revision != current_revision:
                         raise DatasetChangedError("dataset changed; reload it before editing")
-                    result = mutate_photo_dataset(scene, additions=additions, removals=removals, policy=policy)
+                    mutation_result = mutate_photo_dataset(scene, additions=additions, removals=removals, policy=policy)
                 emit({
                     "id": request_id,
                     "result": {
-                        "added": list(result.added),
-                        "removed": list(result.removed),
-                        "archive": str(scene.relative_path(result.archive)),
+                        "added": list(mutation_result.added),
+                        "removed": list(mutation_result.removed),
+                        "archive": str(scene.relative_path(mutation_result.archive)),
                     },
                 })
             elif method == "reimport_supersplat":
@@ -203,13 +249,13 @@ class GausserEngine:
                 with self._scene_mutation(scene):
                     source = self._required_string(params, "source")
                     edited = self._required_string(params, "edited")
-                    result = reimport_edited_export(scene, source, edited)
+                    reimport_result = reimport_edited_export(scene, source, edited)
                 emit({
                     "id": request_id,
                     "result": {
-                        "run_id": result.run_id,
-                        "export": str(scene.relative_path(result.export)),
-                        "provenance": str(scene.relative_path(result.provenance)),
+                        "run_id": reimport_result.run_id,
+                        "export": str(scene.relative_path(reimport_result.export)),
+                        "provenance": str(scene.relative_path(reimport_result.provenance)),
                     },
                 })
             elif method == "start":
@@ -235,6 +281,12 @@ class GausserEngine:
                 raise RequestError(f"unsupported method: {method}")
         except DatasetChangedError as exc:
             emit({"id": request_id, "error": {"code": "dataset_changed", "message": str(exc)}})
+        except PresentationChangedError as exc:
+            emit({"id": request_id, "error": {"code": "presentation_changed", "message": str(exc)}})
+        except PresentationArtifactChangedError as exc:
+            emit({"id": request_id, "error": {"code": "presentation_artifact_changed", "message": str(exc)}})
+        except PresentationValidationError as exc:
+            emit({"id": request_id, "error": {"code": "invalid_presentation", "message": str(exc)}})
         except SceneLockError as exc:
             emit({"id": request_id, "error": {"code": "scene_busy", "message": str(exc)}})
         except SceneError as exc:
@@ -333,31 +385,33 @@ class GausserEngine:
         stage_name = self._required_string(params, "stage")
         if stage_name not in _STAGE_NAMES:
             raise RequestError(f"unsupported stage: {stage_name}")
-        has_arguments = "arguments" in params
-        has_options = "options" in params
-        if has_arguments and has_options:
-            raise RequestError("start accepts either arguments or options, not both")
-        settings: dict[str, Any] | None = None
-        if has_options:
-            raw_options = params["options"]
-            if not isinstance(raw_options, dict):
-                raise RequestError("options must be an object")
-            resolved = resolve_options(stage_name, raw_options)
-            raw_arguments = list(resolved.arguments)
-            settings = self._settings_snapshot(resolved)
-        else:
-            raw_arguments = params.get("arguments", [])
-            if not isinstance(raw_arguments, list) or any(not isinstance(item, str) or "\0" in item for item in raw_arguments):
-                raise RequestError("arguments must be an array of strings without NUL bytes")
+        if "arguments" in params:
+            raise RequestError("start accepts typed options only; raw arguments are not supported")
+        raw_options = params.get("options")
+        if not isinstance(raw_options, dict):
+            raise RequestError("options must be an object")
+        resolved = resolve_options(stage_name, raw_options, path_base=scene.root)
+        stage = cast(Stage, stage_name)
+        raw_arguments = list(resolved.arguments)
+        settings = resolved.as_settings()
 
         self._require_no_local_run(scene)
         scene_lock = SceneLock(scene.root)
         scene_lock.acquire()
         try:
+            tool_status = self._tool_inspector(stage)
+            if tool_status.state == "unavailable":
+                raise RequestError(
+                    f"{_STAGE_TITLES[stage]} is unavailable: {tool_status.detail}"
+                )
+            try:
+                validate_stage_readiness(scene, stage, resolved.values)
+            except ValueError as exc:
+                raise RequestError(str(exc)) from exc
             active = ActiveRun(
                 id=f"run-{uuid4().hex}",
                 scene=scene,
-                stage=stage_name,  # type: ignore[arg-type]
+                stage=stage,
                 arguments=tuple(raw_arguments),
                 settings=settings,
                 cancel_event=threading.Event(),
@@ -418,7 +472,7 @@ class GausserEngine:
                 on_line=emit_line,
                 on_event=emit_stage_event,
                 cancel_event=active.cancel_event,
-                inherited_fds=(active.lock.fileno(),),
+                scene_lock_fd=active.lock.fileno(),
             )
             state = "succeeded" if result.succeeded else "cancelled" if result.cancelled else "failed"
             result_data = self._result_data(result)
@@ -453,15 +507,9 @@ class GausserEngine:
         raw_options = params.get("options")
         if not isinstance(raw_options, dict):
             raise RequestError("options must be an object")
-        return scene, stage_name, resolve_options(stage_name, raw_options)
-
-    @staticmethod
-    def _settings_snapshot(resolved) -> dict[str, Any]:
-        return {
-            "specification_version": resolved.specification_version,
-            "preset": resolved.preset,
-            "values": resolved.values,
-        }
+        return scene, stage_name, resolve_options(
+            stage_name, raw_options, path_base=scene.root
+        )
 
     @staticmethod
     def _elapsed(active: ActiveRun) -> float:

@@ -7,8 +7,8 @@ import json
 from pathlib import Path
 import shutil
 
-from .manifest import fingerprint_file, record_stage
-from .publish import replace_directory
+from .manifest import fingerprint_file
+from .publish import publish_stage
 from .scene import ScenePaths
 
 _SUPPORTED_SUFFIXES = frozenset({".ply", ".sog", ".spz", ".splat"})
@@ -45,49 +45,42 @@ def reimport_edited_export(
     staged_run = attempt / "run"
     staged_export = staged_run / "exports" / f"edited{edited.suffix.lower()}"
     staged_export.parent.mkdir(parents=True)
-    published = False
-    try:
-        shutil.copy2(edited, staged_export)
-        provenance = staged_run / "provenance.json"
-        provenance.write_text(
-            json.dumps(
-                {
-                    "editor": "SuperSplat",
-                    "source_artifact": str(paths.relative_path(source)),
-                    "source_sha256": fingerprint_file(source),
-                    "edited_source_filename": edited.name,
-                    "edited_sha256": fingerprint_file(edited),
-                    "export": str(Path("exports") / staged_export.name),
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        replace_directory(staged_run, destination)
-        published = True
-        published_export = destination / "exports" / staged_export.name
-        published_provenance = destination / "provenance.json"
-        record_stage(
-            paths,
-            "supersplat",
+    shutil.copy2(edited, staged_export)
+    provenance = staged_run / "provenance.json"
+    provenance.write_text(
+        json.dumps(
             {
-                "source": str(paths.relative_path(source)),
-                "run_id": selected_run_id,
-                "outputs": {
-                    "export": str(paths.relative_path(published_export)),
-                    "provenance": str(paths.relative_path(published_provenance)),
-                },
+                "editor": "SuperSplat",
+                "source_artifact": str(paths.relative_path(source)),
+                "source_sha256": fingerprint_file(source),
+                "edited_source_filename": edited.name,
+                "edited_sha256": fingerprint_file(edited),
+                "export": str(Path("exports") / staged_export.name),
             },
+            indent=2,
+            sort_keys=True,
         )
-        return SuperSplatImport(selected_run_id, published_export, published_provenance)
-    except Exception:
-        if published:
-            shutil.rmtree(destination, ignore_errors=True)
-        raise
-    finally:
-        shutil.rmtree(attempt, ignore_errors=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    published_export = destination / "exports" / staged_export.name
+    published_provenance = destination / "provenance.json"
+    publish_stage(
+        paths,
+        "supersplat",
+        generation=None,
+        replacements=((staged_run, destination),),
+        data={
+            "source": str(paths.relative_path(source)),
+            "run_id": selected_run_id,
+            "outputs": {
+                "export": str(paths.relative_path(published_export)),
+                "provenance": str(paths.relative_path(published_provenance)),
+            },
+        },
+    )
+    shutil.rmtree(attempt, ignore_errors=True)
+    return SuperSplatImport(selected_run_id, published_export, published_provenance)
 
 
 def _validate_run_id(value: str) -> None:

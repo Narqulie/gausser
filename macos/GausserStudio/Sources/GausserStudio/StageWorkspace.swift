@@ -14,11 +14,13 @@ final class StageWorkspaceModel {
     var validationError: String?
     var isResolving = false
     var showsAdvanced = false
+    private var lockedValues: [String: JSONValue]
     private let onDraftChange: ([String: JSONValue]) -> Void
 
     init(
         definition: StageDefinition,
         seededValues: [String: JSONValue] = [:],
+        lockedValues: [String: JSONValue] = [:],
         onDraftChange: @escaping ([String: JSONValue]) -> Void = { _ in }
     ) {
         var initialValues = Dictionary(uniqueKeysWithValues: definition.fields.map { ($0.key, $0.defaultValue) })
@@ -26,14 +28,32 @@ final class StageWorkspaceModel {
             initialValues.merge(preset.values) { _, presetValue in presetValue }
         }
         initialValues.merge(seededValues) { _, seeded in seeded }
+        initialValues.merge(lockedValues) { _, locked in locked }
         self.definition = definition
         self.values = initialValues
         self.selectedPreset = definition.preset
+        self.lockedValues = lockedValues
         self.onDraftChange = onDraftChange
     }
 
+    func isLocked(_ key: String) -> Bool {
+        lockedValues[key] != nil
+    }
+
+    func updateLockedValues(_ updatedLocks: [String: JSONValue]) {
+        guard updatedLocks != lockedValues else { return }
+        lockedValues = updatedLocks
+        let previousValues = values
+        values.merge(updatedLocks) { _, locked in locked }
+        guard values != previousValues else { return }
+        resolution = nil
+        validationError = nil
+        selectedPreset = "custom"
+        onDraftChange(values)
+    }
+
     func set(_ value: JSONValue, for key: String) {
-        guard values[key] != value else { return }
+        guard !isLocked(key), values[key] != value else { return }
         values[key] = value
         resolution = nil
         validationError = nil
@@ -47,6 +67,7 @@ final class StageWorkspaceModel {
             resetValues[field.key] = values[field.key] ?? field.defaultValue
         }
         resetValues.merge(preset.values) { _, presetValue in presetValue }
+        resetValues.merge(lockedValues) { _, locked in locked }
         values = resetValues
         selectedPreset = preset.id
         resolution = nil
@@ -72,6 +93,7 @@ final class StageWorkspaceModel {
 struct StageWorkspace: View {
     let definition: StageDefinition
     let seededValues: [String: JSONValue]
+    let lockedValues: [String: JSONValue]
     let onResolve: ([String: JSONValue], @escaping (Result<StageResolution, Error>) -> Void) -> Void
     /// Settings never launch a stage. They can only hand an engine-validated
     /// immutable option snapshot to the separate run-review screen.
@@ -93,6 +115,7 @@ struct StageWorkspace: View {
     init(
         definition: StageDefinition,
         seededValues: [String: JSONValue] = [:],
+        lockedValues: [String: JSONValue] = [:],
         onResolve: @escaping ([String: JSONValue], @escaping (Result<StageResolution, Error>) -> Void) -> Void,
         onReviewRun: @escaping ([String: JSONValue], StageResolution) -> Void,
         onDraftChange: @escaping ([String: JSONValue]) -> Void = { _ in },
@@ -102,6 +125,7 @@ struct StageWorkspace: View {
     ) {
         self.definition = definition
         self.seededValues = seededValues
+        self.lockedValues = lockedValues
         self.onResolve = onResolve
         self.onReviewRun = onReviewRun
         self.onDraftChange = onDraftChange
@@ -111,6 +135,7 @@ struct StageWorkspace: View {
         _model = State(initialValue: StageWorkspaceModel(
             definition: definition,
             seededValues: seededValues,
+            lockedValues: lockedValues,
             onDraftChange: onDraftChange
         ))
     }
@@ -123,6 +148,9 @@ struct StageWorkspace: View {
             } else {
                 workspaceContent
             }
+        }
+        .onChange(of: lockedValues) { _, updatedLocks in
+            model.updateLockedValues(updatedLocks)
         }
     }
 
@@ -397,6 +425,11 @@ struct StageWorkspace: View {
             default:
                 LabeledContent(field.label, value: stringValue(field.key))
             }
+            if model.isLocked(field.key) {
+                Text("Required by the current scene state and confirmed at launch.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             if let help = field.help {
                 Text(help)
                     .font(.caption)
@@ -404,6 +437,7 @@ struct StageWorkspace: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .disabled(model.isLocked(field.key))
     }
 
     private func stringValue(_ key: String) -> String {

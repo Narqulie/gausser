@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 import os
 from pathlib import Path
 import shutil
-from typing import Iterator
+from typing import Sequence
 
-from .manifest import fingerprint_inputs, record_stage
-from .publish import replace_directory
+from .manifest import fingerprint_inputs
+from .publish import publish_stage
 from .scene import SceneError, ScenePaths
 from .ui import is_image_file, list_images
 
@@ -68,7 +67,7 @@ def ingest_photo_directory(
 
     attempt = paths.staging_attempt("ingest", paths.new_run_id())
     staged_images = attempt / "images"
-    published = False
+    preserve_attempt = False
     try:
         staged_images.mkdir(parents=True)
         for image in selected:
@@ -83,35 +82,36 @@ def ingest_photo_directory(
         if len(staged_files) != len(selected):
             raise SceneError("Staged source images did not match the selected source set")
 
-        replace_directory(staged_images, paths.images)
-        published = True
-        record_stage(
-            paths,
-            "ingest",
-            {
-                "source": str(source_path),
-                "policy": selected_policy.value,
-                "inputs": selected_fingerprints,
-                "outputs": {
-                    "images": str(paths.relative_path(paths.images)),
-                    "count": len(staged_files),
+        try:
+            publish_stage(
+                paths,
+                "ingest",
+                generation="images",
+                replacements=((staged_images, paths.images),),
+                data={
+                    "source": str(source_path),
+                    "policy": selected_policy.value,
+                    "inputs": selected_fingerprints,
+                    "outputs": {
+                        "images": str(paths.relative_path(paths.images)),
+                        "count": len(staged_files),
+                    },
                 },
-            },
-        )
+            )
+        except Exception:
+            preserve_attempt = True
+            raise
         return IngestResult(source_path, selected_policy, tuple(paths.image_files()))
-    except Exception:
-        if published:
-            _restore_empty_images(paths.images)
-        raise
     finally:
-        shutil.rmtree(attempt, ignore_errors=True)
+        if not preserve_attempt:
+            shutil.rmtree(attempt, ignore_errors=True)
 
 
 def mutate_photo_dataset(
     paths: ScenePaths,
     *,
-    additions: list[Path | str],
-    removals: list[str],
+    additions: Sequence[Path | str],
+    removals: Sequence[str],
     policy: IngestPolicy | str = IngestPolicy.COPY,
 ) -> DatasetMutationResult:
     """Atomically edit a published source set and invalidate derived outputs.
@@ -133,7 +133,7 @@ def mutate_photo_dataset(
     mutation_id = paths.new_run_id()
     attempt = paths.staging_attempt("dataset", mutation_id)
     staged_images = attempt / "images"
-    archive = paths.metadata / "invalidated" / f"dataset-{mutation_id}"
+    preserve_attempt = False
     try:
         staged_images.mkdir(parents=True)
         for name, image in current.items():
@@ -149,35 +149,35 @@ def mutate_photo_dataset(
         if len(staged_files) != expected_count:
             raise SceneError("Staged source images did not match the requested edit")
 
-        staged_runs = attempt / "runs"
-        staged_runs.mkdir()
-        with _publish_dataset_generation(
-            paths,
-            staged_images=staged_images,
-            staged_runs=staged_runs,
-            archive=archive,
-        ):
-            record_stage(
+        try:
+            archive = publish_stage(
                 paths,
                 "dataset",
-                {
+                generation="images",
+                replacements=((staged_images, paths.images),),
+                data={
                     "added": [source.name for source in added_sources],
                     "removed": sorted(removal_names),
                     "policy": selected_policy.value,
                     "outputs": {"images": str(paths.relative_path(paths.images)), "count": len(staged_files)},
-                    "invalidated_archive": str(paths.relative_path(archive)),
                 },
             )
+        except Exception:
+            preserve_attempt = True
+            raise
+        if archive is None:
+            raise RuntimeError("dataset replacement did not retire the previous image generation")
         return DatasetMutationResult(
             tuple(source.name for source in added_sources),
             tuple(sorted(removal_names)),
             archive,
         )
     finally:
-        shutil.rmtree(attempt, ignore_errors=True)
+        if not preserve_attempt:
+            shutil.rmtree(attempt, ignore_errors=True)
 
 
-def _validate_removals(current: dict[str, Path], removals: list[str]) -> set[str]:
+def _validate_removals(current: dict[str, Path], removals: Sequence[str]) -> set[str]:
     names: set[str] = set()
     for name in removals:
         if not isinstance(name, str) or not name or Path(name).name != name:
@@ -188,7 +188,7 @@ def _validate_removals(current: dict[str, Path], removals: list[str]) -> set[str
     return names
 
 
-def _validate_additions(additions: list[Path | str]) -> list[Path]:
+def _validate_additions(additions: Sequence[Path | str]) -> list[Path]:
     selected: list[Path] = []
     for value in additions:
         source = Path(value).expanduser().resolve()
@@ -227,63 +227,6 @@ def _materialize_source(source: Path, destination: Path, policy: IngestPolicy) -
         destination.symlink_to(source)
 
 
-@contextmanager
-def _publish_dataset_generation(
-    paths: ScenePaths,
-    *,
-    staged_images: Path,
-    staged_runs: Path,
-    archive: Path,
-) -> Iterator[None]:
-    """Publish source images and retire every output tied to the old generation.
-
-    Archive moves and replacements share one rollback boundary with manifest
-    writing. This prevents a new source set from coexisting with a reconstruction
-    or training export whose inputs no longer exist.
-    """
-    if archive.exists():
-        raise SceneError(f"Dataset invalidation archive already exists: {archive}")
-    archive.mkdir(parents=True)
-    replacements = ((paths.images, staged_images), (paths.runs, staged_runs))
-    retired = (
-        (paths.brush_masks, archive / "masks"),
-        (paths.colmap, archive / "colmap"),
-        (paths.database, archive / "database.db"),
-        (paths.sparse, archive / "sparse"),
-        (paths.runs, archive / "runs"),
-        (paths.images, archive / "images"),
-    )
-    moved: list[tuple[Path, Path]] = []
-    published: list[tuple[Path, Path]] = []
-    try:
-        for source, destination in retired:
-            if source.exists() or source.is_symlink():
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                source.replace(destination)
-                moved.append((source, destination))
-        for destination, staged in replacements:
-            staged.replace(destination)
-            published.append((destination, staged))
-        yield
-    except Exception:
-        for destination, staged in reversed(published):
-            if destination.exists() or destination.is_symlink():
-                destination.replace(staged)
-        for source, destination in reversed(moved):
-            if destination.exists() or destination.is_symlink():
-                destination.replace(source)
-        raise
-    else:
-        # The archive is deliberately durable provenance, not a temporary backup.
-        pass
-    finally:
-        invalidated_root = archive.parent
-        if archive.exists() and not any(archive.rglob("*")):
-            shutil.rmtree(archive)
-        if invalidated_root.exists() and not any(invalidated_root.iterdir()):
-            invalidated_root.rmdir()
-
-
 def _require_initialized_scene(paths: ScenePaths) -> None:
     required_directories = (paths.root, paths.images, paths.runs, paths.metadata, paths.staging)
     if not all(directory.is_dir() for directory in required_directories) or not paths.manifest.is_file():
@@ -296,9 +239,3 @@ def _parse_policy(policy: IngestPolicy | str) -> IngestPolicy:
     except ValueError as exc:
         supported = ", ".join(item.value for item in IngestPolicy)
         raise SceneError(f"Unsupported ingest policy {policy!r}; expected one of: {supported}") from exc
-
-
-def _restore_empty_images(images: Path) -> None:
-    """Restore the only pre-ingestion images state allowed by this operation."""
-    shutil.rmtree(images)
-    images.mkdir()

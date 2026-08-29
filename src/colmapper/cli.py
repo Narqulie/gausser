@@ -12,22 +12,45 @@ from typing import Optional
 
 from rich.panel import Panel
 from rich.progress import (
-    BarColumn,
     MofNCompleteColumn,
     Progress,
-    SpinnerColumn,
     TaskID,
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-from rich.table import Table
+from rich.text import Text
 
 from gausser.colmap_model import read_model_stats
+from gausser.interactive import (
+    BARE_COMMAND_EPILOG,
+    InteractiveUsageError,
+    prepare_stage_arguments,
+)
+from gausser.manifest import fingerprint_inputs
+from gausser.process import resolve_command, run_command
+from gausser.publish import publish_stage
 from gausser.scene import SceneError, ScenePaths
-from gausser.ui import console, count_images, make_summary_table
+from gausser.scene_lock import SceneLockError, acquire_scene_lock
+from gausser.ui import (
+    NEON_CYAN,
+    NEON_GREEN,
+    NEON_YELLOW,
+    completion_panel,
+    console,
+    make_summary_table,
+    neon_bar,
+    neon_spinner,
+    stage_header,
+    status_text as neon_status_text,
+)
 
-from .pipeline import ColmapError, feature_extraction, feature_matching, sparse_reconstruction
+from .pipeline import (
+    ColmapError,
+    feature_extraction,
+    feature_matching,
+    sparse_reconstruction,
+)
 from .runner import StepProgress
 
 # ── Step definitions ───────────────────────────────────────────────────────────
@@ -47,18 +70,34 @@ def resolve_gpu(*, no_gpu: bool) -> bool:
     return not no_gpu and sys.platform != "darwin"
 
 
-def _prepare_artifacts(database_path: Path, output_path: Path, policy: str) -> None:
-    existing = database_path.exists() or output_path.exists()
-    if not existing or policy == "resume":
-        return
-    if policy == "replace":
-        database_path.unlink(missing_ok=True)
-        shutil.rmtree(output_path, ignore_errors=True)
-        return
-    raise ColmapError(
-        "COLMAP artifacts already exist. Choose --existing resume to keep them "
-        "or --existing replace to delete and rebuild them."
-    )
+def _stage_artifacts(
+    paths: ScenePaths, attempt: Path, policy: str
+) -> tuple[Path, Path]:
+    """Prepare isolated database/model paths without mutating canonical state."""
+    existing = paths.database.exists() or paths.sparse.exists()
+    if existing and policy == "error":
+        raise ColmapError(
+            "COLMAP artifacts already exist. Choose --existing resume to copy and continue them "
+            "or --existing replace to stage a clean rebuild."
+        )
+
+    database = attempt / "database.db"
+    sparse = attempt / "sparse"
+    attempt.mkdir(parents=True, exist_ok=False)
+    if policy == "resume":
+        if paths.database.is_file():
+            shutil.copy2(paths.database, database)
+        if paths.sparse.is_dir():
+            shutil.copytree(paths.sparse, sparse)
+    return database, sparse
+
+
+def _colmap_version(colmap_bin: str, project_root: Path) -> str | None:
+    result = run_command([colmap_bin, "-h"], cwd=project_root)
+    for line in result.output_tail:
+        if "COLMAP" in line:
+            return line.strip()
+    return None
 
 
 def _read_model_stats(model_dir: Path) -> tuple[int, int]:
@@ -77,16 +116,19 @@ def _pick_best_model(output_path: Path) -> Path | None:
     if not models:
         return None
 
-    if len(models) == 1:
-        return models[0]
-
-    # Multiple sub-models — pick by largest registered image count
-    best = max(models, key=lambda m: _read_model_stats(m)[0])
-    n_reg = _read_model_stats(best)[0]
-    console.print(
-        f"[yellow]⚠  COLMAP produced {len(models)} sub-models; "
-        f"using model with {n_reg} images.[/yellow]"
+    best = (
+        models[0]
+        if len(models) == 1
+        else max(models, key=lambda m: _read_model_stats(m)[0])
     )
+    if len(models) > 1:
+        n_reg = _read_model_stats(best)[0]
+        console.print(
+            neon_status_text(
+                f"COLMAP produced {len(models)} sub-models; using the model with {n_reg} images",
+                "warning",
+            )
+        )
     zero_path = output_path / "0"
     if best != zero_path:
         shutil.rmtree(zero_path, ignore_errors=True)
@@ -97,11 +139,11 @@ def _pick_best_model(output_path: Path) -> Path | None:
 
 def _make_progress() -> Progress:
     return Progress(
-        SpinnerColumn(),
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(bar_width=36),
+        neon_spinner(style=NEON_CYAN),
+        TextColumn("{task.description}", style=f"bold {NEON_CYAN}", markup=False),
+        neon_bar(),
         MofNCompleteColumn(),
-        TextColumn("[green]{task.fields[rate]}"),
+        TextColumn("{task.fields[rate]}", style=NEON_GREEN, markup=False),
         TimeElapsedColumn(),
         TextColumn("ETA"),
         TimeRemainingColumn(),
@@ -110,27 +152,36 @@ def _make_progress() -> Progress:
     )
 
 
-def _header(project_root: Path, image_path: Path, n_images: int, matcher: str, masks: bool) -> Panel:
-    grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="bold cyan", no_wrap=True)
-    grid.add_column()
-    grid.add_row("Project root", str(project_root))
-    grid.add_row("Images", f"{image_path}  ({n_images} files)")
-    grid.add_row("Matcher", matcher)
-    grid.add_row("Alpha masks", "[green]enabled[/green]" if masks else "[dim]none[/dim]")
-    return Panel(grid, title="[bold]COLMAPPER[/bold] · Automatic SfM Pipeline", border_style="blue")
+def _header(
+    project_root: Path, image_path: Path, n_images: int, matcher: str, masks: bool
+) -> Panel:
+    return stage_header(
+        "COLMAPPER",
+        "Sparse reconstruction signal",
+        (
+            ("Scene", str(project_root)),
+            ("Images", f"{image_path}  ({n_images} files)"),
+            ("Matcher", matcher),
+            ("Alpha masks", "enabled" if masks else "none"),
+        ),
+        accent=NEON_CYAN,
+    )
 
 
 _TAIL_LINES = 30
 
 
 def _run_step(
-    progress: Progress, task_id: TaskID, fn, *args, **kwargs,
+    progress: Progress,
+    task_id: TaskID,
+    fn,
+    *args,
+    **kwargs,
 ) -> list[str]:
     lock = Lock()
     last_update: dict = {"t": time.monotonic(), "n": 0}
     output_lines: list[str] = []
-    fixed_total: int = progress.tasks[task_id].total or 1
+    fixed_total = int(progress.tasks[task_id].total or 1)
 
     def on_progress(p: StepProgress) -> None:
         with lock:
@@ -142,7 +193,10 @@ def _run_step(
             rate = f"{delta / elapsed:.1f}/s" if elapsed > 0.1 else ""
             last_update["t"] = now
             last_update["n"] = p.current
-            scaled = min(int(p.current * fixed_total / p.total) if p.total else p.current, fixed_total)
+            scaled = min(
+                int(p.current * fixed_total / p.total) if p.total else p.current,
+                fixed_total,
+            )
             progress.update(task_id, completed=scaled, rate=rate)
 
     def on_line(line: str) -> None:
@@ -161,182 +215,298 @@ def _run_step(
 def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(
         prog="colmapper",
-        description="Run COLMAP automatic SfM reconstruction.",
+        description="Run a transactional COLMAP SfM reconstruction for one Gausser scene.",
+        epilog=BARE_COMMAND_EPILOG,
     )
     parser.add_argument(
-        "--scene", metavar="DIR", default=None,
-        help="Scene root that owns the COLMAP database and sparse model (default: cwd)",
+        "--scene", metavar="DIR", default=None, help="Owning scene root (default: cwd)"
     )
     parser.add_argument(
-        "--path", metavar="DIR", default=None,
-        help="Path to the image folder (default: <scene>/images/)",
+        "--path",
+        metavar="DIR",
+        default=None,
+        help="Image directory; must be <scene>/images",
     )
     parser.add_argument(
-        "--matcher", choices=["exhaustive", "sequential", "vocab_tree"], default="exhaustive",
+        "--matcher",
+        choices=["exhaustive", "sequential", "vocab_tree"],
+        default="exhaustive",
         help="Feature matching strategy (default: exhaustive)",
     )
     parser.add_argument(
-        "--no-gpu", action="store_true", help="Disable GPU acceleration",
+        "--no-gpu", action="store_true", help="Disable GPU acceleration"
     )
     parser.add_argument(
-        "--existing", choices=["error", "resume", "replace"], default="error",
+        "--existing",
+        choices=["error", "resume", "replace"],
+        default="error",
         help="Policy for existing database/sparse artifacts (default: error)",
     )
     parser.add_argument(
-        "--colmap", metavar="BIN", default="colmap", help="Path to the colmap binary",
+        "--colmap", metavar="BIN", default="colmap", help="Path to the colmap binary"
     )
     parser.add_argument(
-        "--output", metavar="DIR", default=None, help="Output directory for sparse model",
+        "--output",
+        metavar="DIR",
+        default=None,
+        help="Deprecated canonical sparse path override",
     )
     parser.add_argument(
-        "--mask-path", metavar="DIR", default=None,
-        help="Path to COLMAP feature masks (auto-detected: <project>/colmap/masks/)",
+        "--mask-path",
+        metavar="DIR",
+        default=None,
+        help="COLMAP feature masks (default: <scene>/colmap/masks)",
     )
-    parser.add_argument(
-        "--vocab-tree", metavar="FILE", default=None,
-        help="Vocabulary tree required by --matcher vocab_tree",
-    )
+    parser.add_argument("--vocab-tree", metavar="FILE", default=None)
+    try:
+        prepared_argv = prepare_stage_arguments(
+            "colmap", argv, program="colmapper"
+        )
+    except InteractiveUsageError as exc:
+        parser.error(str(exc))
+    if prepared_argv is None:
+        return
+    args = parser.parse_args(prepared_argv)
 
-    args = parser.parse_args(argv)
+    inferred_root = (
+        Path(args.path).expanduser().resolve().parent
+        if args.path and not args.scene
+        else Path.cwd()
+    )
+    paths = ScenePaths.from_root(args.scene or inferred_root)
+    if not paths.root.is_dir():
+        parser.error(f"scene directory does not exist: {paths.root}")
+    image_path = Path(args.path).expanduser().resolve() if args.path else paths.images
+    output_path = (
+        Path(args.output).expanduser().resolve() if args.output else paths.sparse
+    )
+    if image_path != paths.images:
+        parser.error("--path must resolve to the owning scene's images/ directory")
+    if output_path != paths.sparse:
+        parser.error("--output must resolve to the owning scene's sparse/ directory")
 
-    # ── Resolve paths ──────────────────────────────────────────────────────────
-    scene_paths = ScenePaths.from_root(args.scene or Path.cwd())
-    project_root = scene_paths.root
-    image_path = Path(args.path).expanduser().resolve() if args.path else scene_paths.images
-    output_path = Path(args.output).resolve() if args.output else scene_paths.sparse
-    database_path = scene_paths.database
+    colmap_bin = resolve_command(args.colmap)
+    if colmap_bin is None:
+        parser.error(f"{args.colmap!r} is not on PATH; install COLMAP first")
+
+    vocab_tree_path = (
+        Path(args.vocab_tree).expanduser().resolve() if args.vocab_tree else None
+    )
+    if args.matcher == "vocab_tree" and (
+        vocab_tree_path is None or not vocab_tree_path.is_file()
+    ):
+        parser.error("--matcher vocab_tree requires --vocab-tree FILE")
+
+    mask_path: Path | None = (
+        Path(args.mask_path).expanduser().resolve()
+        if args.mask_path
+        else paths.colmap_masks
+    )
+    if mask_path is not None and not mask_path.is_dir():
+        mask_path = None
+
+    try:
+        with acquire_scene_lock(paths.root):
+            _run_colmapper(
+                args, paths, image_path, mask_path, vocab_tree_path, colmap_bin
+            )
+    except SceneLockError as exc:
+        parser.error(str(exc))
+
+
+def _run_colmapper(
+    args: argparse.Namespace,
+    paths: ScenePaths,
+    image_path: Path,
+    mask_path: Path | None,
+    vocab_tree_path: Path | None,
+    colmap_bin: str,
+) -> None:
+    try:
+        image_files = paths.image_files()
+    except SceneError as exc:
+        console.print(neon_status_text(str(exc), "error"))
+        sys.exit(1)
+    n_images = len(image_files)
+    if n_images == 0:
+        console.print(neon_status_text(f"No images found in {image_path}", "error"))
+        sys.exit(1)
+
+    attempt = paths.staging_attempt("colmap", paths.new_run_id())
+    try:
+        database_path, output_path = _stage_artifacts(paths, attempt, args.existing)
+    except ColmapError as exc:
+        console.print(neon_status_text(str(exc), "error"))
+        sys.exit(1)
 
     use_gpu = resolve_gpu(no_gpu=args.no_gpu)
     matcher = args.matcher
-    colmap_bin = args.colmap
-    vocab_tree_path = Path(args.vocab_tree).expanduser().resolve() if args.vocab_tree else None
-
-    # Auto-detect colmap masks
-    auto_mask_path = scene_paths.colmap_masks
-    mask_path: Path | None = (
-        Path(args.mask_path).resolve() if args.mask_path
-        else auto_mask_path if auto_mask_path.is_dir()
-        else None
-    )
-    has_masks = mask_path is not None and mask_path.is_dir()
-
-    # ── Validate ───────────────────────────────────────────────────────────────
-    if not shutil.which(colmap_bin):
-        console.print(f"[bold red]Error:[/bold red] `{colmap_bin}` not found on PATH.")
-        console.print("Install COLMAP: https://colmap.github.io/install.html")
-        sys.exit(1)
-
-    if not image_path.is_dir():
-        console.print(f"[bold red]Error:[/bold red] Image directory not found: {image_path}")
-        console.print("Create an [bold]images/[/bold] folder, or pass [bold]--path DIR[/bold].")
-        sys.exit(1)
-
-    try:
-        n_images = len(scene_paths.image_files()) if image_path == scene_paths.images else count_images(image_path)
-    except SceneError as exc:
-        console.print(f"[bold red]Error:[/bold red] {exc}")
-        sys.exit(1)
-    if n_images == 0:
-        console.print(f"[bold red]Error:[/bold red] No images found in {image_path}")
-        sys.exit(1)
-    if matcher == "vocab_tree" and (vocab_tree_path is None or not vocab_tree_path.is_file()):
-        console.print("[bold red]Error:[/bold red] --matcher vocab_tree requires --vocab-tree FILE.")
-        sys.exit(1)
-
-    try:
-        _prepare_artifacts(database_path, output_path, args.existing)
-    except ColmapError as exc:
-        console.print(f"[bold red]Error:[/bold red] {exc}")
-        sys.exit(1)
-
     if not use_gpu and not args.no_gpu and sys.platform == "darwin":
-        console.print("[dim]COLMAP GPU acceleration disabled: macOS builds do not provide CUDA.[/dim]")
+        console.print(
+            neon_status_text(
+                "COLMAP GPU acceleration disabled: macOS builds do not provide CUDA",
+                "muted",
+            )
+        )
 
-    # ── Matcher suggestion ─────────────────────────────────────────────────────
     if matcher == "exhaustive" and n_images > 200:
         pairs = n_images * (n_images - 1) // 2
-        console.print()
-        console.print(Panel(
-            f"[yellow]⚠  {n_images} images with [bold]exhaustive[/bold] matcher will match"
-            f" [bold]{pairs:,}[/bold] image pairs.[/yellow]\n\n"
-            f"  [bold]Suggestions:[/bold]\n"
-            f"  [green]  --matcher sequential[/green]    if these are video frames (fastest)\n"
-            f"  [green]  --matcher vocab_tree[/green]    for unordered photos at scale\n\n"
-            f"  [dim]Pass --matcher to override, or wait — it will eventually finish.[/dim]",
-            title="[bold yellow]Large dataset detected[/bold yellow]",
-            border_style="yellow",
-        ))
-        console.print()
+        warning = Text()
+        warning.append(
+            f"◇ {n_images} images with exhaustive matcher will match {pairs:,} image pairs.\n\n",
+            style=NEON_YELLOW,
+        )
+        warning.append("  --matcher sequential", style=f"bold {NEON_GREEN}")
+        warning.append("  for video frames\n")
+        warning.append("  --matcher vocab_tree", style=f"bold {NEON_GREEN}")
+        warning.append("  for unordered photos at scale")
+        console.print(
+            Panel(
+                warning,
+                title=Text("LARGE DATASET DETECTED", style=f"bold {NEON_YELLOW}"),
+                border_style=NEON_YELLOW,
+            )
+        )
 
-    # ── UI setup ───────────────────────────────────────────────────────────────
-    console.print(_header(project_root, image_path, n_images, matcher, has_masks))
+    console.print(
+        _header(paths.root, image_path, n_images, matcher, mask_path is not None)
+    )
     console.print()
-
     step_results: list[tuple[str, float, str]] = []
     overall_start = time.monotonic()
-
     progress = _make_progress()
-
-    step_configs = [
-        {"name": STEPS[0][0], "description": STEPS[0][0], "total": n_images},
-        {"name": STEPS[1][0], "description": STEPS[1][0],
-         "total": n_images * (n_images - 1) // 2 if matcher == "exhaustive" else n_images},
-        {"name": STEPS[2][0], "description": STEPS[2][0], "total": n_images},
+    step_configs: list[tuple[str, int]] = [
+        (STEPS[0][0], n_images),
+        (
+            STEPS[1][0],
+            n_images * (n_images - 1) // 2 if matcher == "exhaustive" else n_images,
+        ),
+        (STEPS[2][0], n_images),
     ]
 
     with progress:
         task_ids = [
-            progress.add_task(cfg["description"], total=cfg["total"], rate="", visible=False)
-            for cfg in step_configs
+            progress.add_task(name, total=total, rate="", visible=False)
+            for name, total in step_configs
         ]
-
-        for i, (cfg, task_id) in enumerate(zip(step_configs, task_ids)):
+        for index, ((step_name, _total), task_id) in enumerate(
+            zip(step_configs, task_ids)
+        ):
             progress.update(task_id, visible=True)
-            t0 = time.monotonic()
-            status = "✓"
+            started = time.monotonic()
             output_lines: list[str] = []
             try:
-                if i == 0:
+                if index == 0:
                     output_lines = _run_step(
-                        progress, task_id, feature_extraction,
-                        colmap_bin, database_path, image_path,
-                        use_gpu=use_gpu, mask_path=mask_path, total_images=n_images,
+                        progress,
+                        task_id,
+                        feature_extraction,
+                        colmap_bin,
+                        database_path,
+                        image_path,
+                        use_gpu=use_gpu,
+                        mask_path=mask_path,
+                        total_images=n_images,
                     )
-                elif i == 1:
+                elif index == 1:
                     output_lines = _run_step(
-                        progress, task_id, feature_matching,
-                        colmap_bin, database_path, matcher=matcher, use_gpu=use_gpu, vocab_tree_path=vocab_tree_path,
+                        progress,
+                        task_id,
+                        feature_matching,
+                        colmap_bin,
+                        database_path,
+                        matcher=matcher,
+                        use_gpu=use_gpu,
+                        vocab_tree_path=vocab_tree_path,
                     )
-                elif i == 2:
+                else:
                     output_lines = _run_step(
-                        progress, task_id, sparse_reconstruction,
-                        colmap_bin, database_path, image_path, output_path, total_images=n_images,
+                        progress,
+                        task_id,
+                        sparse_reconstruction,
+                        colmap_bin,
+                        database_path,
+                        image_path,
+                        output_path,
+                        total_images=n_images,
                     )
             except ColmapError as exc:
                 progress.stop()
-                step_results.append((cfg["name"], time.monotonic() - t0, "✗"))
-                console.print(f"\n[bold red]Pipeline failed:[/bold red] {exc}\n")
+                step_results.append((step_name, time.monotonic() - started, "✗"))
+                console.print()
+                console.print(neon_status_text(f"Pipeline failed: {exc}", "error"))
+                console.print()
                 if output_lines:
-                    console.print("[bold yellow]COLMAP output:[/bold yellow]")
+                    console.print(neon_status_text("COLMAP output follows", "warning"))
                     for line in output_lines:
-                        console.print(f"  [dim]{line}[/dim]")
-                    console.print()
+                        console.print(Text(f"  {line}"))
+                console.print(
+                    neon_status_text(f"Staged attempt retained at: {attempt}", "muted")
+                )
                 _print_summary(step_results, time.monotonic() - overall_start)
                 sys.exit(1)
+            elapsed = time.monotonic() - started
+            progress.update(task_id, description=step_name)
+            step_results.append((step_name, elapsed, "✓"))
 
-            elapsed = time.monotonic() - t0
-            progress.update(task_id, description=f"[green]{cfg['name']}[/green]")
-            step_results.append((cfg["name"], elapsed, status))
-
-    # ── Select and validate a usable model before declaring success ─────────
     model_path = _pick_best_model(output_path)
     stats = read_model_stats(model_path) if model_path is not None else None
     if stats is None or stats.images == 0:
         step_results[-1] = (STEPS[2][0], step_results[-1][1], "✗")
-        console.print("\n[bold red]COLMAP completed without a valid sparse model.[/bold red]")
+        console.print()
+        console.print(
+            neon_status_text("COLMAP completed without a valid sparse model", "error")
+        )
+        console.print(
+            neon_status_text(f"Staged attempt retained at: {attempt}", "muted")
+        )
         _print_summary(step_results, time.monotonic() - overall_start)
         sys.exit(1)
-    _print_summary(step_results, time.monotonic() - overall_start, n_images, model_path)
+
+    assert model_path is not None
+    canonical_model = paths.sparse / model_path.name
+    mask_files = (
+        sorted(
+            path
+            for path in mask_path.rglob("*.png")
+            if path.is_file() and not path.name.startswith("._")
+        )
+        if mask_path is not None
+        else []
+    )
+    publish_stage(
+        paths,
+        "colmap",
+        generation="reconstruction",
+        replacements=((database_path, paths.database), (output_path, paths.sparse)),
+        data={
+            "inputs": {
+                "images": fingerprint_inputs(image_files),
+                "masks": fingerprint_inputs(mask_files),
+            },
+            "parameters": {
+                "existing": args.existing,
+                "gpu": use_gpu,
+                "matcher": matcher,
+                "vocab_tree": str(vocab_tree_path) if vocab_tree_path else None,
+            },
+            "tool": colmap_bin,
+            "tool_version": _colmap_version(colmap_bin, paths.root),
+            "model": {
+                "format": stats.format,
+                "registered_images": stats.images,
+                "points": stats.points,
+            },
+            "outputs": {
+                "database": str(paths.relative_path(paths.database)),
+                "sparse_model": str(paths.relative_path(canonical_model)),
+            },
+        },
+    )
+    shutil.rmtree(attempt, ignore_errors=True)
+    _print_summary(
+        step_results, time.monotonic() - overall_start, n_images, canonical_model
+    )
 
 
 def _print_summary(
@@ -347,24 +517,24 @@ def _print_summary(
 ) -> None:
     console.print()
     table = make_summary_table("Pipeline Summary")
-    table.add_column("Step", style="bold")
-    table.add_column("Status", justify="center")
-    table.add_column("Time", justify="right")
-
     for name, elapsed, status in results:
-        style = "green" if status == "✓" else "red"
-        table.add_row(name, f"[{style}]{status}[/{style}]", f"{elapsed:.1f}s")
+        state = Text(status, style=NEON_GREEN if status == "✓" else "bold red")
+        state.append(f"  {elapsed:.1f}s")
+        table.add_row(name, state)
 
     console.print(table)
-    console.print(f"[dim]Total elapsed: {total:.1f}s[/dim]")
+    console.print(neon_status_text(f"Total elapsed: {total:.1f}s", "muted"))
 
     if model_path and model_path.is_dir():
         n_imgs, n_pts = _read_model_stats(model_path)
         console.print()
-        recon = Table.grid(padding=(0, 2))
-        recon.add_column(style="bold cyan")
-        recon.add_column()
-        recon.add_row("Output", str(model_path))
-        recon.add_row("Registered images", f"{n_imgs} / {n_images}")
-        recon.add_row("3D points", f"{n_pts:,}")
-        console.print(Panel(recon, title="[bold]Reconstruction[/bold]", border_style="green"))
+        console.print(
+            completion_panel(
+                "Reconstruction online",
+                (
+                    ("Output", str(model_path)),
+                    ("Registered images", f"{n_imgs} / {n_images}"),
+                    ("3D points", f"{n_pts:,}"),
+                ),
+            )
+        )

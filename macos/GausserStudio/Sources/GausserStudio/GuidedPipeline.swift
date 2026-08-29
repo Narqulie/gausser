@@ -1,5 +1,4 @@
 import AppKit
-import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -10,6 +9,7 @@ enum SceneStep: String, CaseIterable, Hashable, Identifiable {
     case sammer
     case colmap
     case training
+    case compose
     case publish
 
     var id: String { rawValue }
@@ -21,6 +21,7 @@ enum SceneStep: String, CaseIterable, Hashable, Identifiable {
         case .sammer: "SAM3 Masks"
         case .colmap: "COLMAP"
         case .training: "Training"
+        case .compose: "Compose"
         case .publish: "Publish & LOD"
         }
     }
@@ -32,6 +33,7 @@ enum SceneStep: String, CaseIterable, Hashable, Identifiable {
         case .sammer: "wand.and.stars"
         case .colmap: "camera.aperture"
         case .training: "sparkles"
+        case .compose: "scope"
         case .publish: "square.and.arrow.up"
         }
     }
@@ -62,6 +64,7 @@ struct SceneNavigator: View {
     @State private var requestedOptions: [String: JSONValue]?
     @State private var ingestPolicy = "copy"
     @State private var viewer = SplatViewerModel()
+    @State private var composition: SceneCompositionModel
     @State private var reimportSource: ArtifactSummary?
     @State private var isChoosingEditedExport = false
 
@@ -76,6 +79,7 @@ struct SceneNavigator: View {
         _step = step
         self.navigationRequest = navigationRequest
         _model = State(initialValue: SceneViewModel(scene: scene, engine: engine))
+        _composition = State(initialValue: SceneCompositionModel(scene: scene, engine: engine))
     }
 
     var body: some View {
@@ -99,6 +103,15 @@ struct SceneNavigator: View {
                     configurationPage(stage: "colmap", onBack: { step = .sammer }, next: .training)
                 case .training:
                     training
+                case .compose:
+                    SceneCompositionWorkspace(
+                        scene: scene,
+                        artifacts: model.artifacts,
+                        composition: composition,
+                        viewer: viewer,
+                        onReveal: { NSWorkspace.shared.activateFileViewerSelecting([$0]) },
+                        onNavigate: { step = $0 }
+                    )
                 case .publish:
                     publish
                 }
@@ -119,12 +132,21 @@ struct SceneNavigator: View {
                 .disabled(model.isRefreshing || !model.canConfigureStages)
         }
         .confirmationDialog(
-            "Run \(studioStageTitle(requestedStage ?? "stage"))?",
-            isPresented: Binding(get: { requestedStage != nil }, set: { if !$0 { requestedStage = nil } })
+            requestedStageRequiresReplacement
+                ? "Replace existing \(studioStageTitle(requestedStage ?? "stage")) output?"
+                : "Run \(studioStageTitle(requestedStage ?? "stage"))?",
+            isPresented: Binding(get: { requestedStage != nil }, set: { if !$0 { clearRequestedStage() } })
         ) {
-            Button("Run") { startRequestedStage() }
+            if requestedStageRequiresReplacement {
+                Button("Replace and Run", role: .destructive) { startRequestedStage() }
+            } else {
+                Button("Run") { startRequestedStage() }
+            }
+            Button("Cancel", role: .cancel) { clearRequestedStage() }
         } message: {
-            Text("Gausser will launch this scene-owned stage. Its logs and cancellation remain managed by the Python engine.")
+            Text(requestedStageRequiresReplacement
+                ? "The reviewed command includes force=true. Python will replace this generation transactionally and invalidate incompatible downstream artifacts."
+                : "Gausser will launch this scene-owned stage. Its logs and cancellation remain managed by the Python engine.")
         }
         .fileImporter(
             isPresented: $isChoosingEditedExport,
@@ -262,7 +284,7 @@ struct SceneNavigator: View {
     @ViewBuilder
     private var training: some View {
         if let trainer = navigation.selectedTrainer {
-            configurationPage(stage: trainer.rawValue, onBack: { navigation.selectedTrainer = nil }, next: .publish)
+            configurationPage(stage: trainer.rawValue, onBack: { navigation.selectedTrainer = nil }, next: .compose)
         } else {
             StudioScrollPage {
                 VStack(alignment: .leading, spacing: 24) {
@@ -287,7 +309,7 @@ struct SceneNavigator: View {
                             action: { navigation.selectedTrainer = .msplat }
                         )
                     }
-                    StepNavigation(previous: .colmap, next: .publish) { step = $0 }
+                    StepNavigation(previous: .colmap, next: .compose) { step = $0 }
                 }
             }
         }
@@ -305,7 +327,7 @@ struct SceneNavigator: View {
                     StepPageHeader(
                         step: .publish,
                         title: "Inspect, view, and publish outputs",
-                        message: "Scene-owned exports are safe to reveal, view, hand off to SuperSplat, reimport, or convert into streamed LOD only when explicitly selected."
+                        message: "Scene-owned exports are safe to reveal for an external editor, view, reimport, or convert into streamed LOD only when explicitly selected."
                     )
                     artifacts
                     viewerSection
@@ -313,7 +335,7 @@ struct SceneNavigator: View {
                         Text("Select a PLY or SOG export above and choose Create Streamed LOD from its More menu. The LOD workspace records exact source and converter provenance.")
                             .foregroundStyle(.secondary)
                     }
-                    StepNavigation(previous: .training) { step = $0 }
+                    StepNavigation(previous: .compose) { step = $0 }
                 }
             }
         }
@@ -331,7 +353,10 @@ struct SceneNavigator: View {
                 definition: model.stageCatalog[stage],
                 pendingRun: pendingRun,
                 isStarting: model.isStartingStage,
-                canLaunch: model.canStartStage,
+                launchBlockReason: model.stageLaunchBlockReason(
+                    stage: stage,
+                    options: pendingRun.options
+                ),
                 onBackToSettings: { navigation.returnedToSettings() },
                 onRun: {
                     requestedStage = pendingRun.stage
@@ -339,9 +364,13 @@ struct SceneNavigator: View {
                 }
             )
         } else if let definition = model.stageCatalog[stage] {
+            let lockedValues: [String: JSONValue] = model.stageRequiredAction(for: stage) == .force
+                ? ["force": .bool(true)]
+                : [:]
             StageWorkspace(
                 definition: definition,
                 seededValues: navigation.seededValues(for: stage, requiredValues: seededValues),
+                lockedValues: lockedValues,
                 onResolve: { options, completion in model.resolve(stage: stage, options: options, completion: completion) },
                 onReviewRun: { options, resolution in
                     navigation.recordRunReview(stage: stage, options: options, resolution: resolution)
@@ -368,10 +397,25 @@ struct SceneNavigator: View {
         }
     }
 
-    private func startRequestedStage() {
-        guard let stage = requestedStage, let options = requestedOptions else { return }
+    private var requestedStageRequiresReplacement: Bool {
+        guard let requestedStage else { return false }
+        return model.stageRequiredAction(for: requestedStage) == .force
+    }
+
+    private func clearRequestedStage() {
         requestedStage = nil
         requestedOptions = nil
+    }
+
+    private func startRequestedStage() {
+        guard let stage = requestedStage, let options = requestedOptions else { return }
+        if let reason = model.stageLaunchBlockReason(stage: stage, options: options) {
+            clearRequestedStage()
+            navigation.returnedToSettings()
+            model.errorMessage = "The scene changed after this command was reviewed. \(reason)"
+            return
+        }
+        clearRequestedStage()
         model.start(stage: stage, options: options)
     }
 
@@ -383,6 +427,7 @@ struct SceneNavigator: View {
         case .sammer: stages = ["sammer"]
         case .colmap: stages = ["colmap"]
         case .training: stages = ["brush", "msplat"]
+        case .compose: stages = []
         case .publish: stages = ["lod"]
         }
         return stages.compactMap { candidate in model.stages.first(where: { $0.stage == candidate }) }.first
@@ -394,9 +439,9 @@ struct SceneNavigator: View {
                 Text("Completed exports appear here after a trainer publishes them.")
                     .foregroundStyle(.secondary)
             } else {
-                Text("\(model.artifacts.count) scene-owned artifact\(model.artifacts.count == 1 ? "" : "s") available in Publish & LOD.")
+                Text("\(model.artifacts.count) scene-owned artifact\(model.artifacts.count == 1 ? "" : "s") available for composition and publication.")
                     .foregroundStyle(.secondary)
-                Button("Open Publish & LOD") { step = .publish }
+                Button("Open Compose") { step = .compose }
                     .buttonStyle(.bordered)
             }
         }
@@ -426,7 +471,7 @@ struct SceneNavigator: View {
                             }
                             if supportsEditorHandoff(artifact) {
                                 Menu("More") {
-                                    Button("Open in SuperSplat") { handoffToSuperSplat(artifact) }
+                                    Button("Reveal for SuperSplat") { revealForSuperSplat(artifact) }
                                     Button("Reimport Edited Export…") {
                                         reimportSource = artifact
                                         isChoosingEditedExport = true
@@ -462,13 +507,10 @@ struct SceneNavigator: View {
     private func supportsNativeViewer(_ artifact: ArtifactSummary) -> Bool { ["ply", "spz", "splat"].contains(artifact.format) }
     private func supportsEditorHandoff(_ artifact: ArtifactSummary) -> Bool { ["ply", "sog", "spz", "splat"].contains(artifact.format) }
 
-    private func handoffToSuperSplat(_ summary: ArtifactSummary) {
+    private func revealForSuperSplat(_ summary: ArtifactSummary) {
         do {
             let artifact = try SceneExportArtifact(scene: scene, artifact: artifactURL(summary))
-            Task {
-                do { try await SuperSplatHandoff.perform(SuperSplatHandoff.primaryAction(for: artifact)) }
-                catch { model.errorMessage = error.localizedDescription }
-            }
+            SuperSplatHandoff.revealInFinder(artifact)
         } catch { model.errorMessage = error.localizedDescription }
     }
 

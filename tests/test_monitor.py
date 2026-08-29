@@ -65,6 +65,14 @@ def test_monitor_image_count_excludes_appledouble_sidecars(scene):
     assert monitor.count_images(scene) == 1
 
 
+def test_export_monitor_snapshots_exclude_appledouble_sidecars(scene):
+    metadata = scene / "images" / "._frame_0001.jpg"
+    metadata.write_bytes(b"metadata")
+
+    assert metadata not in monitor.find_files(scene)
+    assert metadata not in monitor.get_mtime_snapshot(scene)
+
+
 def test_msplat_trainer_requires_explicit_downscale_factor(scene):
     with pytest.raises(SystemExit, match="2"):
         monitor.main([str(scene), "--trainer", "msplat"])
