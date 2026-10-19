@@ -13,7 +13,8 @@ commands were removed on 2026-10-19 (branch `simplify`); git history has them.
 
 ```
 src/gausser/
-├── cli.py     argparse subcommands, `run` pipeline, `status`, guided questionary menu
+├── cli.py     argparse subcommands, `run` pipeline, `status`, `gausser [PATH]` routing
+├── guide.py   scene-aware guided menu: summary, recommended next step, minimal questions
 ├── steps.py   frames (sharp-frames), mask, solve (COLMAP), train_brush, lod (splat-transform)
 ├── sam.py     SAM3 predictor + mask writers; imported only by `mask` (needs torch)
 ├── msplat.py  experimental Msplat trainer with checkpoint resume; masks via black compositing
@@ -33,6 +34,14 @@ src/gausser/
   `database.db` and `sparse/`; new masks delete `database.db` and `sparse/`.
   Never delete `runs/`.
 - Explicit step commands always run. Only `run` skips steps.
+- Entry: `gausser`, `gausser FOLDER` or `gausser VIDEO` (one argument that isn't a
+  command and that exists or looks like a path) opens `guide.guided` in a terminal.
+  It returns an argv, which is printed as `→ gausser …` and then parsed like typed
+  input, so the menu never adds behaviour the CLI lacks. A video gets a scene
+  folder `<stem>/` next to it, which is removed again if the menu is cancelled
+  while it is still empty. Without a TTY the menu refuses (exit 2).
+- `solve` publishes the model, then raises if fewer than half the images were
+  registered, so `run` stops before a wasted training run.
 - Every command except `status` and `view` holds `Scene.lock()` (flock on
   `.gausser/lock`). A second command fails fast; it never waits.
 - Brush scans every file under its input folder and picks the `cameras.bin` with

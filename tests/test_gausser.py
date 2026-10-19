@@ -86,6 +86,21 @@ def test_solve_publishes_the_largest_colmap_model_as_sparse_0(tmp_path, tools):
     assert match[1] == "exhaustive_matcher"  # auto: few images
 
 
+def test_solve_stops_the_pipeline_when_most_images_are_not_placed(tmp_path, tools):
+    scene = make_scene(tmp_path, images=5)
+
+    def fake_colmap(command):
+        if command[1] == "feature_extractor":
+            Path(command[command.index("--database_path") + 1]).write_bytes(b"db")
+        if command[1] == "mapper":
+            write_model(Path(command[command.index("--output_path") + 1]) / "0", 2)
+
+    tools.on_run(fake_colmap)
+    with pytest.raises(GausserError, match="only 2 of 5"):
+        steps.solve(scene)
+    assert registered_images(scene.sparse / "0") == 2  # kept, so `gausser train` can still use it
+
+
 def test_failed_solve_keeps_the_previous_model(tmp_path, tools):
     scene = make_scene(tmp_path)
     write_model(scene.sparse / "0", 3)
@@ -286,3 +301,71 @@ def test_msplat_composites_masked_out_pixels_to_black(tmp_path):
         kept, removed = result.getpixel((0, 0)), result.getpixel((1, 0))
     assert removed == (0, 0, 0)
     assert all(abs(a - b) <= 3 for a, b in zip(kept, (200, 100, 50)))
+
+
+def test_menu_recommends_the_next_step_and_hides_impossible_ones(tmp_path):
+    from gausser import guide
+
+    empty = Scene(tmp_path)
+    assert [command for _label, command in guide.menu(empty, None)] == ["frames", "status"]
+    assert guide.menu(empty, tmp_path / "clip.mp4")[0] == ("Run the pipeline (skips what is up to date)  ← next", "run")
+
+    photos = make_scene(tmp_path / "photos")
+    assert [command for _label, command in guide.menu(photos, None)] == ["run", "frames", "mask", "solve", "status"]
+
+    done = solved_and_trained(tmp_path / "done")
+    assert guide.menu(done, None)[0][1] == "view"
+    assert "cameras 3/3 ✓" in guide.summary(done) and "trained ✓" in guide.summary(done)
+
+
+def test_gausser_video_opens_the_guide_on_a_scene_next_to_the_video(tmp_path, monkeypatch):
+    from gausser import guide
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"")
+    seen = []
+    monkeypatch.setattr(cli, "interactive", lambda: True)
+    monkeypatch.setattr(guide, "guided", lambda scene, video: seen.append((scene.root, video)) or ["status", "-s", str(scene.root)])
+
+    assert cli.main([str(video)]) == 0
+    assert seen == [((tmp_path / "clip").resolve(), video.resolve())]
+
+    monkeypatch.setattr(cli, "interactive", lambda: False)
+    assert cli.main([str(video)]) == 2  # no terminal, no menu
+
+
+def test_cancelling_the_guide_removes_the_new_empty_scene_folder(tmp_path, monkeypatch):
+    from gausser import guide
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"")
+    monkeypatch.setattr(cli, "interactive", lambda: True)
+
+    def cancel(scene, video):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(guide, "guided", cancel)
+    assert cli.main([str(video)]) == 130
+    assert not (tmp_path / "clip").exists()
+
+
+def test_loose_photos_are_explained_and_imported_on_request(tmp_path, capsys, fake_steps):
+    (tmp_path / "a.jpg").write_bytes(b"jpg")
+    (tmp_path / "b.jpg").write_bytes(b"jpg")
+
+    assert cli.main(["run", "-s", str(tmp_path)]) == 1
+    assert "--import" in capsys.readouterr().err
+
+    assert cli.main(["run", "-s", str(tmp_path), "--import"]) == 0
+    assert [path.name for path in Scene(tmp_path).image_files()] == ["a.jpg", "b.jpg"]
+    assert fake_steps == ["solve", "train"]
+
+    (tmp_path / "a.jpg").write_bytes(b"again")
+    with pytest.raises(GausserError, match="already has a.jpg"):
+        Scene(tmp_path).import_loose_photos()
+
+
+def test_unknown_words_still_get_the_command_list(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["stauts"])
+    assert "invalid choice" in capsys.readouterr().err

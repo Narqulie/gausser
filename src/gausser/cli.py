@@ -13,6 +13,18 @@ from . import steps
 from .scene import GausserError, Scene, registered_images
 
 STEPS = ("frames", "mask", "solve", "train", "lod")
+COMMANDS = ("run", *STEPS, "view", "status")
+QUICK_START = """\
+quick start:
+  gausser clip.mp4              guided: makes clip/ next to the video and walks you through
+  gausser ~/photos/statue       guided, on a folder of photos
+  gausser                       guided, in the current scene folder
+
+  cd statue                     a scene is a folder with photos in images/
+  gausser run --prompt statue   unattended: mask → solve → train (skips what is up to date)
+  gausser view                  open the result in SuperSplat
+
+More: README.md in the gausser repository, or `gausser COMMAND --help`."""
 
 
 def _add_mask_options(parser: argparse.ArgumentParser) -> None:
@@ -63,7 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gausser",
         description="Turn photos or video into Gaussian splats: frames → mask → solve → train → lod.",
-        epilog="Run `gausser` with no arguments for a guided menu.",
+        epilog=QUICK_START,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
@@ -72,6 +85,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the pipeline unattended. Steps that are already up to date are skipped.",
     )
     run.add_argument("--video", type=Path, help="extract frames from this video first")
+    run.add_argument(
+        "--import", dest="import_photos", action="store_true",
+        help="first move photos lying in the scene folder into images/",
+    )
     run.add_argument("--prompt", help="SAM3 subject prompt; without it nothing is masked")
     run.add_argument("--lod", action="store_true", help="also build a streamed LOD set")
     run.add_argument("--from", dest="from_step", choices=STEPS, help="redo this step and every step after it")
@@ -162,6 +179,8 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
         nonlocal redo_from
         redo_from = min(redo_from, STEPS.index(step) + 1)
 
+    if args.import_photos:
+        scene.import_loose_photos()
     if args.video and due("frames", bool(scene.image_files())):
         steps.frames(scene, args.video, [])
         ran("frames")
@@ -186,6 +205,12 @@ def status(scene: Scene) -> None:
     stale = "  (out of date)"
     print(f"Scene   {scene.root}")
     print(f"images  {len(images)}")
+    if not images:
+        loose = scene.loose_photos()
+        if loose:
+            print(f"        {len(loose)} photos are in the folder itself; `gausser` or `gausser run --import` moves them into images/")
+        else:
+            print("        put photos in images/, or run `gausser frames VIDEO` (or `gausser VIDEO` for the guided way)")
     print(f"masks   {masks or '-'}{stale if masks and not scene.masks_done(images) else ''}")
     if model:
         solved = f"{registered_images(model)}/{len(images)} images registered"
@@ -230,59 +255,21 @@ def status(scene: Scene) -> None:
     print(f"  {'✓' if ok else '✗'} {'supersplat':16}{dist if ok else 'optional, for `gausser view`; run scripts/install-macos.sh'}")
 
 
-def guided() -> list[str]:
-    """Ask a few questions and return the equivalent command line."""
-    import questionary
-
-    scene = Scene(".")
-    has_images = bool(scene.image_files())
-    choice = questionary.select(
-        "What do you want to do?",
-        choices=[
-            questionary.Choice("Run the whole pipeline", "run"),
-            questionary.Choice("Extract frames from a video", "frames"),
-            questionary.Choice("Mask the subject (SAM3)", "mask"),
-            questionary.Choice("Solve cameras (COLMAP)", "solve"),
-            questionary.Choice("Train splats", "train"),
-            questionary.Choice("Build a streamed LOD set", "lod"),
-            questionary.Choice("View the newest splat (SuperSplat)", "view"),
-            questionary.Choice("Show status", "status"),
-        ],
-    ).unsafe_ask()
-    argv = [choice]
-    if choice in ("run", "frames") and (choice == "frames" or not has_images):
-        video = questionary.path(
-            "Video file:", validate=lambda text: Path(text).expanduser().exists() or "No such file"
-        ).unsafe_ask()
-        argv += [video] if choice == "frames" else ["--video", video]
-    if choice in ("run", "mask"):
-        if choice == "run":
-            prompt = questionary.text("Subject to keep (blank = no masking):").unsafe_ask()
-        else:
-            prompt = questionary.text("Subject to keep:", validate=lambda text: bool(text.strip()) or "Required").unsafe_ask()
-        if prompt:
-            argv += [prompt] if choice == "mask" else ["--prompt", prompt]
-    if choice in ("run", "train"):
-        trainer = questionary.select("Trainer:", choices=["brush", "msplat"]).unsafe_ask()
-        iterations = questionary.text("Iterations:", default="30000").unsafe_ask()
-        argv += ["--trainer", trainer, "--iterations", iterations]
-    if choice == "run" and questionary.confirm("Also build a streamed LOD set?", default=False).unsafe_ask():
-        argv.append("--lod")
-    return argv
-
-
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     parser = build_parser()
-    if not argv:
-        if not (sys.stdin.isatty() and sys.stdout.isatty()):
-            parser.print_help()
+    if not argv or (len(argv) == 1 and _is_target(argv[0])):
+        if not interactive():
+            if argv:
+                print("gausser: `gausser PATH` is the guided menu and needs a terminal; see `gausser --help`", file=sys.stderr)
+            else:
+                parser.print_help()
             return 2
-        try:
-            argv = guided()
-        except KeyboardInterrupt:
-            return 130
-        print("→ gausser " + shlex.join(argv))
+        guided_argv = _guide(Path(argv[0]) if argv else Path("."))
+        if not isinstance(guided_argv, list):
+            return guided_argv
+        argv = guided_argv
+        print("→ gausser " + shlex.join(argv), flush=True)
     args = parser.parse_args(argv)
     try:
         scene = Scene(args.scene)
@@ -303,6 +290,35 @@ def main(argv: list[str] | None = None) -> int:
         print("\ngausser: interrupted", file=sys.stderr)
         return 130
     return 0
+
+
+def interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _is_target(arg: str) -> bool:
+    """`gausser PATH`: anything that is not a command or option and exists or looks like a path."""
+    if arg in COMMANDS or arg.startswith("-"):
+        return False
+    return Path(arg).expanduser().exists() or "/" in arg or bool(Path(arg).suffix)
+
+
+def _guide(target: Path) -> list[str] | int:
+    """Run the guided menu; return the chosen command line, or an exit code."""
+    from . import guide
+
+    created: Path | None = None
+    try:
+        scene, video, new = guide.open_target(target)
+        created = scene.root if new else None
+        return guide.guided(scene, video)
+    except GausserError as exc:
+        print(f"gausser: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        if created and not any(created.iterdir()):
+            created.rmdir()  # cancelled before anything was put in the new scene folder
+        return 130
 
 
 def dispatch(scene: Scene, args: argparse.Namespace) -> None:

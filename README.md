@@ -9,17 +9,32 @@ frames → mask → solve → train → lod
 
 ## Quick start
 
+The guided way. It reads the scene, recommends the next step, asks only what that
+step needs, and prints the equivalent command before running it:
+
+```bash
+gausser clip.mp4           # makes clip/ next to the video, then guides you
+gausser ~/photos/statue    # a folder of photos; offers to move them into images/
+gausser                    # the current folder
+```
+
+The direct way, for scripts and overnight runs:
+
 ```bash
 mkdir -p statue/images && cd statue
 cp ~/photos/statue/*.jpg images/        # or: gausser frames walkaround.mp4
 gausser run --prompt "statue"            # mask → solve → train
 gausser view                             # open the result in SuperSplat
-gausser                                  # or answer a few questions instead
 ```
+
+A scene is a folder with its photos in `images/`. If the photos are in the
+folder itself, `gausser run --import` moves them into `images/`.
 
 `gausser run` is unattended. It skips steps that are already up to date, so you
 can rerun it after a failure or after adding photos. Use `--from STEP` to redo a
 step and everything after it. For example, `gausser run --from solve --matcher sequential`.
+If COLMAP places fewer than half the images, `run` stops before training: the
+images don't overlap enough. `gausser train` trains on them anyway.
 
 Without `--prompt`, no new masks are made, but existing masks are still used. Add
 `--video clip.mp4` to extract frames first, and `--lod` to finish with a streamed

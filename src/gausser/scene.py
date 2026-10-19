@@ -74,9 +74,32 @@ class Scene:
 
     def require_images(self) -> list[Path]:
         files = self.image_files()
-        if not files:
-            raise GausserError(f"No images in {self.images}; add photos there or run `gausser frames VIDEO`")
-        return files
+        if files:
+            return files
+        loose = self.loose_photos()
+        if loose:
+            raise GausserError(
+                f"{len(loose)} photos are in {self.root} itself, but gausser reads {self.images}. "
+                "Add --import to `gausser run` to move them there."
+            )
+        raise GausserError(f"No images in {self.images}; add photos there or run `gausser frames VIDEO`")
+
+    def loose_photos(self) -> list[Path]:
+        """Photos lying in the scene folder itself instead of images/."""
+        return sorted(path for path in self.root.iterdir() if is_image(path))
+
+    def import_loose_photos(self) -> int:
+        """Move loose photos into images/; never overwrites."""
+        loose = self.loose_photos()
+        taken = [path.name for path in loose if (self.images / path.name).exists()]
+        if taken:
+            raise GausserError(f"images/ already has {', '.join(taken[:3])}{' …' if len(taken) > 3 else ''}; not moving")
+        self.images.mkdir(exist_ok=True)
+        for path in loose:
+            path.rename(self.images / path.name)
+        if loose:
+            print(f"Moved {len(loose)} photos into {self.images}")
+        return len(loose)
 
     def model(self) -> Path | None:
         """The COLMAP model at sparse/0, if complete."""

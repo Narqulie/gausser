@@ -140,7 +140,15 @@ def solve(scene: Scene, matcher: str = "auto") -> None:
     replace(database, scene.database)
     replace(final, scene.sparse)
     shutil.rmtree(staged, ignore_errors=True)
-    print(f"Model: {registered_images(scene.sparse / '0')}/{len(images)} images registered ({matcher} matching)")
+    registered = registered_images(scene.sparse / "0")
+    print(f"Model: {registered}/{len(images)} images registered ({matcher} matching)")
+    if registered * 2 < len(images):
+        # Training on a fraction of the cameras wastes the run; stop `gausser run` here.
+        raise GausserError(
+            f"COLMAP placed only {registered} of {len(images)} images. Use more photos with more overlap "
+            "(from a video: `gausser frames VIDEO -- --fps 20 --min-buffer 1`), "
+            "or run `gausser train` to train on these anyway"
+        )
 
 
 def train_brush(
