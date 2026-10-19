@@ -4,59 +4,38 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gausser"
-version = "0.2.0"
-description = "CLI-first, scene-owned tools for producing 3D Gaussian Splats"
+version = "0.3.0"
+description = "Photos or video in, Gaussian splats out"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-    "rich>=13.0",
-    "questionary>=2,<3",
-    "numpy>=1.26,<2",
-    "Pillow>=12.3,<13",
-]
+dependencies = ["questionary>=2,<3"]
 
 [project.optional-dependencies]
-sammer = [
+# SAM3 itself is installed separately at a pinned commit (see README).
+sam = [
     "numpy>=1.26,<2",
     "opencv-python>=4.10,<4.12",
-    "setuptools>=74,<81",
+    "Pillow>=12.3,<13",
+    "setuptools>=74,<81",  # SAM3 imports pkg_resources
     "torch>=2.10,<2.11",
     "torchvision>=0.25,<0.26",
 ]
-msplat = [
-    "msplat==1.1.4",
-]
-test = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24",
-]
-quality = [
-    "build>=1.2,<2",
-    "mypy>=1.19,<2",
-    "ruff>=0.15,<0.16",
-]
+msplat = ["msplat==1.1.4"]
+dev = ["pytest>=8.0", "ruff>=0.15,<0.16", "mypy>=1.19,<2", "numpy>=1.26,<2", "Pillow>=12.3,<13"]
 
 [project.scripts]
-gausser = "gausser.launcher:main"
-sammer = "sammer.cli:main"
-colmapper = "colmapper.cli:main"
-brusher = "brusher.cli:main"
-sharpframes = "sharpframes.cli:main"
-msplatter = "msplatter.cli:main"
-lodder = "lodder.cli:main"
-gausser-engine = "gausser.engine:main"
+gausser = "gausser.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["gausser*", "sammer*", "colmapper*", "brusher*", "sharpframes*", "msplatter*", "lodder*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = [".", "src"]
-asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["src"]
 
 [tool.ruff]
 target-version = "py310"
+line-length = 120
 
 [tool.mypy]
 python_version = "3.10"
@@ -64,5 +43,5 @@ files = ["src"]
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["msplat", "msplat.*", "sam3.*", "torch", "torch.*"]
+module = ["msplat", "msplat.*", "sam3.*", "torch", "torch.*", "questionary"]
 ignore_missing_imports = true
