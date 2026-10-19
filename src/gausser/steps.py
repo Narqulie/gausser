@@ -59,6 +59,11 @@ def mask(
         predictor = sam.Predictor(device=device, checkpoint=checkpoint)
     except ImportError as exc:
         raise GausserError(f"SAM3 is not available ({exc}). Install: pip install -e '.[sam]', then SAM3 itself (see README)") from exc
+    except OSError as exc:  # missing checkpoint, or a gated Hugging Face download without login
+        raise GausserError(
+            f"Could not load the SAM3 model ({exc}). Put the checkpoint at ~/.cache/gausser/sam3.pt, "
+            "pass --sam-checkpoint, or run `hf auth login`"
+        ) from exc
 
     staged = scene.staging("mask")
     brush_dir, colmap_dir = staged / "masks", staged / "colmap-masks"
