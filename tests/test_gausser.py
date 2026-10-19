@@ -194,6 +194,11 @@ def test_lod_uses_newest_export_and_current_splat_transform_flags(tmp_path, tool
     assert not list(scene.tmp.glob("lod-levels-*"))
 
 
+@pytest.fixture(autouse=True)
+def no_caffeinate(monkeypatch):
+    monkeypatch.setattr(cli, "keep_awake", lambda: None)
+
+
 @pytest.fixture
 def fake_steps(monkeypatch):
     calls: list[str] = []

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -282,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
             view(scene, args.source)
             return 0
         with scene.lock():
+            keep_awake()
             dispatch(scene, args)
     except GausserError as exc:
         print(f"gausser: {exc}", file=sys.stderr)
@@ -290,6 +293,16 @@ def main(argv: list[str] | None = None) -> int:
         print("\ngausser: interrupted", file=sys.stderr)
         return 130
     return 0
+
+
+def keep_awake() -> None:
+    """Keep macOS from sleeping while this command runs; a sleeping Mac pauses training.
+
+    caffeinate -w exits by itself when this process ends. Closing the lid still
+    sleeps a laptop without an external display.
+    """
+    if sys.platform == "darwin" and shutil.which("caffeinate"):
+        subprocess.Popen(["caffeinate", "-i", "-s", "-w", str(os.getpid())])
 
 
 def interactive() -> bool:

@@ -36,6 +36,10 @@ step and everything after it. For example, `gausser run --from solve --matcher s
 If COLMAP places fewer than half the images, `run` stops before training: the
 images don't overlap enough. `gausser train` trains on them anyway.
 
+While a command runs, gausser keeps the Mac awake with `caffeinate`, because a
+sleeping Mac pauses training. Closing a laptop's lid still puts it to sleep unless
+an external display is attached.
+
 Without `--prompt`, no new masks are made, but existing masks are still used. Add
 `--video clip.mp4` to extract frames first, and `--lod` to finish with a streamed
 LOD set.
