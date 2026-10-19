@@ -20,12 +20,14 @@ def frames(scene: Scene, source: Path, extra: list[str]) -> int:
     source = source.expanduser().resolve()
     if not source.exists():
         raise GausserError(f"Source does not exist: {source}")
-    staged = scene.staging("frames") / "images"
+    staging = scene.staging("frames")
+    staged = staging / "images"
     run_tool([tool, str(source), str(staged), "--force-overwrite", *extra], cwd=scene.root)
     count = sum(1 for path in staged.iterdir() if is_image(path)) if staged.is_dir() else 0
     if count == 0:
         raise GausserError("Sharp Frames selected no images")
     replace(staged, scene.images)
+    remove(staging)
     remove(scene.masks, scene.colmap_masks, scene.database, scene.sparse)  # built from the old images
     print(f"{count} frames in {scene.images}")
     return count
@@ -144,8 +146,16 @@ def train_brush(
     brush = require_tool("brush", BRUSH_HINT)
     scene.require_model()
     staged = scene.staging("brush")
+    # Brush scans every file under the folder it is given and takes any cameras.bin,
+    # image or "masks" folder it finds (Msplat datasets, failed attempts, colmap/masks).
+    # Give it a folder that holds only the current inputs.
+    dataset = staged / "dataset"
+    dataset.mkdir()
+    for source in (scene.images, scene.sparse, scene.masks):
+        if source.is_dir():
+            (dataset / source.name).symlink_to(source)
     command = [
-        brush, str(scene.root),
+        brush, str(dataset),
         "--total-train-iters", str(iterations),
         "--export-every", str(export_every),
         "--export-path", str(staged / "exports"),
@@ -159,6 +169,7 @@ def train_brush(
     run_tool(command, cwd=scene.root)
     if not list(staged.glob("exports/*.ply")):
         raise GausserError(f"Brush finished without a .ply export; output kept in {staged}")
+    remove(dataset)
     run = scene.new_run("brush")
     replace(staged, run)
     print(f"Exports in {run / 'exports'}")

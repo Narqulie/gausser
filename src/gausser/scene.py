@@ -7,8 +7,10 @@ after it succeeded, so a failed or interrupted step never leaves partial output.
 
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime
 import shutil
+import sqlite3
 import struct
 import subprocess
 from pathlib import Path
@@ -27,6 +29,13 @@ def is_image(path: Path) -> bool:
 
 def timestamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def registered_images(model: Path) -> int:
@@ -78,6 +87,27 @@ class Scene:
         if model is None:
             raise GausserError("No COLMAP model at sparse/0; run `gausser solve` first")
         return model
+
+    def masks_done(self, images: list[Path]) -> bool:
+        return all((self.masks / f"{image.stem}.png").is_file() for image in images)
+
+    def solve_done(self, images: list[Path]) -> bool:
+        """A model exists and was built from exactly the current images."""
+        if self.model() is None or not self.database.is_file():
+            return False
+        with closing(sqlite3.connect(self.database)) as database:
+            solved = {name for (name,) in database.execute("SELECT name FROM images")}
+        return solved == {image.name for image in images}
+
+    def train_done(self) -> bool:
+        """The newest export was trained after the current model was built."""
+        model = self.model()
+        exports = self.exports()
+        return model is not None and bool(exports) and mtime(exports[-1]) > mtime(model / "images.bin")
+
+    def lod_done(self) -> bool:
+        exports, lods = self.exports(), self.lod_runs()
+        return bool(exports and lods) and max(mtime(run / "lod-meta.json") for run in lods) > mtime(exports[-1])
 
     def exports(self) -> list[Path]:
         """Trained PLY exports, oldest first."""

@@ -23,12 +23,20 @@ src/gausser/
 ## Rules
 
 - Files are the state. A step writes under `.gausser/tmp/` and `replace()`s
-  its output into place only after success. `run` skips a step whose output
-  exists, and once any step runs, every later step runs too.
+  its output into place only after success. `run` skips a step that is up to
+  date (`Scene.masks_done/solve_done/train_done/lod_done`: masks per image stem,
+  database image names == current images, export mtime > model mtime, LOD mtime >
+  export mtime). Once any step runs, every later step runs too. Don't use folder
+  mtimes, because Finder's `.DS_Store` writes change them.
 - Changing an input deletes what was built from it. New frames delete the masks,
   `database.db` and `sparse/`; new masks delete `database.db` and `sparse/`.
   Never delete `runs/`.
 - Explicit step commands always run. Only `run` skips steps.
+- Brush scans every file under its input folder and picks the `cameras.bin` with
+  the most registered images (on a tie, the lowest path). It also matches any
+  `masks` folder. That includes Msplat dataset copies, failed attempts and the old
+  `.gausser/invalidated` archives. `train_brush` therefore passes a staging folder
+  that only links `images`, `sparse` and `masks`; never pass the scene root.
 - External tools are found on PATH with `require_tool()` and run through
   `run_tool()`, with output passed straight through. Don't add output parsers or
   progress UIs for tool output.

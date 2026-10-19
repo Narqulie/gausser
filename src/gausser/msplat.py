@@ -22,6 +22,8 @@ def train(scene: Scene, *, iterations: int, downscale_factor: float, checkpoint_
 
     if resume:
         run = scene.runs / "msplat" / resume
+        if not (run / "settings.json").is_file():
+            raise GausserError(f"No Msplat run {resume!r} in {run.parent}")
         settings: dict[str, Any] = json.loads((run / "settings.json").read_text())
         if (run / "exports" / "scene.ply").exists():
             raise GausserError(f"Msplat run {resume} is already finished")

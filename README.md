@@ -16,12 +16,13 @@ gausser run --prompt "statue"            # mask → solve → train
 gausser                                  # or answer a few questions instead
 ```
 
-`gausser run` is unattended. It skips any step whose output already exists, so
-you can rerun it after a failure. Use `--from STEP` to redo a step and everything
-after it. For example, `gausser run --from solve --matcher sequential`.
+`gausser run` is unattended. It skips steps that are already up to date, so you
+can rerun it after a failure or after adding photos. Use `--from STEP` to redo a
+step and everything after it. For example, `gausser run --from solve --matcher sequential`.
 
-Without `--prompt`, nothing is masked. Add `--video clip.mp4` to extract frames
-first, and `--lod` to finish with a streamed LOD set.
+Without `--prompt`, no new masks are made, but existing masks are still used. Add
+`--video clip.mp4` to extract frames first, and `--lod` to finish with a streamed
+LOD set.
 
 ## Commands
 
@@ -42,11 +43,21 @@ The files are the state. There is no database or manifest.
 
 - Each step writes into `.gausser/tmp/` and moves the result into place only when
   it succeeds. A failed step leaves the previous output untouched.
+- A step counts as up to date when its output matches its input:
+  - masks: every image has a mask;
+  - solve: the COLMAP database lists exactly the current images;
+  - train: the newest export is newer than the model;
+  - lod: the newest LOD set is newer than the newest export.
+
+  `gausser status` marks anything out of date.
 - New frames delete the masks and the COLMAP model, and new masks delete the
   COLMAP model, because both were built from what changed. Training runs in
   `runs/` are never deleted.
-- `.gausser/tmp/` keeps failed attempts for inspection. Delete it whenever
-  nothing is running.
+- `.gausser/tmp/` keeps failed attempts for inspection. `gausser status` shows their
+  size; delete the folder whenever nothing is running.
+- Brush gets a folder that holds only links to `images/`, `sparse/` and `masks/`.
+  Brush scans everything in the folder it is given and would otherwise pick up
+  stale COLMAP models and images from `runs/` or `.gausser/`.
 
 ## Notes that cost time to learn
 

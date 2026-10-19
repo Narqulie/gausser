@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sqlite3
 import struct
 import sys
 import types
@@ -23,6 +25,25 @@ def write_model(model: Path, registered: int) -> None:
     (model / "images.bin").write_bytes(struct.pack("<Q", registered))
     (model / "cameras.bin").write_bytes(b"")
     (model / "points3D.bin").write_bytes(b"")
+
+
+def write_database(scene: Scene) -> None:
+    with sqlite3.connect(scene.database) as database:
+        database.execute("CREATE TABLE images (name TEXT)")
+        database.executemany("INSERT INTO images VALUES (?)", [(image.name,) for image in scene.image_files()])
+
+
+def solved_and_trained(root: Path) -> Scene:
+    """A scene whose model and export are up to date."""
+    scene = make_scene(root)
+    write_model(scene.sparse / "0", 3)
+    write_database(scene)
+    export = scene.runs / "brush" / "a" / "exports" / "x.ply"
+    export.parent.mkdir(parents=True)
+    export.write_bytes(b"ply")
+    model_time = os.stat(scene.sparse / "0" / "images.bin").st_mtime
+    os.utime(export, (model_time + 10, model_time + 10))
+    return scene
 
 
 @pytest.fixture
@@ -158,21 +179,60 @@ def test_lod_uses_newest_export_and_current_splat_transform_flags(tmp_path, tool
     assert not list(scene.tmp.glob("lod-levels-*"))
 
 
-def test_run_skips_finished_steps_and_from_redoes_the_rest(tmp_path, monkeypatch):
-    scene = make_scene(tmp_path)
-    write_model(scene.sparse / "0", 3)
-    export = scene.runs / "brush" / "a" / "exports" / "x.ply"
-    export.parent.mkdir(parents=True)
-    export.write_bytes(b"ply")
+@pytest.fixture
+def fake_steps(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(steps, "solve", lambda scene, matcher: calls.append("solve"))
     monkeypatch.setattr(steps, "train_brush", lambda scene, **kwargs: calls.append("train"))
+    return calls
+
+
+def test_run_skips_up_to_date_steps_and_from_redoes_the_rest(tmp_path, fake_steps):
+    solved_and_trained(tmp_path)
 
     assert cli.main(["run", "-s", str(tmp_path)]) == 0
-    assert calls == []
+    assert fake_steps == []
 
     assert cli.main(["run", "-s", str(tmp_path), "--from", "solve"]) == 0
-    assert calls == ["solve", "train"]
+    assert fake_steps == ["solve", "train"]
+
+
+def test_run_redoes_solve_when_images_changed(tmp_path, fake_steps):
+    scene = solved_and_trained(tmp_path)
+    (scene.images / "new.jpg").write_bytes(b"jpg")
+
+    assert cli.main(["run", "-s", str(tmp_path)]) == 0
+    assert fake_steps == ["solve", "train"]
+
+
+def test_run_retrains_when_exports_are_older_than_the_model(tmp_path, fake_steps):
+    scene = solved_and_trained(tmp_path)
+    os.utime(scene.exports()[-1], (0, 0))  # e.g. a re-solve finished but training was interrupted
+
+    assert cli.main(["run", "-s", str(tmp_path)]) == 0
+    assert fake_steps == ["train"]
+
+
+def test_brush_only_sees_current_inputs(tmp_path, tools):
+    scene = make_scene(tmp_path)
+    write_model(scene.sparse / "0", 3)
+    scene.masks.mkdir()
+    scene.colmap_masks.mkdir(parents=True)
+    write_model(scene.runs / "msplat" / "old" / "dataset", 9)  # a stale model Brush must not find
+    seen: list[set[str]] = []
+
+    def fake_brush(command):
+        dataset = Path(command[1])
+        seen.append({path.name for path in dataset.iterdir()})
+        export = Path(command[command.index("--export-path") + 1]) / "export_10.ply"
+        export.parent.mkdir(parents=True)
+        export.write_bytes(b"ply")
+
+    tools.on_run(fake_brush)
+    run = steps.train_brush(scene, iterations=10, export_every=5)
+
+    assert seen == [{"images", "sparse", "masks"}]
+    assert sorted(path.name for path in run.iterdir()) == ["exports"]
 
 
 def test_status_runs_on_an_empty_folder(tmp_path, capsys):

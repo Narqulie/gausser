@@ -63,8 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     run = commands.add_parser(
-        "run", parents=[common], help="run every step that has not been done yet",
-        description="Run the pipeline unattended. Steps whose output already exists are skipped.",
+        "run", parents=[common], help="run every step that is missing or out of date",
+        description="Run the pipeline unattended. Steps that are already up to date are skipped.",
     )
     run.add_argument("--video", type=Path, help="extract frames from this video first")
     run.add_argument("--prompt", help="SAM3 subject prompt; without it nothing is masked")
@@ -134,14 +134,20 @@ def _lod(scene: Scene, source: Path | None, args: argparse.Namespace) -> None:
 
 
 def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
-    """Run each step whose output is missing; after one step runs, every later step runs too."""
+    """Run each step whose output is missing or older than its input; once one runs, all later ones do."""
+    if args.from_step == "frames" and not args.video:
+        raise GausserError("--from frames needs --video")
+    if args.from_step == "mask" and not args.prompt:
+        raise GausserError("--from mask needs --prompt")
+    if args.from_step == "lod":
+        args.lod = True
     redo_from = STEPS.index(args.from_step) if args.from_step else len(STEPS)
 
     def due(step: str, done: bool) -> bool:
         if STEPS.index(step) >= redo_from or not done:
             print(f"\n== {step} ==", flush=True)
             return True
-        print(f"== {step}: done, skipping (--from {step} redoes it)")
+        print(f"== {step}: up to date, skipping (--from {step} redoes it)")
         return False
 
     def ran(step: str) -> None:
@@ -151,19 +157,17 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
     if args.video and due("frames", bool(scene.image_files())):
         steps.frames(scene, args.video, [])
         ran("frames")
-    elif args.from_step == "frames":
-        raise GausserError("--from frames needs --video")
-    scene.require_images()
-    if args.prompt and due("mask", scene.masks.is_dir()):
+    images = scene.require_images()
+    if args.prompt and due("mask", scene.masks_done(images)):
         _mask(scene, args.prompt, args)
         ran("mask")
-    if due("solve", scene.model() is not None):
+    if due("solve", scene.solve_done(images)):
         steps.solve(scene, args.matcher)
         ran("solve")
-    if due("train", bool(scene.exports())):
+    if due("train", scene.train_done()):
         _train(scene, args)
         ran("train")
-    if args.lod and due("lod", bool(scene.lod_runs())):
+    if args.lod and due("lod", scene.lod_done()):
         _lod(scene, None, args)
 
 
@@ -171,14 +175,26 @@ def status(scene: Scene) -> None:
     images = scene.image_files()
     model = scene.model()
     masks = sum(1 for _ in scene.masks.glob("*.png")) if scene.masks.is_dir() else 0
+    stale = "  (out of date)"
     print(f"Scene   {scene.root}")
     print(f"images  {len(images)}")
-    print(f"masks   {masks or '-'}")
-    print(f"model   {f'{registered_images(model)}/{len(images)} images registered' if model else '-'}")
-    for export in scene.exports()[-5:]:
+    print(f"masks   {masks or '-'}{stale if masks and not scene.masks_done(images) else ''}")
+    if model:
+        solved = f"{registered_images(model)}/{len(images)} images registered"
+        print(f"model   {solved}{'' if scene.solve_done(images) else stale}")
+    else:
+        print("model   -")
+    exports = scene.exports()
+    for export in exports[-5:]:
         print(f"export  {export.relative_to(scene.root)}")
+    if exports and model and not scene.train_done():
+        print(f"        newest export is older than the model{stale}")
     for run in scene.lod_runs()[-3:]:
         print(f"lod     {run.relative_to(scene.root)}")
+    if scene.tmp.is_dir():
+        size = sum(path.stat().st_size for path in scene.tmp.rglob("*") if path.is_file() and not path.is_symlink())
+        if size:
+            print(f"tmp     {size / 1e9:.1f} GB of failed attempts in {scene.tmp} (delete when nothing is running)")
     print("\nTools")
     tools = {
         "sharp-frames": steps.SHARP_FRAMES_HINT,
@@ -215,10 +231,15 @@ def guided() -> list[str]:
     ).unsafe_ask()
     argv = [choice]
     if choice in ("run", "frames") and (choice == "frames" or not has_images):
-        video = questionary.path("Video file:").unsafe_ask()
+        video = questionary.path(
+            "Video file:", validate=lambda text: Path(text).expanduser().exists() or "No such file"
+        ).unsafe_ask()
         argv += [video] if choice == "frames" else ["--video", video]
     if choice in ("run", "mask"):
-        prompt = questionary.text("Subject to keep (blank = no masking):" if choice == "run" else "Subject to keep:").unsafe_ask()
+        if choice == "run":
+            prompt = questionary.text("Subject to keep (blank = no masking):").unsafe_ask()
+        else:
+            prompt = questionary.text("Subject to keep:", validate=lambda text: bool(text.strip()) or "Required").unsafe_ask()
         if prompt:
             argv += [prompt] if choice == "mask" else ["--prompt", prompt]
     if choice in ("run", "train"):
