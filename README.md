@@ -68,7 +68,8 @@ The files are the state. There is no database or manifest.
 ## Install (macOS, Apple Silicon)
 
 ```bash
-python3.11 -m venv .venv && source .venv/bin/activate
+brew install python@3.13                  # msplat wheels exist only for 3.12/3.13
+python3.13 -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'                    # the CLI and tests
 
 brew install colmap ffmpeg
@@ -76,18 +77,26 @@ pip install sharp-frames
 npm install -g @playcanvas/splat-transform
 # Brush: build github.com/ArthurBrussee/brush with `cargo build --release`, put `brush` on PATH
 
-# SAM3 masking (optional, about 2 GB):
+# SAM3 masking (optional, a few GB):
 pip install -e '.[sam]'
-pip install git+https://github.com/facebookresearch/sam3.git@d7a33bb3a6a023db88a9
-hf auth login
+pip install git+https://github.com/facebookresearch/sam3.git@f6e51f59500a87c576c2df2323ce56b9fd7a12de
+patch -p1 -d "$(python -c 'import os, importlib.util as u; print(os.path.dirname(u.find_spec("sam3").origin))')" \
+  < patches/sam3-macos.patch               # upstream SAM3 is CUDA-only
+# then either put the checkpoint at ~/.cache/gausser/sam3.pt, or run `hf auth login`
 
 # Msplat (optional):
 pip install -e '.[msplat]'
 ```
 
-SAM3 must stay at commit `d7a33bb`, because newer commits import the CUDA-only
-`triton` and crash on macOS. Gausser sets `PYTORCH_ENABLE_MPS_FALLBACK=1` itself.
-Without it, SAM3 misses every image on Apple GPUs.
+SAM3 is pinned to commit `f6e51f5`; the older pin `d7a33bb` no longer exists
+upstream. Upstream SAM3 assumes CUDA: it imports `triton` and hardcodes
+`device="cuda"`. `patches/sam3-macos.patch` adds CPU and MPS fallbacks; it is the
+same patch the earlier Automask-GS setup used.
+
+Gausser loads `~/.cache/gausser/sam3.pt` when it exists and no `--sam-checkpoint`
+is given. Otherwise it downloads the gated model from Hugging Face. Gausser sets
+`PYTORCH_ENABLE_MPS_FALLBACK=1` itself; without it, SAM3 misses every image on
+Apple GPUs.
 
 Run `gausser status` to check what is installed.
 

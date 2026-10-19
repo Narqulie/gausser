@@ -7,15 +7,20 @@ name = "gausser"
 version = "0.3.0"
 description = "Photos or video in, Gaussian splats out"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"  # msplat ships only cp312/cp313 wheels
 dependencies = ["questionary>=2,<3"]
 
 [project.optional-dependencies]
-# SAM3 itself is installed separately at a pinned commit (see README).
+# SAM3 itself is installed separately at a pinned commit and patched for macOS (see README).
+# einops, pycocotools, psutil and scipy are SAM3 imports it does not declare.
 sam = [
+    "einops",
     "numpy>=1.26,<2",
     "opencv-python>=4.10,<4.12",
     "Pillow>=12.3,<13",
+    "psutil",
+    "pycocotools",
+    "scipy",
     "setuptools>=74,<81",  # SAM3 imports pkg_resources
     "torch>=2.10,<2.11",
     "torchvision>=0.25,<0.26",
@@ -34,11 +39,11 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 120
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 files = ["src"]
 check_untyped_defs = true
 

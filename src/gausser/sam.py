@@ -12,10 +12,8 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 from PIL import Image, ImageFilter  # noqa: E402
 
-INSTALL_HINT = (
-    "pip install -e '.[sam]' && "
-    "pip install git+https://github.com/facebookresearch/sam3.git@d7a33bb3a6a023db88a9 && hf auth login"
-)
+# A local checkpoint avoids the gated Hugging Face download (and its login).
+DEFAULT_CHECKPOINT = Path.home() / ".cache" / "gausser" / "sam3.pt"
 
 
 def resolve_device(device: str) -> str:
@@ -34,6 +32,8 @@ class Predictor:
         from sam3.model_builder import build_sam3_image_model
 
         self.device = resolve_device(device)
+        if checkpoint is None and DEFAULT_CHECKPOINT.is_file():
+            checkpoint = str(DEFAULT_CHECKPOINT)
         if checkpoint:
             model = build_sam3_image_model(checkpoint_path=checkpoint, load_from_HF=False, device="cpu")
         else:

@@ -35,8 +35,13 @@ src/gausser/
 
 ## Hard-won constraints
 
-- SAM3 must be commit `d7a33bb3a6a023db88a9`. Newer commits import CUDA-only
-  `triton`. `sam.py` sets `PYTORCH_ENABLE_MPS_FALLBACK=1` before importing torch;
+- SAM3 is pinned to commit `f6e51f59500a87c576c2df2323ce56b9fd7a12de`. The old pin
+  `d7a33bb` no longer exists upstream. Upstream is CUDA-only (it imports `triton` and
+  uses `device="cuda"`), so after every SAM3 install apply `patches/sam3-macos.patch`
+  with `patch -p1` inside the installed `sam3/` package. The `sam` extra lists SAM3's
+  undeclared imports: einops, pycocotools, psutil and scipy. numpy must stay <2.
+  The default checkpoint is `~/.cache/gausser/sam3.pt`, a 3.2 GB hard link to
+  `~/Developer/Automask-GS/models/sam3.pt`; without it SAM3 needs a Hugging Face login. `sam.py` sets `PYTORCH_ENABLE_MPS_FALLBACK=1` before importing torch;
   without it, SAM3 misses every image on MPS.
 - Mask naming: Brush `masks/<stem>.png`, COLMAP `colmap/masks/<name><ext>.png`.
   Image stems must be unique.
@@ -57,6 +62,6 @@ src/gausser/
 .venv/bin/mypy src
 ```
 
-`.venv` is created with Homebrew `python3.11 -m venv .venv` and
+`.venv` is created with Homebrew `python3.13 -m venv .venv` (msplat has only cp312/cp313 wheels) and
 `pip install -e '.[dev]'`. There is no CI. Tests stub external tools
 through `steps.require_tool`/`steps.run_tool`; they never need COLMAP, Brush or SAM3.
