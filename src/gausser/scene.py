@@ -7,8 +7,11 @@ after it succeeded, so a failed or interrupted step never leaves partial output.
 
 from __future__ import annotations
 
-from contextlib import closing
+from collections.abc import Iterator, Mapping
+from contextlib import closing, contextmanager
 from datetime import datetime
+import fcntl
+import os
 import shutil
 import sqlite3
 import struct
@@ -88,6 +91,18 @@ class Scene:
             raise GausserError("No COLMAP model at sparse/0; run `gausser solve` first")
         return model
 
+    @contextmanager
+    def lock(self) -> Iterator[None]:
+        """Hold the scene for one command; a second command fails instead of clobbering it."""
+        path = self.root / ".gausser" / "lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise GausserError(f"Another gausser command is already working on {self.root}") from None
+            yield  # the OS releases the lock when the file closes or the process dies
+
     def masks_done(self, images: list[Path]) -> bool:
         return all((self.masks / f"{image.stem}.png").is_file() for image in images)
 
@@ -155,9 +170,9 @@ def require_tool(name: str, hint: str) -> str:
     return path
 
 
-def run_tool(command: list[str], *, cwd: Path) -> None:
-    """Run an external tool with live output; raise if it fails."""
+def run_tool(command: list[str], *, cwd: Path, env: Mapping[str, str] | None = None) -> None:
+    """Run an external tool with live output; raise if it fails. ``env`` adds variables."""
     print("$ " + " ".join(command), flush=True)
-    result = subprocess.run(command, cwd=cwd, check=False)
+    result = subprocess.run(command, cwd=cwd, env={**os.environ, **env} if env else None, check=False)
     if result.returncode != 0:
         raise GausserError(f"`{Path(command[0]).name}` failed with exit code {result.returncode}")

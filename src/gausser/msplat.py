@@ -1,4 +1,9 @@
-"""Experimental Msplat trainer with checkpoint resume. Msplat ignores masks."""
+"""Experimental Msplat trainer with checkpoint resume.
+
+Msplat has no mask input. With masks, each image is composited onto a black
+background and Msplat trains against that same black background, so masked-out
+areas are learned as empty space.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +17,18 @@ from typing import Any
 from .scene import GausserError, Scene
 
 INSTALL_HINT = "pip install -e '.[msplat]' (Apple Silicon, macOS 14+)"
+BACKGROUND = [0.0, 0.0, 0.0]
+
+
+def _composite(image: Path, mask: Path, output: Path) -> None:
+    from PIL import Image
+
+    with Image.open(image) as source, Image.open(mask) as mask_file:
+        rgb = source.convert("RGB")
+        alpha = mask_file.convert("L")
+    if alpha.size != rgb.size:
+        alpha = alpha.resize(rgb.size)
+    Image.composite(rgb, Image.new("RGB", rgb.size), alpha).save(output, quality=95)
 
 
 def train(scene: Scene, *, iterations: int, downscale_factor: float, checkpoint_every: int, resume: str | None) -> Path:
@@ -35,18 +52,26 @@ def train(scene: Scene, *, iterations: int, downscale_factor: float, checkpoint_
         dataset.mkdir(parents=True)
         for name in ("cameras.bin", "images.bin", "points3D.bin"):
             shutil.copy2(model / name, dataset / name)
-        for image in images:
-            (dataset / image.name).symlink_to(image)
-        settings = {"iterations": iterations, "downscale_factor": downscale_factor}
+        masked = scene.masks_done(images)
+        for index, image in enumerate(images, start=1):
+            if masked:
+                _composite(image, scene.masks / f"{image.stem}.png", dataset / image.name)
+                print(f"\rMasking images for Msplat {index}/{len(images)}", end="", flush=True)
+            else:
+                (dataset / image.name).symlink_to(image)
+        if masked:
+            print()
+        settings = {"iterations": iterations, "downscale_factor": downscale_factor, "masked": masked}
         (run / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
 
-    if scene.masks.is_dir():
-        print("Note: Msplat does not use masks; training on whole images.")
     iterations = int(settings["iterations"])
+    config = msplat.TrainingConfig(iterations=iterations, num_downscales=0, downscale_factor=settings["downscale_factor"])
+    if settings.get("masked"):
+        config.bg_color = BACKGROUND
     dataset_path = str(run / "dataset")
     trainer = msplat.GaussianTrainer(
         msplat.load_dataset(dataset_path, downscale_factor=settings["downscale_factor"], eval_mode=False),
-        msplat.TrainingConfig(iterations=iterations, num_downscales=0, downscale_factor=settings["downscale_factor"]),
+        config,
     )
     checkpoint = run / "checkpoint.msplat"
     if checkpoint.exists():

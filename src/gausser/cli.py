@@ -28,8 +28,9 @@ def _add_mask_options(parser: argparse.ArgumentParser) -> None:
 def _add_solve_options(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("solve (COLMAP)")
     group.add_argument(
-        "--matcher", choices=("auto", "exhaustive", "sequential"), default="auto",
-        help="auto = exhaustive up to 200 images, else sequential (video frames)",
+        "--matcher", choices=("auto", "exhaustive", "sequential", "vocab_tree"), default="auto",
+        help="auto = exhaustive up to 200 images, else sequential with loop detection; "
+        "vocab_tree suits large unordered photo sets",
     )
 
 
@@ -40,6 +41,10 @@ def _add_train_options(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--export-every", type=int, default=5000, help="Brush: write a .ply every N steps")
     group.add_argument("--max-splats", type=int, default=1_500_000, help="Brush: splat ceiling (default 1.5M)")
     group.add_argument("--max-resolution", type=int, help="Brush: cap the longest image side")
+    group.add_argument(
+        "--eval-split", type=int, metavar="N",
+        help="Brush: hold out every Nth image and report PSNR/SSIM on it every 1000 steps",
+    )
     group.add_argument("--downscale", type=float, default=4.0, help="Msplat: load images at 1/N size (default 4)")
     group.add_argument("--checkpoint-every", type=int, default=1000, help="Msplat: checkpoint every N steps")
 
@@ -95,6 +100,9 @@ def build_parser() -> argparse.ArgumentParser:
     lod.add_argument("source", type=Path, nargs="?", help=".ply to convert (default: newest export)")
     _add_lod_options(lod)
 
+    view = commands.add_parser("view", parents=[common], help="open a splat in a local SuperSplat editor")
+    view.add_argument("source", type=Path, nargs="?", help=".ply to open (default: newest export)")
+
     commands.add_parser("status", parents=[common], help="show scene progress and installed tools")
     return parser
 
@@ -125,7 +133,7 @@ def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None) ->
     else:
         steps.train_brush(
             scene, iterations=args.iterations, export_every=args.export_every,
-            max_splats=args.max_splats, max_resolution=args.max_resolution,
+            max_splats=args.max_splats, max_resolution=args.max_resolution, eval_split=args.eval_split,
         )
 
 
@@ -206,9 +214,20 @@ def status(scene: Scene) -> None:
     for name, hint in tools.items():
         path = shutil.which(name)
         print(f"  {'✓' if path else '✗'} {name:16}{path or hint}")
-    for module, hint in (("sam3", "see README: SAM3"), ("msplat", "pip install -e '.[msplat]' (optional)")):
-        found = importlib.util.find_spec(module) is not None
-        print(f"  {'✓' if found else '✗'} {module:16}{'importable' if found else hint}")
+    sam3 = importlib.util.find_spec("sam3")
+    if sam3 is None or sam3.origin is None:
+        print(f"  ✗ {'sam3':16}optional; run scripts/install-macos.sh")
+    elif "_TRITON_AVAILABLE" not in (Path(sam3.origin).parent / "model" / "edt.py").read_text():
+        print(f"  ✗ {'sam3':16}installed but missing patches/sam3-macos.patch; rerun scripts/install-macos.sh")
+    else:
+        print(f"  ✓ {'sam3':16}patched for macOS")
+    found = importlib.util.find_spec("msplat") is not None
+    print(f"  {'✓' if found else '✗'} {'msplat':16}{'importable' if found else 'optional; pip install -e .[msplat]'}")
+    from .view import supersplat_dist
+
+    dist = supersplat_dist()
+    ok = (dist / "index.html").is_file()
+    print(f"  {'✓' if ok else '✗'} {'supersplat':16}{dist if ok else 'optional, for `gausser view`; run scripts/install-macos.sh'}")
 
 
 def guided() -> list[str]:
@@ -226,6 +245,7 @@ def guided() -> list[str]:
             questionary.Choice("Solve cameras (COLMAP)", "solve"),
             questionary.Choice("Train splats", "train"),
             questionary.Choice("Build a streamed LOD set", "lod"),
+            questionary.Choice("View the newest splat (SuperSplat)", "view"),
             questionary.Choice("Show status", "status"),
         ],
     ).unsafe_ask()
@@ -266,23 +286,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         scene = Scene(args.scene)
-        if args.command == "run":
-            run_pipeline(scene, args)
-        elif args.command == "frames":
-            extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
-            steps.frames(scene, args.source, extra)
-        elif args.command == "mask":
-            _mask(scene, args.prompt, args)
-        elif args.command == "solve":
-            steps.solve(scene, args.matcher)
-        elif args.command == "train":
-            if args.resume:
-                args.trainer = "msplat"  # only Msplat runs can be resumed
-            _train(scene, args, args.resume)
-        elif args.command == "lod":
-            _lod(scene, args.source, args)
-        else:
+        if args.command == "status":
             status(scene)
+            return 0
+        if args.command == "view":
+            from .view import view
+
+            view(scene, args.source)
+            return 0
+        with scene.lock():
+            dispatch(scene, args)
     except GausserError as exc:
         print(f"gausser: {exc}", file=sys.stderr)
         return 1
@@ -290,6 +303,24 @@ def main(argv: list[str] | None = None) -> int:
         print("\ngausser: interrupted", file=sys.stderr)
         return 130
     return 0
+
+
+def dispatch(scene: Scene, args: argparse.Namespace) -> None:
+    if args.command == "run":
+        run_pipeline(scene, args)
+    elif args.command == "frames":
+        extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
+        steps.frames(scene, args.source, extra)
+    elif args.command == "mask":
+        _mask(scene, args.prompt, args)
+    elif args.command == "solve":
+        steps.solve(scene, args.matcher)
+    elif args.command == "train":
+        if args.resume:
+            args.trainer = "msplat"  # only Msplat runs can be resumed
+        _train(scene, args, args.resume)
+    elif args.command == "lod":
+        _lod(scene, args.source, args)
 
 
 if __name__ == "__main__":

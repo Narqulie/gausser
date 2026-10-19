@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from gausser import cli, steps
+from gausser import cli, msplat, steps
 from gausser.scene import GausserError, Scene, registered_images
 
 
@@ -53,7 +53,7 @@ def tools(monkeypatch):
     monkeypatch.setattr(steps, "require_tool", lambda name, hint: name)
 
     def record(handler):
-        def run_tool(command, *, cwd):
+        def run_tool(command, *, cwd, env=None):
             commands.append(command)
             handler(command)
 
@@ -243,3 +243,46 @@ def test_status_runs_on_an_empty_folder(tmp_path, capsys):
 def test_missing_scene_is_a_clean_error(tmp_path, capsys):
     assert cli.main(["solve", "-s", str(tmp_path / "nope")]) == 1
     assert "does not exist" in capsys.readouterr().err
+
+
+def test_a_second_command_on_the_same_scene_fails_fast(tmp_path):
+    scene = Scene(tmp_path)
+    with scene.lock():
+        with pytest.raises(GausserError, match="already working"):
+            with Scene(tmp_path).lock():
+                pass
+    with scene.lock():  # released again
+        pass
+
+
+def test_large_image_sets_use_sequential_matching_with_loop_detection(tmp_path, tools):
+    scene = make_scene(tmp_path, images=201)
+
+    def fake_colmap(command):
+        if command[1] == "feature_extractor":
+            Path(command[command.index("--database_path") + 1]).write_bytes(b"db")
+        if command[1] == "mapper":
+            write_model(Path(command[command.index("--output_path") + 1]) / "0", 201)
+
+    tools.on_run(fake_colmap)
+    steps.solve(scene)
+
+    match = tools.commands[1]
+    assert match[1] == "sequential_matcher"
+    assert match[-2:] == ["--SequentialMatching.loop_detection", "1"]
+
+
+def test_msplat_composites_masked_out_pixels_to_black(tmp_path):
+    image_module = pytest.importorskip("PIL.Image")
+    image, mask, output = tmp_path / "a.jpg", tmp_path / "a.png", tmp_path / "out.png"
+    image_module.new("RGB", (2, 1), (200, 100, 50)).save(image, quality=100)
+    mask_image = image_module.new("L", (2, 1))
+    mask_image.putpixel((0, 0), 255)
+    mask_image.save(mask)
+
+    msplat._composite(image, mask, output)
+
+    with image_module.open(output) as result:
+        kept, removed = result.getpixel((0, 0)), result.getpixel((1, 0))
+    assert removed == (0, 0, 0)
+    assert all(abs(a - b) <= 3 for a, b in zip(kept, (200, 100, 50)))

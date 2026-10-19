@@ -25,7 +25,7 @@ sam = [
     "torch>=2.10,<2.11",
     "torchvision>=0.25,<0.26",
 ]
-msplat = ["msplat==1.1.4"]
+msplat = ["msplat==1.1.4", "Pillow>=12.3,<13"]
 dev = ["pytest>=8.0", "ruff>=0.15,<0.16", "mypy>=1.19,<2", "numpy>=1.26,<2", "Pillow>=12.3,<13"]
 
 [project.scripts]

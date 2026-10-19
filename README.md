@@ -13,6 +13,7 @@ frames → mask → solve → train → lod
 mkdir -p statue/images && cd statue
 cp ~/photos/statue/*.jpg images/        # or: gausser frames walkaround.mp4
 gausser run --prompt "statue"            # mask → solve → train
+gausser view                             # open the result in SuperSplat
 gausser                                  # or answer a few questions instead
 ```
 
@@ -33,9 +34,12 @@ LOD set.
 | `gausser solve` | COLMAP finds the camera poses | `database.db`, `sparse/0/` |
 | `gausser train` | Brush (default) or `--trainer msplat` trains splats | `runs/brush/<time>/exports/*.ply` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
+| `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser status` | Shows what the scene has and which tools are installed | — |
 
 Every command takes `-s/--scene DIR` (default: current folder) and `--help`.
+Only one command at a time can change a scene; a second one stops with an error
+instead of overwriting the first one's work. `status` and `view` always run.
 
 ## How state works
 
@@ -66,38 +70,45 @@ The files are the state. There is no database or manifest.
   gets a white mask, so it is kept whole and the run continues. Try
   `--threshold 0.3` if many images miss.
 - **Matching.** `--matcher auto` uses exhaustive matching up to 200 images and
-  sequential above that. Exhaustive matching on 500+ video frames runs for hours.
+  sequential matching with loop detection above that. Exhaustive matching on 500+
+  images runs for hours. Loop detection also matches distant images that look
+  alike, so a walk that ends where it started, or a set of unordered photos, still
+  connects. COLMAP downloads the vocabulary tree it needs once, into `~/.cache/colmap`.
+  For large unordered photo sets, `--matcher vocab_tree` is the dedicated option.
 - **COLMAP on macOS.** Homebrew COLMAP has no CUDA, so GPU is off on macOS. All
   images share one camera (`single_camera=1`). If COLMAP splits the scene, the
   largest model becomes `sparse/0`.
 - **Brush.** `--max-splats` defaults to 1.5M, because unbounded growth stalls
-  Metal on Apple Silicon. Brush 0.3.0 exports at the final step too: 5000
-  iterations with `--export-every 2500` writes `export_2500.ply` and `export_5000.ply`.
-- **Msplat** is experimental and ignores masks. Ctrl+C saves a checkpoint;
-  continue with `gausser train --resume <run>`.
+  Metal on Apple Silicon. Brush exports at the final step too: 5000 iterations with
+  `--export-every 2500` writes `export_2500.ply` and `export_5000.ply`.
+  Masks are confirmed in use: with all-black masks Brush stops adding splats and
+  their opacity falls to zero. Masked-out areas are ignored during training, not
+  made transparent.
+- **Quality.** `gausser train --eval-split 8` holds out every 8th image and
+  prints `Eval iter N: PSNR …, ssim …` every 1000 steps and at the end. Compare
+  runs with the same split.
+- **Msplat** is experimental. It has no mask input, so with masks gausser
+  composites each image onto black and trains against a black background. The
+  masked-out areas become empty space. Ctrl+C saves a checkpoint; continue with
+  `gausser train --resume <run>`.
 
 ## Install (macOS, Apple Silicon)
 
 ```bash
-brew install python@3.13                  # msplat wheels exist only for 3.12/3.13
-python3.13 -m venv .venv && source .venv/bin/activate
-pip install -e '.[dev]'                    # the CLI and tests
-
-brew install colmap ffmpeg
-pip install sharp-frames
-npm install -g @playcanvas/splat-transform
-# Brush: build github.com/ArthurBrussee/brush with `cargo build --release`, put `brush` on PATH
-
-# SAM3 masking (optional, a few GB):
-pip install -e '.[sam]'
-pip install git+https://github.com/facebookresearch/sam3.git@f6e51f59500a87c576c2df2323ce56b9fd7a12de
-patch -p1 -d "$(python -c 'import os, importlib.util as u; print(os.path.dirname(u.find_spec("sam3").origin))')" \
-  < patches/sam3-macos.patch               # upstream SAM3 is CUDA-only
-# then either put the checkpoint at ~/.cache/gausser/sam3.pt, or run `hf auth login`
-
-# Msplat (optional):
-pip install -e '.[msplat]'
+scripts/install-macos.sh
 ```
+
+The script is safe to rerun. It installs:
+
+- COLMAP, ffmpeg, Python 3.13, Node and Rust (Homebrew);
+- splat-transform (npm);
+- a `.venv` with gausser, Sharp Frames, SAM3 (patched) and Msplat;
+- Brush at a pinned commit (`cargo install`);
+- a SuperSplat build for `gausser view`;
+- `gausser` and `sharp-frames` in `~/.local/bin`.
+
+It ends with `gausser status`. After you reinstall SAM3 by hand, rerun the script:
+`status` reports an unpatched SAM3.
 
 SAM3 is pinned to commit `f6e51f5`; the older pin `d7a33bb` no longer exists
 upstream. Upstream SAM3 assumes CUDA: it imports `triton` and hardcodes
@@ -108,8 +119,6 @@ Gausser loads `~/.cache/gausser/sam3.pt` when it exists and no `--sam-checkpoint
 is given. Otherwise it downloads the gated model from Hugging Face. Gausser sets
 `PYTORCH_ENABLE_MPS_FALLBACK=1` itself; without it, SAM3 misses every image on
 Apple GPUs.
-
-Run `gausser status` to check what is installed.
 
 ## Development
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -99,7 +100,7 @@ def solve(scene: Scene, matcher: str = "auto") -> None:
     colmap = require_tool("colmap", COLMAP_HINT)
     images = scene.require_images()
     if matcher == "auto":
-        # Exhaustive matching is quadratic; it takes hours on hundreds of video frames.
+        # Exhaustive matching is quadratic; it takes hours on hundreds of images.
         matcher = "exhaustive" if len(images) <= 200 else "sequential"
     gpu = "0" if sys.platform == "darwin" else "1"  # Homebrew COLMAP on macOS has no CUDA.
 
@@ -115,10 +116,13 @@ def solve(scene: Scene, matcher: str = "auto") -> None:
     if scene.colmap_masks.is_dir():
         extract += ["--ImageReader.mask_path", str(scene.colmap_masks)]
     run_tool(extract, cwd=staged)
-    run_tool(
-        [colmap, f"{matcher}_matcher", "--database_path", str(database), "--FeatureMatching.use_gpu", gpu],
-        cwd=staged,
-    )
+    match = [colmap, f"{matcher}_matcher", "--database_path", str(database), "--FeatureMatching.use_gpu", gpu]
+    if matcher == "sequential":
+        # Loop detection adds vocabulary-tree matches between non-neighbours, so a walk that
+        # returns to its start, or unordered photos, still connect. COLMAP downloads the tree
+        # once into ~/.cache/colmap.
+        match += ["--SequentialMatching.loop_detection", "1"]
+    run_tool(match, cwd=staged)
     sparse.mkdir()
     run_tool(
         [colmap, "mapper", "--database_path", str(database), "--image_path", str(scene.images), "--output_path", str(sparse)],
@@ -146,6 +150,7 @@ def train_brush(
     export_every: int = 5000,
     max_splats: int = 1_500_000,
     max_resolution: int | None = None,
+    eval_split: int | None = None,
 ) -> Path:
     """Train with Brush into a new runs/brush/<time>/ folder."""
     brush = require_tool("brush", BRUSH_HINT)
@@ -171,7 +176,11 @@ def train_brush(
     ]
     if max_resolution:
         command += ["--max-resolution", str(max_resolution)]
-    run_tool(command, cwd=scene.root)
+    if eval_split:
+        command += ["--eval-split-every", str(eval_split)]
+    # Brush logs eval PSNR/SSIM, refine steps and timing only at info level; without a
+    # terminal (unattended runs) nothing else is printed.
+    run_tool(command, cwd=scene.root, env={"RUST_LOG": os.environ.get("RUST_LOG", "brush_cli=info")})
     if not list(staged.glob("exports/*.ply")):
         raise GausserError(f"Brush finished without a .ply export; output kept in {staged}")
     remove(dataset)
