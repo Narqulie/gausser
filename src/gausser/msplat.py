@@ -49,7 +49,7 @@ def train(scene: Scene, *, iterations: int, downscale_factor: float, checkpoint_
     checkpoint = run / "checkpoint.msplat"
     if checkpoint.exists():
         trainer.load_checkpoint(str(checkpoint))
-        print(f"Resuming {run.name} at iteration {int(trainer.iteration):,}")
+        print(f"Resuming {run.name} at iteration {int(trainer.iteration):,}", flush=True)
 
     def save_checkpoint() -> None:
         temporary = checkpoint.with_name("checkpoint.tmp")
@@ -64,19 +64,16 @@ def train(scene: Scene, *, iterations: int, downscale_factor: float, checkpoint_
         while iteration < iterations:
             stats = trainer.step()
             iteration = int(stats.iteration)
-            if iteration % 100 == 0 or iteration == iterations:
-                print(f"\r{iteration:,}/{iterations:,}  {stats.splat_count:,} splats", end="", flush=True)
-            if stop or iteration % checkpoint_every == 0:
+            if iteration % 500 == 0:
+                print(f"{iteration:,}/{iterations:,}  {stats.splat_count:,} splats", flush=True)
+            if stop or iteration % checkpoint_every == 0 or iteration == iterations:
                 save_checkpoint()
             if stop:
-                print()
                 raise GausserError(f"Interrupted; resume with: gausser train --trainer msplat --resume {run.name}")
-        print()
     finally:
         signal.signal(signal.SIGINT, previous)
 
     export = run / "exports" / "scene.ply"
     export.parent.mkdir(exist_ok=True)
     trainer.export_ply(str(export))
-    save_checkpoint()
     return export

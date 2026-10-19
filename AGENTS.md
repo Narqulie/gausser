@@ -35,6 +35,9 @@ src/gausser/
 
 ## Hard-won constraints
 
+- Verified end to end on 2026-10-19 with 158 fountain frames: SAM3 masked 157/158,
+  COLMAP 4.2.1 registered 157/158, Brush and Msplat trained, and Msplat Ctrl+C/--resume,
+  `frames` and `lod` all worked.
 - SAM3 is pinned to commit `f6e51f59500a87c576c2df2323ce56b9fd7a12de`. The old pin
   `d7a33bb` no longer exists upstream. Upstream is CUDA-only (it imports `triton` and
   uses `device="cuda"`), so after every SAM3 install apply `patches/sam3-macos.patch`
@@ -45,8 +48,9 @@ src/gausser/
   without it, SAM3 misses every image on MPS.
 - Mask naming: Brush `masks/<stem>.png`, COLMAP `colmap/masks/<name><ext>.png`.
   Image stems must be unique.
-- Brush `--export-every` must be < `--total-train-iters` (Brush steps 0..N-1).
-  Keep the `--max-splats` 1.5M default, because unbounded density stalls Metal.
+- Keep Brush's `--max-splats` 1.5M default, because unbounded density stalls Metal.
+  Brush 0.3.0 (~/Developer/brush @3b809857) does export at the final step; the
+  old "export-every < iterations" rule is obsolete.
 - COLMAP: `ImageReader.single_camera=1`, GPU off on macOS (Homebrew has no CUDA),
   largest sub-model chosen by the `images.bin` header becomes `sparse/0`.
   Exhaustive matching on >200 images takes hours, so `auto` switches to sequential.

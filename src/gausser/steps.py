@@ -143,9 +143,6 @@ def train_brush(
     """Train with Brush into a new runs/brush/<time>/ folder."""
     brush = require_tool("brush", BRUSH_HINT)
     scene.require_model()
-    if not 0 < export_every < iterations:
-        # Brush steps 0..N-1, so exporting at step N would never happen.
-        raise GausserError("--export-every must be positive and smaller than --iterations")
     staged = scene.staging("brush")
     command = [
         brush, str(scene.root),

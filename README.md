@@ -59,9 +59,9 @@ The files are the state. There is no database or manifest.
 - **COLMAP on macOS.** Homebrew COLMAP has no CUDA, so GPU is off on macOS. All
   images share one camera (`single_camera=1`). If COLMAP splits the scene, the
   largest model becomes `sparse/0`.
-- **Brush.** `--export-every` must be smaller than `--iterations`, because Brush
-  never reaches step N. `--max-splats` defaults to 1.5M, because unbounded growth
-  stalls Metal on Apple Silicon.
+- **Brush.** `--max-splats` defaults to 1.5M, because unbounded growth stalls
+  Metal on Apple Silicon. Brush 0.3.0 exports at the final step too: 5000
+  iterations with `--export-every 2500` writes `export_2500.ply` and `export_5000.ply`.
 - **Msplat** is experimental and ignores masks. Ctrl+C saves a checkpoint;
   continue with `gausser train --resume <run>`.
 
