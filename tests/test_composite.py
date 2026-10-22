@@ -85,6 +85,25 @@ def test_composite_command_passes_cells_slack_and_grow(tmp_path, monkeypatch):
     assert (seen["cells"], seen["slack"], seen["grow"]) == (512, 5, 3)
     assert cli.main(["composite", "-s", str(tmp_path)]) == 0
     assert (seen["cells"], seen["slack"], seen["grow"]) == (256, 2, 2)
+    assert (seen["column"], seen["floor"]) == (None, 0.3)
+    assert cli.main(["composite", "-s", str(tmp_path), "--column", "0.35", "--floor", "0.5"]) == 0
+    assert (seen["column"], seen["floor"]) == (0.35, 0.5)
+
+
+def test_column_keeps_the_statue_and_its_plinth_and_drops_far_and_below_floor_points(tmp_path):
+    splat(tmp_path / "s.ply", cube())  # 0.6 tall; "up" is -y, so its feet are at y=+0.3
+    _, statue = composite.read_ply(tmp_path / "s.ply")
+    points = np.array([
+        [0.0, 0, 0],  # inside the statue
+        [0.1, 0.4, 0],  # plinth just under the feet
+        [10.0, 0, 0],  # far away
+        [0.0, 1.0, 0],  # below the floor (0.3 heights under the feet)
+        [0.0, -2.0, 0],  # far above the top
+    ])
+    keep = composite.column_keep(HEADER, statue, points, 0.35, 0.3)
+    assert keep.tolist() == [True, True, False, False, False]
+    with pytest.raises(GausserError, match="Vertical axis"):
+        composite.column_keep(["ply"], statue, points, 0.35, 0.3)
 
 
 def test_newest_export_picks_runs_by_their_marker(tmp_path):

@@ -171,6 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
     composite.add_argument("--statue", type=Path, help=".ply of the masked run (default: newest masked run)")
     composite.add_argument("--context", type=Path, help=".ply of the --no-masks run (default: newest unmasked run)")
     composite.add_argument("--radius", type=float, help="also drop context farther than N statue heights from the statue")
+    composite.add_argument("--column", type=float, help="keep only a vertical column of radius N statue heights around the statue (e.g. 0.35 for statue + plinth)")
+    composite.add_argument("--floor", type=float, default=0.3, help="with --column: reach N statue heights below the statue's feet (default 0.3)")
     composite.add_argument("--slack", type=int, default=2, help="grow the masks by N px (at 1/4 size) when filtering the statue (default 2)")
     composite.add_argument("--grow", type=int, default=2, help="carve N voxels beyond the statue's hull (default 2)")
     composite.add_argument("--cells", type=int, default=256, help="carve voxels along the statue's longest side (default 256)")
@@ -380,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "composite":  # reads existing files and only adds a new output; needs no lock
             from .composite import composite
 
-            composite(scene, args.statue, args.context, radius=args.radius, out=args.output, cells=args.cells, slack=args.slack, grow=args.grow)
+            composite(scene, args.statue, args.context, radius=args.radius, out=args.output, cells=args.cells, slack=args.slack, grow=args.grow, column=args.column, floor=args.floor)
             return 0
         if args.command == "subset":  # only reads the source scene; the new one is built in place
             steps.subset(scene, args.patterns, args.output)

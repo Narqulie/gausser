@@ -55,7 +55,7 @@ LOD set.
 | `gausser train [--no-masks \| --exclude-masks] [-- args]` | Brush (default) or `--trainer msplat` trains splats; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
 | `gausser subset PATTERN… -o NEW_SCENE` | Copies the images (and masks) whose file names match the globs into a new scene, with the COLMAP model filtered to them | `NEW_SCENE/{images,masks,colmap/masks,sparse/0,database.db}` |
-| `gausser composite [--statue PLY] [--context PLY] [--radius N] [--cells N] [--slack N] [--grow N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` or `--exclude-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
+| `gausser composite [--statue PLY] [--context PLY] [--radius N] [--column R [--floor F]] [--cells N] [--slack N] [--grow N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` or `--exclude-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
 | `gausser align MOVING.ply --to REF… -o OUT.ply [--no-scale]` | Moves a re-trained splat into the coordinate frame of a published one (scale, rotation, translation fitted to the splat centres) | `OUT.ply` |
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
@@ -86,6 +86,7 @@ gausser mask person --exclude --dilation 8      # optional: people to leave out 
 gausser train --exclude-masks     # context splat without them (or `train --no-masks` to keep everything)
 gausser train                     # statue splat: masked
 gausser composite                 # statue into context, as one splat
+gausser composite --column 0.35   # statue + plinth only (cylinder of 0.35 statue heights, 0.3 below the feet)
 ```
 
 `mask --exclude` writes `masks-exclude/<stem>.png` (black = every instance of the prompt grown by

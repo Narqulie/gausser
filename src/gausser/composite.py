@@ -148,6 +148,31 @@ def carve(
     return keep
 
 
+def column_keep(header: list[str], statue: Any, points: Any, radius: float, floor: float) -> Any:
+    """Boolean mask over ``points``: inside a vertical cylinder of ``radius`` statue heights around the statue.
+
+    The axis is the PLY header's Brush "Vertical axis". The cylinder reaches ``floor`` heights below the
+    statue's feet and 0.1 heights above its top, so the plinth stays and the deck, sky and passers-by go.
+    """
+    import numpy as np
+
+    line = next((h for h in header if h.startswith("comment Vertical axis")), None)
+    if line is None:
+        raise GausserError("--column needs the context PLY's 'comment Vertical axis' header line (written by Brush)")
+    up = np.array([float(v) for v in line.split(":", 1)[1].split()])
+    up /= np.linalg.norm(up)
+    solid = xyz(statue)[1 / (1 + np.exp(-statue["opacity"])) > 0.5]
+    if not len(solid):
+        raise GausserError("The statue has no opaque splats to place the column on")
+    along = np.einsum("ij,j->i", solid, up)  # einsum: no spurious matmul warnings
+    feet, top = np.percentile(along, 0.5), np.percentile(along, 99.5)
+    height = top - feet
+    axis = np.median(solid - np.outer(along, up), axis=0)
+    height_of = np.einsum("ij,j->i", points, up)
+    horizontal = np.linalg.norm(points - np.outer(height_of, up) - axis, axis=1)
+    return (horizontal < radius * height) & (height_of > feet - floor * height) & (height_of < top + 0.1 * height)
+
+
 def newest_export(scene: Scene, *markers: str) -> Path:
     """Newest export of the newest Brush run that `gausser train` marked with any of ``markers``."""
     for run in sorted(scene.runs.glob("brush/*"), reverse=True):
@@ -166,7 +191,7 @@ def newest_export(scene: Scene, *markers: str) -> Path:
 
 def composite(
     scene: Scene, statue: Path | None, context: Path | None, *, radius: float | None, out: Path | None,
-    cells: int = 256, slack: int = 2, grow: int = 2,
+    cells: int = 256, slack: int = 2, grow: int = 2, column: float | None = None, floor: float = 0.3,
 ) -> Path:
     """Write runs/composite/<time>/composite.ply (or ``out``); read-only on the scene's other files."""
     import numpy as np
@@ -190,8 +215,14 @@ def composite(
     keep = carve(statue_data, context_data, cells=cells, grow=grow, radius=radius)
     print(f"context keeps {int(keep.sum()):,}/{len(keep):,} splats (carved {int((~keep).sum()):,})")
 
+    merged = np.concatenate([context_data[keep], statue_data])
+    if column:
+        inside = column_keep(header, statue_data, xyz(merged), column, floor)
+        print(f"column keeps {int(inside.sum()):,}/{len(inside):,} splats")
+        merged = merged[inside]
+
     staged = scene.staging("composite")
-    write_ply(staged / "composite.ply", header, np.concatenate([context_data[keep], statue_data]))
+    write_ply(staged / "composite.ply", header, merged)
     if out:
         out = out.expanduser().resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
