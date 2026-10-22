@@ -38,6 +38,9 @@ def frames(scene: Scene, source: Path, extra: list[str]) -> int:
     return count
 
 
+NO_MASKS = "no-masks"  # marker in sparse/: the model was solved without masks, so new masks keep it
+
+
 def mask(
     scene: Scene,
     prompt: str,
@@ -107,7 +110,8 @@ def mask(
         raise GausserError(f"SAM3 found no {prompt!r} in any image; try another prompt or a lower --threshold")
     replace(brush_dir, scene.masks)
     replace(colmap_dir, scene.colmap_masks)
-    remove(scene.database, scene.sparse)  # COLMAP features depend on the masks
+    if not (scene.sparse / NO_MASKS).is_file():  # a `solve --no-masks` model never read the masks
+        remove(scene.database, scene.sparse)  # COLMAP features depend on the masks
     shutil.rmtree(staged, ignore_errors=True)
     print(f"Masked {len(images) - len(misses)}/{len(images)} images")
     if misses:
@@ -200,6 +204,8 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     final = staged / "final"
     final.mkdir()
     best.rename(final / "0")
+    if no_masks:
+        (final / NO_MASKS).touch()
     replace(database, scene.database)
     replace(final, scene.sparse)
     shutil.rmtree(staged, ignore_errors=True)

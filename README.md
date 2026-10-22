@@ -168,7 +168,8 @@ The files are the state. There is no database or manifest.
 
   `gausser status` marks anything out of date.
 - New frames delete the masks and the COLMAP model, and new masks delete the
-  COLMAP model, because both were built from what changed. Training runs in
+  COLMAP model, because both were built from what changed. A `solve --no-masks`
+  model (marked `sparse/no-masks`) never read the masks, so new masks keep it. Training runs in
   `runs/` are never deleted.
 - `.gausser/tmp/` keeps failed attempts for inspection. `gausser status` shows their
   size; delete the folder whenever nothing is running.

@@ -35,7 +35,8 @@ src/gausser/
   export mtime). Once any step runs, every later step runs too. Don't use folder
   mtimes, because Finder's `.DS_Store` writes change them.
 - Changing an input deletes what was built from it. New frames delete the masks,
-  `database.db` and `sparse/`; new masks delete `database.db` and `sparse/`.
+  `database.db` and `sparse/`; new masks delete `database.db` and `sparse/`
+  unless `sparse/no-masks` marks a `solve --no-masks` model.
   Never delete `runs/`.
 - `--no-masks` (`run`, `solve`, `train`) ignores existing masks: no COLMAP `mask_path`, no `masks` link in
   Brush's staging folder, no Msplat compositing. `mask --miss drop` writes a black Brush mask and a white

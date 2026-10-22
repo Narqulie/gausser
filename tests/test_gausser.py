@@ -109,6 +109,7 @@ def test_solve_no_masks_ignores_existing_colmap_masks(tmp_path, tools):
     steps.solve(scene, no_masks=True)
 
     assert "--ImageReader.mask_path" not in tools.commands[0]
+    assert (scene.sparse / steps.NO_MASKS).is_file()  # later masks must not throw this model away
 
 
 def test_solve_gives_colmap_only_the_real_images_not_appledouble_sidecars(tmp_path, tools):
@@ -211,6 +212,12 @@ def test_mask_keeps_whole_image_on_a_miss_but_fails_when_nothing_matches(tmp_pat
     assert (scene.masks / "miss.png").read_bytes() == b"white"
     assert (scene.colmap_masks / "miss.png.png").exists()
     assert not scene.sparse.exists()  # COLMAP features depend on the masks
+
+    write_model(scene.sparse / "0", 2)
+    (scene.sparse / steps.NO_MASKS).touch()
+    scene.database.write_bytes(b"db")
+    steps.mask(scene, "statue")
+    assert scene.sparse.exists() and scene.database.exists()  # a --no-masks model never read the masks
 
     hits.clear()
     with pytest.raises(GausserError, match="no 'statue'"):
