@@ -15,7 +15,7 @@ from . import steps
 from .scene import GausserError, Scene, registered_images
 
 STEPS = ("frames", "mask", "solve", "train", "lod")
-COMMANDS = ("run", *STEPS, "composite", "view", "orbit", "status")
+COMMANDS = ("run", *STEPS, "subset", "composite", "view", "orbit", "status")
 QUICK_START = """\
 quick start:
   gausser clip.mp4              guided: makes clip/ next to the video and walks you through
@@ -164,6 +164,15 @@ def build_parser() -> argparse.ArgumentParser:
     composite.add_argument("--radius", type=float, help="also drop context farther than N statue heights from the statue")
     composite.add_argument("--cells", type=int, default=256, help="carve voxels along the statue's longest side (default 256)")
     composite.add_argument("-o", "--output", type=Path, help="write here instead of runs/composite/<time>/composite.ply")
+
+    subset = commands.add_parser(
+        "subset", parents=[common], help="make a new scene from the images of a solved scene that match name patterns",
+        description="Copy the images (and their masks) whose file names match PATTERN into a new scene, with the "
+        "COLMAP model filtered to them. Splats trained on different subsets share one coordinate frame, "
+        "so `gausser composite` can merge them.",
+    )
+    subset.add_argument("patterns", nargs="+", metavar="PATTERN", help="glob on image file names, e.g. 'frame_*'")
+    subset.add_argument("-o", "--output", type=Path, required=True, help="new scene folder (must not have images/)")
 
     commands.add_parser("status", parents=[common], help="show scene progress and installed tools")
     return parser
@@ -344,6 +353,9 @@ def main(argv: list[str] | None = None) -> int:
             from .composite import composite
 
             composite(scene, args.statue, args.context, radius=args.radius, out=args.output, cells=args.cells)
+            return 0
+        if args.command == "subset":  # only reads the source scene; the new one is built in place
+            steps.subset(scene, args.patterns, args.output)
             return 0
         with scene.lock():
             keep_awake()

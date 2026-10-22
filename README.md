@@ -53,6 +53,7 @@ LOD set.
 | `gausser solve [--no-masks]` | COLMAP finds the camera poses | `database.db`, `sparse/0/` |
 | `gausser train [--no-masks] [-- args]` | Brush (default) or `--trainer msplat` trains splats; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
+| `gausser subset PATTERN… -o NEW_SCENE` | Copies the images (and masks) whose file names match the globs into a new scene, with the COLMAP model filtered to them | `NEW_SCENE/{images,masks,colmap/masks,sparse/0,database.db}` |
 | `gausser composite [--statue PLY] [--context PLY] [--radius N] [--cells N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
@@ -60,8 +61,8 @@ LOD set.
 
 Every command takes `-s/--scene DIR` (default: current folder) and `--help`.
 Only one command at a time can change a scene; a second one stops with an error
-instead of overwriting the first one's work. `status`, `view`, `orbit` and `composite` always run
-(`orbit` and `composite` only add a new run folder).
+instead of overwriting the first one's work. `status`, `view`, `orbit`, `composite` and `subset` always run
+(`orbit` and `composite` only add a new run folder; `subset` only reads the source scene).
 
 `gausser orbit` needs `sparse/0` and a Brush export. The camera circles the point nearest all
 camera viewing axes, at the median camera distance times `--zoom` (1.3) and aimed `--drop` (0.35, splat
@@ -96,6 +97,25 @@ masks by 2 px, so edge pixels mixed with background are not trained (COLMAP mask
 
 `gausser run --prompt statue --no-masks` makes the masks and then solves and trains
 without them (the first two steps of the recipe, minus `--miss drop`).
+
+## Mixing captures
+
+Photos from several captures (say sunny drone frames `frame_*.jpg` and iPhone frames from another
+day, `iphone_*.jpg`) go into one `images/` and get one joint solve, so every camera shares one
+coordinate frame. Train each lighting on its own, then composite the splats:
+
+```bash
+gausser solve --no-masks
+gausser subset 'frame_*' -o ../sunny          # copies images and masks, filters sparse/0
+gausser subset 'iphone_*' -o ../overcast
+gausser train -s ../sunny --no-masks
+gausser train -s ../overcast
+gausser composite --statue ../overcast/runs/brush/<time>/exports/export_30000.ply \
+                  --context ../sunny/runs/brush/<time>/exports/export_30000.ply -s ../overcast
+```
+
+`subset` copies (no links: scenes often live on exFAT), keeps all cameras and 3D points, and
+leaves the source untouched. It refuses a new scene that already has `images/`.
 
 ## How state works
 

@@ -15,7 +15,7 @@ commands were removed on 2026-10-19 (branch `simplify`); git history has them.
 src/gausser/
 ├── cli.py     argparse subcommands, `run` pipeline, `status`, `gausser [PATH]` routing
 ├── guide.py   scene-aware guided menu: summary, recommended next step, minimal questions
-├── steps.py   frames (sharp-frames), mask, solve (COLMAP), train_brush, lod (splat-transform)
+├── steps.py   frames (sharp-frames), mask, solve (COLMAP), subset (colmap image_deleter + filtered database), train_brush, lod (splat-transform)
 ├── sam.py     SAM3 predictor + mask writers; imported only by `mask` (needs torch)
 ├── msplat.py  experimental Msplat trainer with checkpoint resume; masks via black compositing
 ├── composite.py `gausser composite`: visual-hull filter of the statue splat, voxel carve of the context, PLY merge

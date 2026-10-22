@@ -27,6 +27,15 @@ def write_model(model: Path, registered: int) -> None:
     (model / "points3D.bin").write_bytes(b"")
 
 
+def write_model_files(model: Path, registered: int) -> None:
+    """Fill an existing folder, as colmap image_deleter does (it needs the output folder to exist)."""
+    assert model.is_dir()
+    write_model(model / "tmp", registered)
+    for path in (model / "tmp").iterdir():
+        path.rename(model / path.name)
+    (model / "tmp").rmdir()
+
+
 def write_database(scene: Scene) -> None:
     with sqlite3.connect(scene.database) as database:
         database.execute("CREATE TABLE images (name TEXT)")
@@ -502,3 +511,95 @@ def test_unknown_words_still_get_the_command_list(capsys):
     with pytest.raises(SystemExit):
         cli.main(["stauts"])
     assert "invalid choice" in capsys.readouterr().err
+
+
+def make_subset_source(root: Path) -> Scene:
+    """A solved scene with drone and iphone images, masks for both, and a COLMAP database."""
+    scene = make_scene(root, images=0)
+    names = ["frame_1.jpg", "frame_2.jpg", "iphone_1.jpg"]
+    for name in names:
+        (scene.images / name).write_bytes(b"jpg")
+    (scene.images / "._frame_1.jpg").write_bytes(b"junk")
+    scene.masks.mkdir()
+    scene.colmap_masks.mkdir(parents=True)
+    for name in names:
+        (scene.masks / f"{Path(name).stem}.png").write_bytes(b"m")
+        (scene.colmap_masks / f"{name}.png").write_bytes(b"c")
+    write_model(scene.sparse / "0", 3)
+    with sqlite3.connect(scene.database) as database:
+        for statement in (
+            "CREATE TABLE images (image_id INTEGER PRIMARY KEY, name TEXT)",
+            "CREATE TABLE keypoints (image_id INTEGER)",
+            "CREATE TABLE descriptors (image_id INTEGER)",
+            "CREATE TABLE matches (pair_id INTEGER)",
+            "CREATE TABLE two_view_geometries (pair_id INTEGER)",
+            "CREATE TABLE pose_priors (corr_data_id INTEGER)",
+            "CREATE TABLE frames (frame_id INTEGER)",
+            "CREATE TABLE frame_data (frame_id INTEGER, data_id INTEGER)",
+        ):
+            database.execute(statement)
+        for image_id, name in enumerate(names, start=1):
+            database.execute("INSERT INTO images VALUES (?, ?)", (image_id, name))
+            database.execute("INSERT INTO keypoints VALUES (?)", (image_id,))
+            database.execute("INSERT INTO frames VALUES (?)", (image_id,))
+            database.execute("INSERT INTO frame_data VALUES (?, ?)", (image_id, image_id))
+        for pair in ((1, 2), (1, 3), (2, 3)):
+            database.execute("INSERT INTO matches VALUES (?)", (pair[0] * 2147483647 + pair[1],))
+    return scene
+
+
+def test_subset_copies_matching_images_and_masks_and_filters_the_model(tmp_path, tools):
+    source = make_subset_source(tmp_path / "source")
+
+    def fake_image_deleter(command):
+        write_model_files(Path(command[command.index("--output_path") + 1]), 2)
+
+    tools.on_run(fake_image_deleter)
+    result = steps.subset(source, ["frame_*"], tmp_path / "new")
+
+    assert [path.name for path in result.image_files()] == ["frame_1.jpg", "frame_2.jpg"]
+    assert not (result.images / "._frame_1.jpg").exists()
+    assert sorted(path.name for path in result.masks.iterdir()) == ["frame_1.png", "frame_2.png"]
+    assert sorted(path.name for path in result.colmap_masks.iterdir()) == ["frame_1.jpg.png", "frame_2.jpg.png"]
+    (command,) = tools.commands
+    assert command[1:5] == ["image_deleter", "--input_path", str(source.sparse / "0"), "--output_path"]
+    assert command[command.index("--image_names_path") + 1].endswith("delete.txt")
+    assert registered_images(result.sparse / "0") == 2
+    assert result.solve_done(result.image_files())
+    with sqlite3.connect(result.database) as database:
+        assert database.execute("SELECT count(*) FROM matches").fetchone() == (1,)  # only frame_1 ↔ frame_2
+        assert database.execute("SELECT count(*) FROM frame_data").fetchone() == (2,)
+    assert len(source.image_files()) == 3  # source untouched
+
+
+def test_subset_deletes_exactly_the_non_matching_images(tmp_path, tools):
+    source = make_subset_source(tmp_path / "source")
+    deleted: list[str] = []
+
+    def fake_image_deleter(command):
+        deleted.extend(Path(command[command.index("--image_names_path") + 1]).read_text().split())
+        write_model_files(Path(command[command.index("--output_path") + 1]), 1)
+
+    tools.on_run(fake_image_deleter)
+    steps.subset(source, ["iphone_*"], tmp_path / "new")
+
+    assert deleted == ["frame_1.jpg", "frame_2.jpg"]
+
+
+def test_subset_errors_when_nothing_matches(tmp_path, tools):
+    source = make_subset_source(tmp_path / "source")
+
+    with pytest.raises(GausserError, match="matches nope"):
+        steps.subset(source, ["nope"], tmp_path / "new")
+
+    assert not (tmp_path / "new").exists()
+
+
+def test_subset_refuses_a_scene_that_already_has_images(tmp_path, tools):
+    source = make_subset_source(tmp_path / "source")
+    existing = make_scene(tmp_path / "new")
+
+    with pytest.raises(GausserError, match="not overwriting"):
+        steps.subset(source, ["frame_*"], existing.root)
+
+    assert len(existing.image_files()) == 3
