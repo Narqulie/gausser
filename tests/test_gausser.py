@@ -603,3 +603,95 @@ def test_subset_refuses_a_scene_that_already_has_images(tmp_path, tools):
         steps.subset(source, ["frame_*"], existing.root)
 
     assert len(existing.image_files()) == 3
+
+
+def test_exclude_mask_is_the_inverse_of_the_grown_hit_with_the_subject_protected():
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("PIL")
+    hit = np.zeros((20, 20), dtype=bool)
+    hit[8:12, 8:12] = True
+    protect = np.zeros_like(hit)
+    protect[8:10, 8:10] = True
+
+    white = steps.exclude_mask(hit, protect, 0)
+    assert (~white).sum() == 12 and white[8:10, 8:10].all()  # the 4 px square minus the protected corner
+
+    grown = steps.exclude_mask(hit, np.zeros_like(hit), 2)
+    assert (~grown).sum() == 8 * 8  # 4 px square grown by 2 px on every side
+
+
+def test_mask_exclude_writes_only_masks_exclude_with_the_subject_protected(tmp_path, monkeypatch, capsys):
+    np = pytest.importorskip("numpy")
+    image_module = pytest.importorskip("PIL.Image")
+    scene = Scene(tmp_path)
+    scene.images.mkdir()
+    for name in ("people.png", "none.png"):
+        image_module.new("RGB", (4, 2)).save(scene.images / name)
+    scene.masks.mkdir()
+    subject = np.zeros((2, 4), dtype=np.uint8)
+    subject[:, 3] = 255  # the statue is the last column
+    image_module.fromarray(subject, mode="L").save(scene.masks / "people.png")
+    write_model(scene.sparse / "0", 2)
+    calls = []
+
+    class Predictor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def predict(self, image, prompt, threshold, all_instances):
+            calls.append(all_instances)
+            return (np.ones((2, 4), dtype=bool), 0.9) if Path(image.filename).name == "people.png" else None
+
+    fake_sam = types.SimpleNamespace(Predictor=Predictor)
+    monkeypatch.setitem(sys.modules, "gausser.sam", fake_sam)
+    monkeypatch.setattr("gausser.sam", fake_sam, raising=False)  # `from . import sam` prefers the package attribute
+
+    steps.mask(scene, "person", exclude=True)  # a scene where no image matches is fine too
+
+    with image_module.open(scene.masks_exclude / "people.png") as m:
+        assert (np.asarray(m) > 127).tolist() == [[False, False, False, True]] * 2
+    with image_module.open(scene.masks_exclude / "none.png") as m:
+        assert m.getextrema() == (255, 255)
+    assert calls == [True, True]  # always every instance
+    assert (scene.masks / "people.png").is_file() and not scene.colmap_masks.exists()
+    assert (scene.sparse / "0").is_dir()  # COLMAP inputs untouched
+    assert "Excluded 'person' in 1/2 images" in capsys.readouterr().out
+
+
+def test_brush_exclude_masks_stages_masks_exclude_and_marks_the_run(tmp_path, tools):
+    scene = make_scene(tmp_path)
+    write_model(scene.sparse / "0", 3)
+    scene.masks.mkdir()
+    with pytest.raises(GausserError, match="No masks-exclude/"):
+        steps.train_brush(scene, exclude_masks=True)
+    scene.masks_exclude.mkdir()
+    seen = []
+
+    def fake_brush(command):
+        masks = Path(command[1]) / "masks"
+        seen.append(masks.resolve())
+        export = Path(command[command.index("--export-path") + 1]) / "export_10.ply"
+        export.parent.mkdir(parents=True)
+        export.write_bytes(b"ply")
+
+    tools.on_run(fake_brush)
+    run = steps.train_brush(scene, iterations=10, export_every=5, exclude_masks=True)
+
+    assert seen == [scene.masks_exclude.resolve()]
+    assert (run / "excluded").is_file() and not (run / "masked").exists()
+
+
+def test_train_exclude_masks_conflicts_are_clean_errors(tmp_path, capsys):
+    make_scene(tmp_path)
+    assert cli.main(["train", "-s", str(tmp_path), "--exclude-masks", "--no-masks"]) == 1
+    assert cli.main(["train", "-s", str(tmp_path), "--exclude-masks", "--trainer", "msplat"]) == 1
+    assert capsys.readouterr().err.count("--exclude-masks is for Brush") == 2
+
+
+def test_mask_command_passes_exclude(tmp_path, monkeypatch):
+    make_scene(tmp_path)
+    seen = []
+    monkeypatch.setattr(steps, "mask", lambda scene, prompt, **kw: seen.append((prompt, kw["exclude"], kw["dilation"])))
+    assert cli.main(["mask", "person", "-s", str(tmp_path), "--exclude", "--dilation", "8"]) == 0
+    assert cli.main(["mask", "statue", "-s", str(tmp_path)]) == 0
+    assert seen == [("person", True, 8), ("statue", False, 0)]

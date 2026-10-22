@@ -9,6 +9,7 @@ import sqlite3
 import sys
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 from .scene import GausserError, Scene, is_image, registered_images, remove, replace, require_tool, run_tool
 
@@ -32,7 +33,7 @@ def frames(scene: Scene, source: Path, extra: list[str]) -> int:
         raise GausserError("Sharp Frames selected no images")
     replace(staged, scene.images)
     remove(staging)
-    remove(scene.masks, scene.colmap_masks, scene.database, scene.sparse)  # built from the old images
+    remove(scene.masks, scene.masks_exclude, scene.colmap_masks, scene.database, scene.sparse)  # built from the old images
     print(f"{count} frames in {scene.images}")
     return count
 
@@ -48,8 +49,12 @@ def mask(
     device: str = "auto",
     checkpoint: str | None = None,
     miss: str = "keep",
+    exclude: bool = False,
 ) -> None:
     """Mask the prompted subject with SAM3 into masks/ and colmap/masks/.
+
+    With `exclude`, write only masks-exclude/ instead (see `exclude_mask`); masks/, colmap/masks/
+    and the COLMAP model stay as they are, and `miss` and `feather` do not apply.
 
     An image without a hit gets an all-white mask (`miss="keep"`: train on the whole image) so
     one miss never throws away the rest of the run. With `miss="drop"` its Brush mask is
@@ -74,6 +79,11 @@ def mask(
     staged = scene.staging("mask")
     brush_dir, colmap_dir = staged / "masks", staged / "colmap-masks"
     brush_dir.mkdir()
+    if exclude:
+        _exclude(scene, images, predictor, prompt, threshold, dilation, brush_dir)
+        replace(brush_dir, scene.masks_exclude)
+        shutil.rmtree(staged, ignore_errors=True)
+        return
     colmap_dir.mkdir()
     misses: list[str] = []
     for index, path in enumerate(images, start=1):
@@ -103,6 +113,44 @@ def mask(
     if misses:
         outcome = "dropped from training, kept for COLMAP" if miss == "drop" else "unmasked"
         print(f"No hit ({outcome}): " + ", ".join(misses))
+
+
+def exclude_mask(hit: Any, protect: Any, dilation: int) -> Any:
+    """White (True) = train: everything except ``hit`` grown by ``dilation`` px, but never inside ``protect``."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    grown = Image.fromarray(hit.astype(np.uint8) * 255, mode="L")
+    if dilation > 0:
+        grown = grown.filter(ImageFilter.MaxFilter(dilation * 2 + 1))
+    return (np.asarray(grown) <= 127) | protect
+
+
+def _exclude(
+    scene: Scene, images: list[Path], predictor: Any, prompt: str, threshold: float, dilation: int, out: Path,
+) -> None:
+    """Write out/<stem>.png: black where every instance of ``prompt`` is, white elsewhere and inside masks/."""
+    import numpy as np
+    from PIL import Image
+
+    hits, share = 0, 0.0
+    for index, path in enumerate(images, start=1):
+        with Image.open(path) as image:
+            result = predictor.predict(image, prompt, threshold, True)
+            hit = np.zeros((image.height, image.width), dtype=bool) if result is None else result[0]
+            protect = np.zeros_like(hit)
+            subject = scene.masks / f"{path.stem}.png"
+            if subject.is_file():  # SAM3 may call a statue a person; the subject mask wins
+                with Image.open(subject) as m:
+                    protect = np.asarray(m.convert("L").resize(image.size)) > 127
+        white = exclude_mask(hit, protect, dilation)
+        Image.fromarray(white.astype(np.uint8) * 255, mode="L").save(out / f"{path.stem}.png")
+        excluded = 1 - white.mean()
+        hits += result is not None
+        share += excluded
+        note = "no hit" if result is None else f"{excluded:.1%} excluded"
+        print(f"[{index}/{len(images)}] {path.name}  {note}", flush=True)
+    print(f"Excluded {prompt!r} in {hits}/{len(images)} images, mean {share / len(images):.1%} of each image")
 
 
 def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
@@ -176,22 +224,29 @@ def train_brush(
     eval_split: int | None = None,
     extra: list[str] | None = None,
     no_masks: bool = False,
+    exclude_masks: bool = False,
 ) -> Path:
     """Train with Brush into a new runs/brush/<time>/ folder; `extra` goes to Brush last.
 
     `no_masks` leaves masks/ out of Brush's folder, so it trains on whole images.
+    `exclude_masks` gives Brush masks-exclude/ as its masks (a context run without transient objects).
     """
     brush = require_tool("brush", BRUSH_HINT)
     scene.require_model()
+    if exclude_masks and no_masks:
+        raise GausserError("--exclude-masks and --no-masks cannot be combined")
+    if exclude_masks and not scene.masks_exclude.is_dir():
+        raise GausserError("No masks-exclude/ folder; make it with `gausser mask PROMPT --exclude`")
     staged = scene.staging("brush")
     # Brush scans every file under the folder it is given and takes any cameras.bin,
     # image or "masks" folder it finds (Msplat datasets, failed attempts, colmap/masks).
     # Give it a folder that holds only the current inputs.
     dataset = staged / "dataset"
     dataset.mkdir()
-    for source in (scene.images, scene.sparse, *(() if no_masks else (scene.masks,))):
-        if source.is_dir():
-            (dataset / source.name).symlink_to(source)
+    brush_masks = None if no_masks else scene.masks_exclude if exclude_masks else scene.masks
+    for name, source in (("images", scene.images), ("sparse", scene.sparse), ("masks", brush_masks)):
+        if source and source.is_dir():
+            (dataset / name).symlink_to(source)
     command = [
         brush, str(dataset),
         "--total-train-iters", str(iterations),
@@ -213,8 +268,9 @@ def train_brush(
     if not list(staged.glob("exports/*.ply")):
         raise GausserError(f"Brush finished without a .ply export; output kept in {staged}")
     remove(dataset)
-    # `gausser composite` finds the statue and context runs by this marker.
-    (staged / ("unmasked" if no_masks or not scene.masks.is_dir() else "masked")).touch()
+    # `gausser composite` finds the statue (masked) and context (unmasked, excluded) runs by this marker.
+    marker = "excluded" if exclude_masks else "unmasked" if no_masks or not scene.masks.is_dir() else "masked"
+    (staged / marker).touch()
     run = scene.new_run("brush")
     replace(staged, run)
     print(f"Exports in {run / 'exports'}")

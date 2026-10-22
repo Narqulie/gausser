@@ -49,7 +49,7 @@ def read_colmap(model: Path) -> tuple[tuple[float, float, float, float], list[tu
 
 
 def hull_keep(
-    points: Any, scene: Scene, min_share: float = 0.8, min_views: int = 5, scale: int = 4, slack: int = 6,
+    points: Any, scene: Scene, min_share: float = 0.8, min_views: int = 5, scale: int = 4, slack: int = 2,
 ) -> Any:
     """True for points inside the (dilated) Brush mask in >= ``min_share`` of the views that see them.
 
@@ -118,7 +118,7 @@ def xyz(data: Any) -> Any:
 
 
 def carve(
-    statue: Any, context: Any, cells: int = 256, grow: int = 1, radius: float | None = None,
+    statue: Any, context: Any, cells: int = 256, grow: int = 2, radius: float | None = None,
 ) -> Any:
     """Boolean keep-mask over ``context``: False inside the statue's voxel hull (and beyond ``radius`` heights)."""
     import numpy as np
@@ -148,32 +148,31 @@ def carve(
     return keep
 
 
-def newest_export(scene: Scene, marker: str) -> Path:
-    """Newest export of the newest Brush run marked ``masked`` or ``unmasked`` by `gausser train`."""
+def newest_export(scene: Scene, *markers: str) -> Path:
+    """Newest export of the newest Brush run that `gausser train` marked with any of ``markers``."""
     for run in sorted(scene.runs.glob("brush/*"), reverse=True):
         exports = sorted(
             (p for p in run.glob("exports/*.ply") if not p.name.startswith("._")),  # exFAT AppleDouble sidecars
             key=lambda path: path.stat().st_mtime,
         )
-        if (run / marker).is_file() and exports:
+        if any((run / marker).is_file() for marker in markers) and exports:
             return exports[-1]
-    role = "statue" if marker == "masked" else "context"
-    flag = "" if marker == "masked" else " --no-masks"
+    role, train = ("statue", "gausser train") if markers == ("masked",) else ("context", "gausser train --no-masks or --exclude-masks")
     raise GausserError(
-        f"No {marker} Brush run with an export found (runs trained before this version have no marker). "
-        f"Train one with `gausser train{flag}` or pass --{role} PLY"
+        f"No {' or '.join(markers)} Brush run with an export found (runs trained before this version have no marker). "
+        f"Train one with `{train}` or pass --{role} PLY"
     )
 
 
 def composite(
     scene: Scene, statue: Path | None, context: Path | None, *, radius: float | None, out: Path | None,
-    cells: int = 256,
+    cells: int = 256, slack: int = 2, grow: int = 2,
 ) -> Path:
     """Write runs/composite/<time>/composite.ply (or ``out``); read-only on the scene's other files."""
     import numpy as np
 
     statue = (statue or newest_export(scene, "masked")).expanduser().resolve()
-    context = (context or newest_export(scene, "unmasked")).expanduser().resolve()
+    context = (context or newest_export(scene, "unmasked", "excluded")).expanduser().resolve()
     for ply in (statue, context):
         if not ply.is_file():
             raise GausserError(f"No such file: {ply}")
@@ -185,10 +184,10 @@ def composite(
     header, context_data = read_ply(context)
     if statue_data.dtype != context_data.dtype:
         raise GausserError("The statue and context splats have different PLY layouts")
-    hull = hull_keep(xyz(statue_data), scene)
+    hull = hull_keep(xyz(statue_data), scene, slack=slack)
     print(f"visual hull keeps {int(hull.sum()):,}/{len(hull):,} statue splats")
     statue_data = statue_data[hull]
-    keep = carve(statue_data, context_data, cells=cells, radius=radius)
+    keep = carve(statue_data, context_data, cells=cells, grow=grow, radius=radius)
     print(f"context keeps {int(keep.sum()):,}/{len(keep):,} splats (carved {int((~keep).sum()):,})")
 
     staged = scene.staging("composite")

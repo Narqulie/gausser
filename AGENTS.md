@@ -81,6 +81,7 @@ src/gausser/
   never removes, so `composite` must filter the statue by `hull_keep` (inside the dilated mask in ≥80% of
   ≥5 views, black masks skipped) before carving the context. `train_brush` writes an empty `masked` or
   `unmasked` file into each run for `composite`'s default selection. Negative `--dilation` erodes Brush masks only.
+- `mask P --exclude` writes only `masks-exclude/` (black = P grown by `--dilation`, white inside `masks/`); `train --exclude-masks` links it as Brush's `masks` and marks the run `excluded`, which `composite` accepts as a context run like `unmasked`. `composite` defaults: `--slack 2` (hull dilation, px at 1/4 size), `--grow 2` (carve voxels).
 - Mask naming: Brush `masks/<stem>.png`, COLMAP `colmap/masks/<name><ext>.png`.
   Image stems must be unique.
 - Brush is pinned in `scripts/install-macos.sh` (`BRUSH_REV`, currently 1.0.0 @1388f74c);

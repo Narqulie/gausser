@@ -120,6 +120,11 @@ def build_parser() -> argparse.ArgumentParser:
     mask = commands.add_parser("mask", parents=[common], help="mask the subject with SAM3")
     mask.add_argument("prompt", help='what to keep, e.g. "statue"')
     _add_mask_options(mask)
+    mask.add_argument(
+        "--exclude", action="store_true",
+        help="write masks-exclude/ instead: black = every instance of PROMPT grown by --dilation (try 8), white elsewhere "
+        "and inside masks/; for `train --exclude-masks`. Leaves masks/ and COLMAP alone; --miss and --feather do not apply",
+    )
 
     solve = commands.add_parser("solve", parents=[common], help="find camera poses with COLMAP")
     _add_solve_options(solve)
@@ -131,6 +136,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_train_options(train)
     _add_no_masks_option(train)
+    train.add_argument(
+        "--exclude-masks", action="store_true",
+        help="Brush: train with masks-exclude/ as the masks (a context run without people; see `mask --exclude`)",
+    )
     train.add_argument("--resume", metavar="RUN", help="Msplat: continue an interrupted run")
     train.add_argument("extra", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
 
@@ -162,6 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
     composite.add_argument("--statue", type=Path, help=".ply of the masked run (default: newest masked run)")
     composite.add_argument("--context", type=Path, help=".ply of the --no-masks run (default: newest unmasked run)")
     composite.add_argument("--radius", type=float, help="also drop context farther than N statue heights from the statue")
+    composite.add_argument("--slack", type=int, default=2, help="grow the masks by N px (at 1/4 size) when filtering the statue (default 2)")
+    composite.add_argument("--grow", type=int, default=2, help="carve N voxels beyond the statue's hull (default 2)")
     composite.add_argument("--cells", type=int, default=256, help="carve voxels along the statue's longest side (default 256)")
     composite.add_argument("-o", "--output", type=Path, help="write here instead of runs/composite/<time>/composite.ply")
 
@@ -185,10 +196,10 @@ def _levels(raw: str) -> tuple[int, ...]:
         raise GausserError(f"--levels must be comma-separated integers, got {raw!r}") from exc
 
 
-def _mask(scene: Scene, prompt: str, args: argparse.Namespace) -> None:
+def _mask(scene: Scene, prompt: str, args: argparse.Namespace, exclude: bool = False) -> None:
     steps.mask(
         scene, prompt, threshold=args.threshold, all_instances=args.all_instances, dilation=args.dilation,
-        feather=args.feather, device=args.device, checkpoint=args.sam_checkpoint, miss=args.miss,
+        feather=args.feather, device=args.device, checkpoint=args.sam_checkpoint, miss=args.miss, exclude=exclude,
     )
 
 
@@ -205,7 +216,7 @@ def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None, ex
         steps.train_brush(
             scene, iterations=args.iterations, export_every=args.export_every,
             max_splats=args.max_splats, max_resolution=args.max_resolution, eval_split=args.eval_split,
-            extra=extra or [], no_masks=args.no_masks,
+            extra=extra or [], no_masks=args.no_masks, exclude_masks=getattr(args, "exclude_masks", False),
         )
 
 
@@ -352,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "composite":  # reads existing files and only adds a new output; needs no lock
             from .composite import composite
 
-            composite(scene, args.statue, args.context, radius=args.radius, out=args.output, cells=args.cells)
+            composite(scene, args.statue, args.context, radius=args.radius, out=args.output, cells=args.cells, slack=args.slack, grow=args.grow)
             return 0
         if args.command == "subset":  # only reads the source scene; the new one is built in place
             steps.subset(scene, args.patterns, args.output)
@@ -415,7 +426,7 @@ def dispatch(scene: Scene, args: argparse.Namespace) -> None:
         extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
         steps.frames(scene, args.source, extra)
     elif args.command == "mask":
-        _mask(scene, args.prompt, args)
+        _mask(scene, args.prompt, args, args.exclude)
     elif args.command == "solve":
         steps.solve(scene, args.matcher, args.no_masks)
     elif args.command == "train":
@@ -424,6 +435,8 @@ def dispatch(scene: Scene, args: argparse.Namespace) -> None:
         extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
         if extra and args.trainer != "brush":
             raise GausserError("Arguments after -- go to Brush; Msplat takes none")
+        if args.exclude_masks and (args.trainer != "brush" or args.no_masks):
+            raise GausserError("--exclude-masks is for Brush and cannot be combined with --no-masks")
         _train(scene, args, args.resume, extra)
     elif args.command == "lod":
         _lod(scene, args.source, args)

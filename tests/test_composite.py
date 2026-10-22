@@ -78,13 +78,13 @@ def test_carve_with_many_cells_carves_only_near_each_of_two_distant_clusters(tmp
     assert composite.carve(statue, context, cells=2000).tolist() == [False, False, True, True]
 
 
-def test_composite_command_passes_cells_to_carve(tmp_path, monkeypatch):
+def test_composite_command_passes_cells_slack_and_grow(tmp_path, monkeypatch):
     seen = {}
     monkeypatch.setattr(composite, "composite", lambda scene, statue, context, **kw: seen.update(kw))
-    assert cli.main(["composite", "-s", str(tmp_path), "--cells", "512"]) == 0
-    assert seen["cells"] == 512
+    assert cli.main(["composite", "-s", str(tmp_path), "--cells", "512", "--slack", "5", "--grow", "3"]) == 0
+    assert (seen["cells"], seen["slack"], seen["grow"]) == (512, 5, 3)
     assert cli.main(["composite", "-s", str(tmp_path)]) == 0
-    assert seen["cells"] == 256
+    assert (seen["cells"], seen["slack"], seen["grow"]) == (256, 2, 2)
 
 
 def test_newest_export_picks_runs_by_their_marker(tmp_path):
@@ -114,9 +114,21 @@ def test_composite_selects_runs_filters_the_statue_and_keeps_the_context_header(
         splat(run / "exports" / "export_1.ply", points)
         (run / marker).touch()
 
-    out = composite.composite(scene, None, None, radius=None, out=tmp_path / "out" / "o.ply")
+    out = composite.composite(scene, None, None, radius=None, out=tmp_path / "out" / "o.ply", slack=6)
 
     header, data = composite.read_ply(out)
     assert header[2] == "comment Vertical axis: 0 -1 0"
     assert len(data) == 1 + 343  # the context splat outside the statue, plus the statue without its garbage splat
     assert not list(scene.runs.glob("composite/*"))  # -o writes only there
+
+
+def test_composite_takes_an_excluded_run_as_the_newest_context(tmp_path):
+    scene = ring_scene(tmp_path / "scene")
+    for name, marker in (("1", "unmasked"), ("2", "excluded"), ("3", "masked")):
+        run = scene.runs / "brush" / name
+        (run / "exports").mkdir(parents=True)
+        (run / "exports" / "export_1.ply").write_bytes(b"ply")
+        (run / marker).touch()
+    expected = scene.runs / "brush" / "2" / "exports" / "export_1.ply"
+    assert composite.newest_export(scene, "unmasked", "excluded") == expected
+    assert composite.newest_export(scene, "masked") == scene.runs / "brush" / "3" / "exports" / "export_1.ply"

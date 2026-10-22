@@ -57,6 +57,7 @@ class Scene:
             raise GausserError(f"Scene folder does not exist: {self.root}")
         self.images = self.root / "images"
         self.masks = self.root / "masks"  # Brush: <stem>.png
+        self.masks_exclude = self.root / "masks-exclude"  # Brush: <stem>.png, black = transient objects
         self.colmap_masks = self.root / "colmap" / "masks"  # COLMAP: <name><ext>.png
         self.database = self.root / "database.db"
         self.sparse = self.root / "sparse"

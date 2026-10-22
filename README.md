@@ -50,11 +50,12 @@ LOD set.
 |---|---|---|
 | `gausser frames SOURCE [-- args]` | Sharp Frames picks sharp frames from a video | `images/` |
 | `gausser mask PROMPT [--miss drop]` | SAM3 masks the subject | `masks/`, `colmap/masks/` |
+| `gausser mask PROMPT --exclude [--dilation N]` | SAM3 blacks out every instance of PROMPT (e.g. people), except inside `masks/` | `masks-exclude/` |
 | `gausser solve [--no-masks]` | COLMAP finds the camera poses | `database.db`, `sparse/0/` |
-| `gausser train [--no-masks] [-- args]` | Brush (default) or `--trainer msplat` trains splats; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
+| `gausser train [--no-masks \| --exclude-masks] [-- args]` | Brush (default) or `--trainer msplat` trains splats; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
 | `gausser subset PATTERN… -o NEW_SCENE` | Copies the images (and masks) whose file names match the globs into a new scene, with the COLMAP model filtered to them | `NEW_SCENE/{images,masks,colmap/masks,sparse/0,database.db}` |
-| `gausser composite [--statue PLY] [--context PLY] [--radius N] [--cells N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
+| `gausser composite [--statue PLY] [--context PLY] [--radius N] [--cells N] [--slack N] [--grow N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` or `--exclude-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
 | `gausser status` | Shows what the scene has and which tools are installed | — |
@@ -80,10 +81,17 @@ that one model, so the two splats share coordinates and can be merged later:
 ```bash
 gausser mask statue --miss drop --dilation -2   # frames SAM3 misses are ignored by Brush, not trained whole
 gausser solve --no-masks          # COLMAP sees the whole image
-gausser train --no-masks          # context splat: unmasked
+gausser mask person --exclude --dilation 8      # optional: people to leave out of the context (needs masks/)
+gausser train --exclude-masks     # context splat without them (or `train --no-masks` to keep everything)
 gausser train                     # statue splat: masked
 gausser composite                 # statue into context, as one splat
 ```
+
+`mask --exclude` writes `masks-exclude/<stem>.png` (black = every instance of the prompt grown by
+`--dilation` px, white elsewhere and wherever the subject mask in `masks/` is white, since SAM3 may call a
+bronze statue a "person"). Use 8 px: people's edges and shadows smear. It leaves `masks/` and COLMAP alone.
+`train --exclude-masks` gives Brush those masks, and leaves an `excluded` marker that `composite` also accepts
+for the context run (newest `unmasked` or `excluded` run).
 
 `gausser composite` finds the two runs itself: `train` leaves an empty `masked` or `unmasked`
 file in each Brush run folder (older runs have none; pass `--statue` and `--context`). The
@@ -91,7 +99,9 @@ masked run starts from the whole scene's COLMAP points, so it also keeps opaque 
 Composite first keeps only statue splats that fall inside the masks in at least 80% of the views
 that see them (a visual hull; frames dropped with `--miss drop` don't vote), then removes the context
 splats inside the statue's volume and appends the statue. `--cells N` (default 256) sets the carve voxels along the statue's longest side; raise it for
-spread-out statues on a big scene. The output keeps the context's PLY header,
+spread-out statues on a big scene. `--slack N` (default 2) grows the masks by N px at 1/4 size before the hull
+filter, and `--grow N` (default 2) carves N voxels beyond the statue's hull; lower them if the statue loses
+edges, raise them if a soft shell of the statue remains in the context. The output keeps the context's PLY header,
 so `gausser orbit` still works. For cleaner edges, mask with `--dilation -2`: it shrinks the Brush
 masks by 2 px, so edge pixels mixed with background are not trained (COLMAP masks are unchanged).
 
