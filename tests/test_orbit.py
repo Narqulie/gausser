@@ -156,3 +156,76 @@ def test_orbit_without_a_model_or_playwright_fails_clearly(orbit_scene, monkeypa
     (scene.sparse / "0" / "images.bin").unlink()
     assert cli.main(["orbit", "-s", str(scene.root)]) == 1
     assert "gausser solve" in capsys.readouterr().err
+
+
+def test_parse_background_accepts_hex_jutaka_and_gradient_strings():
+    assert orbit.parse_background("#0a10FF") == (10, 16, 255)
+    stops = orbit.parse_background("jutaka")
+    assert stops == [(0, (38, 102, 204)), (45, (173, 217, 255)), (55, (102, 140, 191)), (100, (5, 8, 20))]
+    assert orbit.parse_background("linear-gradient(to bottom, rgb(1, 2, 3) 0%, rgb(4,5,6) 50.5%)") == [(0, (1, 2, 3)), (50.5, (4, 5, 6))]
+
+
+@pytest.mark.parametrize("bad", [
+    "red", "#fff", "#gggggg", "linear-gradient(to right, rgb(1,2,3) 0%, rgb(4,5,6) 100%)",
+    "linear-gradient(to bottom, rgb(1,2,3) 0%)", "linear-gradient(to bottom, rgb(1,2,300) 0%, rgb(4,5,6) 100%)",
+    "linear-gradient(to bottom, rgb(1,2,3) 60%, rgb(4,5,6) 40%)", "linear-gradient(to bottom, #fff 0%, #000 100%)",
+    "linear-gradient(to bottom, rgb(1,2,3) 0%, rgb(4,5,6) 100%) x",
+])
+def test_parse_background_rejects_everything_else(bad):
+    with pytest.raises(GausserError, match="--background"):
+        orbit.parse_background(bad)
+
+
+def test_write_gradient_interpolates_rows_and_clamps_outside_the_stops(tmp_path):
+    orbit.write_gradient(tmp_path / "g.ppm", [(25, (0, 0, 0)), (75, (200, 100, 0))], 3, 4)
+
+    header, body = (tmp_path / "g.ppm").read_bytes().split(b"255\n", 1)
+    rows = np.frombuffer(body, np.uint8).reshape(4, 3, 3)
+    assert header == b"P6\n3 4\n"
+    assert (rows[:, 0] == rows[:, 2]).all()
+    assert rows[:, 0, 0].tolist() == [0, 50, 150, 200]  # rows centred at 12.5, 37.5, 62.5, 87.5 %
+
+
+def test_orbit_solid_background_is_one_render_without_ffmpeg(orbit_scene, monkeypatch, tmp_path):
+    scene, _ = orbit_scene
+    commands = []
+    monkeypatch.setattr(orbit, "require_tool", lambda name, hint: pytest.fail("no ffmpeg needed") if name == "ffmpeg" else name)
+    monkeypatch.setattr(orbit, "run_tool", lambda command, *, cwd, env=None: (commands.append(command), Path(command[4]).write_bytes(b"mp4")))
+
+    assert cli.main(["orbit", "-s", str(scene.root), "--background", "#102030", "-o", str(tmp_path / "x.mp4")]) == 0
+
+    (command,) = commands
+    assert command[8:] == [f"#102030={command[4]}"]
+
+
+def test_orbit_gradient_background_renders_over_black_and_white_then_composites_once(orbit_scene, monkeypatch, tmp_path):
+    scene, _ = orbit_scene
+    commands = []
+
+    def run_tool(command, *, cwd, env=None):
+        commands.append(command)
+        if command[0] == "node":
+            for pass_ in command[8:]:
+                Path(pass_.split("=")[1]).write_bytes(b"mp4")
+        else:
+            assert Path(command[command.index("-i", 5) + 1]).is_file()  # the gradient image
+            Path(command[-1]).write_bytes(b"final")
+
+    monkeypatch.setattr(orbit, "run_tool", run_tool)
+
+    out = tmp_path / "x.mp4"
+    assert cli.main(["orbit", "-s", str(scene.root), "--size", "64x32", "--background", "jutaka", "-o", str(out)]) == 0
+
+    node, ffmpeg = commands
+    assert [p.split("=")[0] for p in node[8:]] == ["#000000", "#ffffff"]
+    assert ffmpeg[0] == "ffmpeg" and "libx264" in ffmpeg and "yuv420p" in ffmpeg[ffmpeg.index("-filter_complex") + 1]
+    assert out.read_bytes() == b"final"
+    assert not list(scene.tmp.glob("orbit-*"))
+
+
+def test_orbit_bad_background_fails_before_rendering(orbit_scene, monkeypatch, capsys):
+    scene, _ = orbit_scene
+    monkeypatch.setattr(orbit, "run_tool", lambda *args, **kwargs: pytest.fail("must not run"))
+
+    assert cli.main(["orbit", "-s", str(scene.root), "--background", "blue"]) == 1
+    assert "--background" in capsys.readouterr().err

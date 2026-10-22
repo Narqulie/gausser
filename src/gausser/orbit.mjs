@@ -1,5 +1,6 @@
 // Render a 360° orbit video of a splat with SuperSplat's own video renderer (run by `gausser orbit`).
-//   node orbit.mjs URL ORBIT.json OUT.mp4 SECONDS WIDTH HEIGHT
+//   node orbit.mjs URL ORBIT.json OUT.mp4 SECONDS WIDTH HEIGHT [#rrggbb=FILE.mp4 ...]
+// Each trailing #rrggbb=FILE renders the orbit once more over that background colour (default: one render to OUT.mp4).
 // URL is a `gausser view` address; ORBIT.json holds target/up/radius/height in PLY coordinates.
 // Env: GAUSSER_NODE_DIR (where playwright-core is installed), GAUSSER_CHROME (browser executable override).
 import { readFileSync } from 'node:fs';
@@ -7,7 +8,7 @@ import { createRequire } from 'node:module';
 
 const { chromium } = createRequire(`${process.env.GAUSSER_NODE_DIR}/`)('playwright-core');
 
-const [url, orbitPath, out, seconds, width, height] = process.argv.slice(2);
+const [url, orbitPath, out, seconds, width, height, ...passes] = process.argv.slice(2);
 const orbit = JSON.parse(readFileSync(orbitPath, 'utf8'));
 const browser = await chromium.launch({
     headless: false, // watch it work; the video renderer needs a real GPU context anyway
@@ -60,13 +61,23 @@ await page.evaluate(async ({ orbit, frames, keys, fps }) => {
 }, { orbit, frames, keys, fps });
 console.log(`${keys} keys over ${frames} frames`);
 
-const download = page.waitForEvent('download', { timeout: 0 });
-await page.evaluate(({ frames, fps, width, height }) => window.scene.events.invoke('render.video', {
-    startFrame: 0, endFrame: frames - 1, frameRate: fps,
-    width, height, bitrate: 40_000_000,
-    transparentBg: false, showDebug: false,
-    format: 'mp4', codec: 'h264', projection: 'standard', levelHorizon: false
-}, null), { frames, fps, width: Number(width), height: Number(height) });
-await (await download).saveAs(out);
-console.log('saved', out);
+for (const pass of passes.length ? passes : [`=${out}`]) {
+    const [colour, file] = pass.split('=');
+    await page.evaluate(colour => {
+        if (!colour) return;
+        const events = window.scene.events;
+        const Color = events.invoke('bgClr').constructor;
+        const n = i => parseInt(colour.slice(1 + 2 * i, 3 + 2 * i), 16) / 255;
+        events.fire('setBgClr', new Color(n(0), n(1), n(2), 1));
+    }, colour);
+    const download = page.waitForEvent('download', { timeout: 0 });
+    await page.evaluate(({ frames, fps, width, height }) => window.scene.events.invoke('render.video', {
+        startFrame: 0, endFrame: frames - 1, frameRate: fps,
+        width, height, bitrate: 40_000_000,
+        transparentBg: false, showDebug: false,
+        format: 'mp4', codec: 'h264', projection: 'standard', levelHorizon: false
+    }, null), { frames, fps, width: Number(width), height: Number(height) });
+    await (await download).saveAs(file);
+    console.log('saved', file);
+}
 await browser.close();

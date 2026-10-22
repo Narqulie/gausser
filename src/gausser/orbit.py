@@ -18,6 +18,12 @@ from .scene import GausserError, Scene, replace, require_tool, run_tool
 from .view import resolve_splat, serve
 
 NODE_HINT = "brew install node"
+FFMPEG_HINT = "brew install ffmpeg"
+# The JUTAKA public-art viewer's default sky (PlayCanvasSplatCanvas.tsx SKY_GRADIENT).
+JUTAKA_GRADIENT = "linear-gradient(to bottom, rgb(38,102,204) 0%, rgb(173,217,255) 45%, rgb(102,140,191) 55%, rgb(5,8,20) 100%)"
+Rgb = tuple[int, int, int]
+Stops = list[tuple[float, Rgb]]
+_RGB_STOP = r"rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s+(\d+(?:\.\d+)?)%"
 DRIVER = Path(__file__).with_name("orbit.mjs")
 
 
@@ -95,14 +101,65 @@ def orbit_params(images_bin: Path, up: Any, zoom: float = 1.3, drop: float = 0.3
     }
 
 
+def parse_background(text: str) -> Rgb | Stops:
+    """`#rrggbb` → (r, g, b); `jutaka` or `linear-gradient(to bottom, rgb(r,g,b) P%, ...)` → [(P, (r, g, b)), ...]."""
+    text = text.strip()
+    if text.lower() == "jutaka":
+        text = JUTAKA_GRADIENT
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", text):
+        return int(text[1:3], 16), int(text[3:5], 16), int(text[5:7], 16)
+    match = re.fullmatch(rf"linear-gradient\(\s*to bottom\s*,((?:\s*{_RGB_STOP}\s*,?)+)\)", text)
+    if match:
+        stops = [(float(p), (int(r), int(g), int(b))) for r, g, b, p in re.findall(_RGB_STOP, match[1])]
+        if len(stops) >= 2 and all(max(c) <= 255 for _, c in stops) and all(a[0] <= b[0] <= 100 for a, b in zip(stops, stops[1:])):
+            return stops
+    raise GausserError(
+        f"--background {text!r}: use #rrggbb, jutaka, or linear-gradient(to bottom, rgb(r,g,b) P%, ...) "
+        "with at least two rgb() stops in rising order, P from 0 to 100"
+    )
+
+
+def write_gradient(path: Path, stops: Stops, width: int, height: int) -> None:
+    """A vertical CSS-style gradient (stops interpolated in sRGB, clamped outside the end stops) as a binary PPM."""
+    import numpy as np
+
+    where = (np.arange(height) + 0.5) / height * 100
+    column = np.stack([np.interp(where, [p for p, _ in stops], [c[i] for _, c in stops]) for i in range(3)], axis=1)
+    rows = np.rint(column).astype(np.uint8)
+    path.write_bytes(f"P6\n{width} {height}\n255\n".encode() + np.repeat(rows[:, None, :], width, axis=1).tobytes())
+
+
+def composite_gradient(ffmpeg: str, black: Path, white: Path, gradient: Path, out: Path, cwd: Path) -> None:
+    """Alpha-blend the splat over ``gradient`` as a browser would, from its renders over black and over white.
+
+    Over black the frame is B = premultiplied colour, over white W = B + (1 - alpha) * 255, so
+    out = B + (1 - alpha) * G = B + (W - B) * G / 255.
+    """
+    graph = (
+        "[0:v]format=gbrp,split[b][b2];[1:v]format=gbrp[w];[2:v]format=gbrp[g];"  # split: a reused label corrupts the sum
+        "[w][b]blend=all_mode=subtract:shortest=1[d];"
+        "[d][g]blend=all_mode=multiply:shortest=1[dg];"
+        "[b2][dg]blend=all_mode=addition:shortest=1,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"
+    )
+    run_tool(
+        [ffmpeg, "-y", "-loglevel", "error", "-i", str(black), "-i", str(white), "-loop", "1", "-i", str(gradient),
+         "-filter_complex", graph, "-c:v", "libx264", "-crf", "16", "-preset", "slow",
+         "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", str(out)],
+        cwd=cwd,
+    )
+
+
 def orbit(
     scene: Scene, source: Path | None, *, seconds: float, size: str, zoom: float, drop: float, out: Path | None,
+    background: str | None = None,
 ) -> Path:
     """Render runs/orbit/<time>/orbit.mp4 (or ``out``); needs sparse/0 and a Brush export."""
     match = re.fullmatch(r"(\d+)x(\d+)", size)
     if not match or seconds <= 0 or zoom <= 0:
         raise GausserError("--size must look like 1920x1080; --seconds and --zoom must be positive")
+    backdrop = parse_background(background) if background else None
     node = require_tool("node", NODE_HINT)
+    ffmpeg = require_tool("ffmpeg", FFMPEG_HINT) if isinstance(backdrop, list) else ""
     if not has_playwright():
         raise GausserError(f"playwright-core not found in {node_dir()}; run scripts/install-macos.sh")
     model = scene.require_model()
@@ -112,11 +169,24 @@ def orbit(
     staged = scene.staging("orbit")
     (staged / "orbit.json").write_text(json.dumps(params))
     video = staged / "orbit.mp4"
+    black, white = staged / "over-black.mp4", staged / "over-white.mp4"
+    if isinstance(backdrop, tuple):
+        backgrounds = [f"#{backdrop[0]:02x}{backdrop[1]:02x}{backdrop[2]:02x}={video}"]
+    elif isinstance(backdrop, list):  # a gradient needs the splat's alpha: render over black and over white, then blend
+        backgrounds = [f"#000000={black}", f"#ffffff={white}"]
+    else:
+        backgrounds = []
     with serve(splat) as url:
         run_tool(
-            [node, str(DRIVER), url, str(staged / "orbit.json"), str(video), str(seconds), *match.groups()],
+            [node, str(DRIVER), url, str(staged / "orbit.json"), str(video), str(seconds), *match.groups(), *backgrounds],
             cwd=scene.root, env={"GAUSSER_NODE_DIR": str(node_dir())},
         )
+    if isinstance(backdrop, list):
+        gradient = staged / "gradient.ppm"
+        write_gradient(gradient, backdrop, *(int(n) for n in match.groups()))
+        composite_gradient(ffmpeg, black, white, gradient, video, scene.root)
+        for name in (black, white, gradient):
+            name.unlink()
     if not video.is_file():
         raise GausserError("The browser did not save a video")
     if out:
