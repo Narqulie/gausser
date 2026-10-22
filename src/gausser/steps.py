@@ -159,8 +159,9 @@ def train_brush(
     max_splats: int = 1_500_000,
     max_resolution: int | None = None,
     eval_split: int | None = None,
+    extra: list[str] | None = None,
 ) -> Path:
-    """Train with Brush into a new runs/brush/<time>/ folder."""
+    """Train with Brush into a new runs/brush/<time>/ folder; `extra` goes to Brush last."""
     brush = require_tool("brush", BRUSH_HINT)
     scene.require_model()
     staged = scene.staging("brush")
@@ -186,6 +187,7 @@ def train_brush(
         command += ["--max-resolution", str(max_resolution)]
     if eval_split:
         command += ["--eval-split-every", str(eval_split)]
+    command += extra or []
     # Brush logs eval PSNR/SSIM, refine steps and timing only at info level; without a
     # terminal (unattended runs) nothing else is printed.
     run_tool(command, cwd=scene.root, env={"RUST_LOG": os.environ.get("RUST_LOG", "brush_cli=info")})

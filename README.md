@@ -51,7 +51,7 @@ LOD set.
 | `gausser frames SOURCE [-- args]` | Sharp Frames picks sharp frames from a video | `images/` |
 | `gausser mask PROMPT` | SAM3 masks the subject | `masks/`, `colmap/masks/` |
 | `gausser solve` | COLMAP finds the camera poses | `database.db`, `sparse/0/` |
-| `gausser train` | Brush (default) or `--trainer msplat` trains splats | `runs/brush/<time>/exports/*.ply` |
+| `gausser train [-- args]` | Brush (default) or `--trainer msplat` trains splats; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser status` | Shows what the scene has and which tools are installed | — |

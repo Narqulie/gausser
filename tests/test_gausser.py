@@ -249,9 +249,10 @@ def test_brush_only_sees_current_inputs(tmp_path, tools):
         export.write_bytes(b"ply")
 
     tools.on_run(fake_brush)
-    run = steps.train_brush(scene, iterations=10, export_every=5)
+    run = steps.train_brush(scene, iterations=10, export_every=5, extra=["--alpha-mode", "transparent"])
 
     assert seen == [{"images", "sparse", "masks"}]
+    assert tools.commands[-1][-2:] == ["--alpha-mode", "transparent"]
     assert sorted(path.name for path in run.iterdir()) == ["exports"]
 
 

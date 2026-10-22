@@ -111,9 +111,13 @@ def build_parser() -> argparse.ArgumentParser:
     solve = commands.add_parser("solve", parents=[common], help="find camera poses with COLMAP")
     _add_solve_options(solve)
 
-    train = commands.add_parser("train", parents=[common], help="train splats with Brush or Msplat")
+    train = commands.add_parser(
+        "train", parents=[common], help="train splats with Brush or Msplat",
+        description="Train splats. Extra arguments after -- go to Brush, e.g. -- --alpha-mode transparent.",
+    )
     _add_train_options(train)
     train.add_argument("--resume", metavar="RUN", help="Msplat: continue an interrupted run")
+    train.add_argument("extra", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
 
     lod = commands.add_parser("lod", parents=[common], help="build a streamed PlayCanvas LOD set")
     lod.add_argument("source", type=Path, nargs="?", help=".ply to convert (default: newest export)")
@@ -140,7 +144,7 @@ def _mask(scene: Scene, prompt: str, args: argparse.Namespace) -> None:
     )
 
 
-def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None) -> None:
+def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None, extra: list[str] | None = None) -> None:
     if args.trainer == "msplat":
         from . import msplat
 
@@ -153,6 +157,7 @@ def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None) ->
         steps.train_brush(
             scene, iterations=args.iterations, export_every=args.export_every,
             max_splats=args.max_splats, max_resolution=args.max_resolution, eval_split=args.eval_split,
+            extra=extra or [],
         )
 
 
@@ -347,7 +352,10 @@ def dispatch(scene: Scene, args: argparse.Namespace) -> None:
     elif args.command == "train":
         if args.resume:
             args.trainer = "msplat"  # only Msplat runs can be resumed
-        _train(scene, args, args.resume)
+        extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
+        if extra and args.trainer != "brush":
+            raise GausserError("Arguments after -- go to Brush; Msplat takes none")
+        _train(scene, args, args.resume, extra)
     elif args.command == "lod":
         _lod(scene, args.source, args)
 
