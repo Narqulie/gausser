@@ -15,7 +15,7 @@ from . import steps
 from .scene import GausserError, Scene, registered_images
 
 STEPS = ("frames", "mask", "solve", "train", "lod")
-COMMANDS = ("run", *STEPS, "view", "orbit", "status")
+COMMANDS = ("run", *STEPS, "composite", "view", "orbit", "status")
 QUICK_START = """\
 quick start:
   gausser clip.mp4              guided: makes clip/ next to the video and walks you through
@@ -33,7 +33,7 @@ def _add_mask_options(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("mask (SAM3)")
     group.add_argument("--threshold", type=float, default=0.5, help="minimum SAM3 score (default 0.5; try 0.3 for low hit rates)")
     group.add_argument("--all-instances", action="store_true", help="keep every matching instance, not only the best")
-    group.add_argument("--dilation", type=int, default=0, help="grow Brush masks by N pixels")
+    group.add_argument("--dilation", type=int, default=0, help="grow Brush masks by N pixels; negative N shrinks them (edge pixels mixed with background)")
     group.add_argument("--feather", type=int, default=0, help="blur Brush mask edges by N pixels")
     group.add_argument("--device", default="auto", help="auto, mps, cuda or cpu")
     group.add_argument("--sam-checkpoint", help="local SAM3 checkpoint instead of Hugging Face")
@@ -152,6 +152,17 @@ def build_parser() -> argparse.ArgumentParser:
     orbit.add_argument("--zoom", type=float, default=1.3, help="orbit radius times the median camera distance (default 1.3)")
     orbit.add_argument("--drop", type=float, default=0.35, help="aim this far below the centre, in splat units (default 0.35)")
     orbit.add_argument("-o", "--output", type=Path, help="write the video here instead of runs/orbit/<time>/orbit.mp4")
+
+    composite = commands.add_parser(
+        "composite", parents=[common], help="put a masked statue splat into its unmasked context splat",
+        description="Merge two splats trained on one COLMAP model: keep the statue splats that lie inside the masks, "
+        "carve the statue's volume out of the context, append the statue. Needs sparse/0 and masks/. "
+        "Defaults: the newest masked and the newest --no-masks Brush run.",
+    )
+    composite.add_argument("--statue", type=Path, help=".ply of the masked run (default: newest masked run)")
+    composite.add_argument("--context", type=Path, help=".ply of the --no-masks run (default: newest unmasked run)")
+    composite.add_argument("--radius", type=float, help="also drop context farther than N statue heights from the statue")
+    composite.add_argument("-o", "--output", type=Path, help="write here instead of runs/composite/<time>/composite.ply")
 
     commands.add_parser("status", parents=[common], help="show scene progress and installed tools")
     return parser
@@ -327,6 +338,11 @@ def main(argv: list[str] | None = None) -> int:
                 scene, args.source, seconds=args.seconds, size=args.size,
                 zoom=args.zoom, drop=args.drop, out=args.output,
             )
+            return 0
+        if args.command == "composite":  # reads existing files and only adds a new output; needs no lock
+            from .composite import composite
+
+            composite(scene, args.statue, args.context, radius=args.radius, out=args.output)
             return 0
         with scene.lock():
             keep_awake()

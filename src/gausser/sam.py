@@ -77,6 +77,8 @@ def save_masks(
     soft = hard
     if dilation > 0:
         soft = soft.filter(ImageFilter.MaxFilter(dilation * 2 + 1))
+    elif dilation < 0:
+        soft = soft.filter(ImageFilter.MinFilter(-dilation * 2 + 1))
     if feather > 0:
         soft = soft.filter(ImageFilter.GaussianBlur(radius=feather))
     soft.save(brush_dir / f"{image.stem}.png")

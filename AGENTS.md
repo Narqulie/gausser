@@ -18,6 +18,7 @@ src/gausser/
 ├── steps.py   frames (sharp-frames), mask, solve (COLMAP), train_brush, lod (splat-transform)
 ├── sam.py     SAM3 predictor + mask writers; imported only by `mask` (needs torch)
 ├── msplat.py  experimental Msplat trainer with checkpoint resume; masks via black compositing
+├── composite.py `gausser composite`: visual-hull filter of the statue splat, voxel carve of the context, PLY merge
 ├── view.py    `gausser view`: serves a SuperSplat build plus one splat on 127.0.0.1 (`serve()` is shared with orbit)
 ├── orbit.py   `gausser orbit`: camera path from sparse/0 + PLY "Vertical axis"; runs orbit.mjs with node
 ├── orbit.mjs  Playwright driver: sets camera keys in SuperSplat and saves its `render.video` download
@@ -75,6 +76,11 @@ src/gausser/
   `~/Developer/Automask-GS/models/sam3.pt`; without it SAM3 needs a Hugging Face login.
   `sam.py` sets `PYTORCH_ENABLE_MPS_FALLBACK=1` before importing torch;
   without it, SAM3 misses every image on MPS.
+- A masked Brush run on an unmasked solve (`mask --miss drop`, `solve --no-masks`, `train`) starts from
+  the whole scene's COLMAP points and keeps ~⅓ of its splats as opaque background garbage that masked loss
+  never removes, so `composite` must filter the statue by `hull_keep` (inside the dilated mask in ≥80% of
+  ≥5 views, black masks skipped) before carving the context. `train_brush` writes an empty `masked` or
+  `unmasked` file into each run for `composite`'s default selection. Negative `--dilation` erodes Brush masks only.
 - Mask naming: Brush `masks/<stem>.png`, COLMAP `colmap/masks/<name><ext>.png`.
   Image stems must be unique.
 - Brush is pinned in `scripts/install-macos.sh` (`BRUSH_REV`, currently 1.0.0 @1388f74c);

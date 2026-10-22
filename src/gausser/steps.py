@@ -210,6 +210,8 @@ def train_brush(
     if not list(staged.glob("exports/*.ply")):
         raise GausserError(f"Brush finished without a .ply export; output kept in {staged}")
     remove(dataset)
+    # `gausser composite` finds the statue and context runs by this marker.
+    (staged / ("unmasked" if no_masks or not scene.masks.is_dir() else "masked")).touch()
     run = scene.new_run("brush")
     replace(staged, run)
     print(f"Exports in {run / 'exports'}")

@@ -53,14 +53,15 @@ LOD set.
 | `gausser solve [--no-masks]` | COLMAP finds the camera poses | `database.db`, `sparse/0/` |
 | `gausser train [--no-masks] [-- args]` | Brush (default) or `--trainer msplat` trains splats; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
+| `gausser composite [--statue PLY] [--context PLY] [--radius N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
 | `gausser status` | Shows what the scene has and which tools are installed | — |
 
 Every command takes `-s/--scene DIR` (default: current folder) and `--help`.
 Only one command at a time can change a scene; a second one stops with an error
-instead of overwriting the first one's work. `status`, `view` and `orbit` always run
-(`orbit` only adds a new run folder).
+instead of overwriting the first one's work. `status`, `view`, `orbit` and `composite` always run
+(`orbit` and `composite` only add a new run folder).
 
 `gausser orbit` needs `sparse/0` and a Brush export. The camera circles the point nearest all
 camera viewing axes, at the median camera distance times `--zoom` (1.3) and aimed `--drop` (0.35, splat
@@ -76,11 +77,21 @@ to the subject lose registrations and leave no background points. Then train twi
 that one model, so the two splats share coordinates and can be merged later:
 
 ```bash
-gausser mask statue --miss drop   # frames SAM3 misses are ignored by Brush, not trained whole
+gausser mask statue --miss drop --dilation -2   # frames SAM3 misses are ignored by Brush, not trained whole
 gausser solve --no-masks          # COLMAP sees the whole image
 gausser train --no-masks          # context splat: unmasked
 gausser train                     # statue splat: masked
+gausser composite                 # statue into context, as one splat
 ```
+
+`gausser composite` finds the two runs itself: `train` leaves an empty `masked` or `unmasked`
+file in each Brush run folder (older runs have none; pass `--statue` and `--context`). The
+masked run starts from the whole scene's COLMAP points, so it also keeps opaque background splats.
+Composite first keeps only statue splats that fall inside the masks in at least 80% of the views
+that see them (a visual hull; frames dropped with `--miss drop` don't vote), then removes the context
+splats inside the statue's volume and appends the statue. The output keeps the context's PLY header,
+so `gausser orbit` still works. For cleaner edges, mask with `--dilation -2`: it shrinks the Brush
+masks by 2 px, so edge pixels mixed with background are not trained (COLMAP masks are unchanged).
 
 `gausser run --prompt statue --no-masks` makes the masks and then solves and trains
 without them (the first two steps of the recipe, minus `--miss drop`).

@@ -255,6 +255,23 @@ def test_mask_save_masks_colmap_override_is_independent_of_the_brush_mask(tmp_pa
         assert b.getextrema() == (0, 0) and c.getextrema() == (255, 255)
 
 
+def test_save_masks_negative_dilation_shrinks_the_brush_mask_only(tmp_path):
+    np = pytest.importorskip("numpy")
+    image_module = pytest.importorskip("PIL.Image")
+    pytest.importorskip("torch")
+    from gausser import sam
+
+    brush, colmap = tmp_path / "b", tmp_path / "c"
+    brush.mkdir()
+    colmap.mkdir()
+    mask = np.zeros((20, 20), dtype=bool)
+    mask[5:15, 5:15] = True
+    sam.save_masks(mask, Path("a.jpg"), brush, colmap, -2, 0)
+
+    with image_module.open(brush / "a.png") as b, image_module.open(colmap / "a.jpg.png") as c:
+        assert (np.asarray(b) > 127).sum() == 6 * 6 and (np.asarray(c) > 127).sum() == 100
+
+
 def test_lod_uses_newest_export_and_current_splat_transform_flags(tmp_path, tools):
     scene = make_scene(tmp_path)
     export = scene.runs / "brush" / "a" / "exports" / "export_25000.ply"
@@ -334,7 +351,7 @@ def test_brush_only_sees_current_inputs(tmp_path, tools):
 
     assert seen == [{"images", "sparse", "masks"}]
     assert tools.commands[-1][-2:] == ["--alpha-mode", "transparent"]
-    assert sorted(path.name for path in run.iterdir()) == ["exports"]
+    assert sorted(path.name for path in run.iterdir()) == ["exports", "masked"]
 
 
 def test_brush_no_masks_leaves_masks_out_of_its_folder(tmp_path, tools):
@@ -350,9 +367,10 @@ def test_brush_no_masks_leaves_masks_out_of_its_folder(tmp_path, tools):
         export.write_bytes(b"ply")
 
     tools.on_run(fake_brush)
-    steps.train_brush(scene, iterations=10, export_every=5, no_masks=True)
+    run = steps.train_brush(scene, iterations=10, export_every=5, no_masks=True)
 
     assert seen == [{"images", "sparse"}]
+    assert (run / "unmasked").is_file() and not (run / "masked").exists()
 
 
 def test_run_passes_no_masks_to_solve_and_train(tmp_path, monkeypatch):
