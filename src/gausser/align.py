@@ -136,7 +136,7 @@ def _anchored_starts(coarse: Matcher, reference: Any, centre_r: Any, scales: lis
     anchors = coarse.moving[rng.choice(len(coarse.moving), min(ANCHORS, len(coarse.moving)), replace=False)]
     probes = reference[rng.choice(len(reference), min(PROBES, len(reference)), replace=False)]
     p0 = reference[np.argmin(np.linalg.norm(reference - centre_r, axis=1))]
-    scored = []
+    scored: list[tuple[float, int, tuple[float, Any, Any]]] = []
     for r in rotations:
         for s in scales:
             queries = anchors[:, None, :] + (probes - p0) @ r / s  # Rᵀ(p - p0)/s around each anchor, in moving units
