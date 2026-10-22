@@ -15,7 +15,7 @@ from . import steps
 from .scene import GausserError, Scene, registered_images
 
 STEPS = ("frames", "mask", "solve", "train", "lod")
-COMMANDS = ("run", *STEPS, "subset", "composite", "view", "orbit", "status")
+COMMANDS = ("run", *STEPS, "subset", "composite", "align", "view", "orbit", "status")
 QUICK_START = """\
 quick start:
   gausser clip.mp4              guided: makes clip/ next to the video and walks you through
@@ -175,6 +175,18 @@ def build_parser() -> argparse.ArgumentParser:
     composite.add_argument("--grow", type=int, default=2, help="carve N voxels beyond the statue's hull (default 2)")
     composite.add_argument("--cells", type=int, default=256, help="carve voxels along the statue's longest side (default 256)")
     composite.add_argument("-o", "--output", type=Path, help="write here instead of runs/composite/<time>/composite.ply")
+
+    align = commands.add_parser(
+        "align", help="move a splat into the coordinate frame of a published one",
+        description="Estimate the similarity (scale, rotation, translation) that maps MOVING's opaque splat centres onto "
+        "the --to splat(s), and write MOVING moved by it, so camera presets and geometry made for the published splat fit. "
+        "REFERENCE is anything splat-transform reads (.ply, .sog, LOD child meta.json; several are concatenated) "
+        "and may be a cropped or cleaned part of MOVING. Needs no scene.",
+    )
+    align.add_argument("moving", type=Path, metavar="MOVING", help=".ply to move (a Brush export)")
+    align.add_argument("--to", dest="reference", type=Path, nargs="+", required=True, metavar="REFERENCE", help="published splat(s)")
+    align.add_argument("--no-scale", dest="scale", action="store_false", help="estimate rotation and translation only")
+    align.add_argument("-o", "--output", type=Path, required=True, help="aligned .ply to write")
 
     subset = commands.add_parser(
         "subset", parents=[common], help="make a new scene from the images of a solved scene that match name patterns",
@@ -343,6 +355,11 @@ def main(argv: list[str] | None = None) -> int:
         print("→ gausser " + shlex.join(argv), flush=True)
     args = parser.parse_args(argv)
     try:
+        if args.command == "align":  # no scene: reads two splats and writes one file
+            from .align import align
+
+            align(args.moving, args.reference, args.output, with_scale=args.scale)
+            return 0
         scene = Scene(args.scene)
         if args.command == "status":
             status(scene)

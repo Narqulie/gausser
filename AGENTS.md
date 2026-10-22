@@ -19,6 +19,7 @@ src/gausser/
 ├── sam.py     SAM3 predictor + mask writers; imported only by `mask` (needs torch)
 ├── msplat.py  experimental Msplat trainer with checkpoint resume; masks via black compositing
 ├── composite.py `gausser composite`: visual-hull filter of the statue splat, voxel carve of the context, PLY merge
+├── align.py   `gausser align`: fits a similarity (multi-start trimmed ICP) of a splat onto a published one; splat-transform applies it
 ├── view.py    `gausser view`: serves a SuperSplat build plus one splat on 127.0.0.1 (`serve()` is shared with orbit)
 ├── orbit.py   `gausser orbit`: camera path from sparse/0 + PLY "Vertical axis"; runs orbit.mjs with node
 ├── orbit.mjs  Playwright driver: sets camera keys in SuperSplat and saves its `render.video` download
@@ -48,7 +49,7 @@ src/gausser/
   while it is still empty. Without a TTY the menu refuses (exit 2).
 - `solve` publishes the model, then raises if fewer than half the images were
   registered, so `run` stops before a wasted training run.
-- Every command except `status`, `view` and `orbit` holds `Scene.lock()` (flock on
+- Every command except `status`, `view`, `orbit` and `align` (which has no scene) holds `Scene.lock()` (flock on
   `.gausser/lock`). A second command fails fast; it never waits.
 - `orbit` renders in a headed Chromium via `playwright-core` (installed under `~/.local/share/gausser/node`,
   `GAUSSER_NODE_DIR` overrides; Playwright's pinned Chromium revision must be installed, or set `GAUSSER_CHROME`).
@@ -102,6 +103,9 @@ src/gausser/
   the vocabulary tree itself into `~/.cache/colmap`.
 - splat-transform ≥3.10: use `--lod-chunk-count/--lod-chunk-extent`. `-C` now
   means `--filter-cluster`.
+- `splat-transform` `-r/-t` act in a frame turned 180° about z: file rotation M is given as euler of
+  D·M·D and translation as (-tx,-ty,tz), with D = diag(-1,-1,1); `-s -r -t` run in order, so they give
+  x' = s·R·x + t. `align` re-reads its output and checks it against numpy, so a CLI change fails loudly.
 - Msplat requires exactly `msplat==1.1.4` and a binary model. It has no mask input.
   When every image has a mask, `msplat.train` writes composited copies (black
   background) into the run's `dataset/`, sets `bg_color` to black and records

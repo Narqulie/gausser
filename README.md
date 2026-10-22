@@ -56,13 +56,14 @@ LOD set.
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
 | `gausser subset PATTERN… -o NEW_SCENE` | Copies the images (and masks) whose file names match the globs into a new scene, with the COLMAP model filtered to them | `NEW_SCENE/{images,masks,colmap/masks,sparse/0,database.db}` |
 | `gausser composite [--statue PLY] [--context PLY] [--radius N] [--cells N] [--slack N] [--grow N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` or `--exclude-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
+| `gausser align MOVING.ply --to REF… -o OUT.ply [--no-scale]` | Moves a re-trained splat into the coordinate frame of a published one (scale, rotation, translation fitted to the splat centres) | `OUT.ply` |
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
 | `gausser status` | Shows what the scene has and which tools are installed | — |
 
 Every command takes `-s/--scene DIR` (default: current folder) and `--help`.
 Only one command at a time can change a scene; a second one stops with an error
-instead of overwriting the first one's work. `status`, `view`, `orbit`, `composite` and `subset` always run
+instead of overwriting the first one's work. `align` needs no scene at all. `status`, `view`, `orbit`, `composite` and `subset` always run
 (`orbit` and `composite` only add a new run folder; `subset` only reads the source scene).
 
 `gausser orbit` needs `sparse/0` and a Brush export. The camera circles the point nearest all
@@ -126,6 +127,28 @@ gausser composite --statue ../overcast/runs/brush/<time>/exports/export_30000.pl
 
 `subset` copies (no links: scenes often live on exFAT), keeps all cameras and 3D points, and
 leaves the source untouched. It refuses a new scene that already has `images/`.
+
+## Re-splatting a published artwork
+
+Camera presets and hand-placed geometry (water nodes, say) are expressed in the published splat's
+coordinates, but a new COLMAP solve lands at an arbitrary position, rotation and scale. Fit the new
+splat onto the published one before swapping it in:
+
+```bash
+gausser align runs/brush/<time>/exports/export_30000.ply \
+    --to public/splats/artwork-lod/0_0/meta.json public/splats/artwork-lod/0_1/meta.json -o artwork-aligned.ply
+```
+
+`--to` takes anything `splat-transform` reads (.ply, .sog, the LOD child `meta.json` files; several are
+concatenated). gausser lets `splat-transform` decode the reference, because SOG means are log-encoded.
+It fits a similarity to the opaque splat centres: many starting rotations and scales, trimmed ICP from
+each, then a refinement on the best. The reference may be a cropped or cleaned part of the new splat
+(not the other way round: reference points look for their nearest new splat), and neither needs a known up
+axis. It prints scale, rotation, translation, the trimmed RMS and the share of reference splats within 2% of
+the reference's extent: look for an RMS far below the splat size and ~100% inliers. `splat-transform`
+applies the result (quaternions and spherical harmonics rotate with it), and gausser reads the output back
+and compares it with the planned means. The Brush `Vertical axis` header is rotated along, so `orbit` still
+works. Expect about a minute for million-splat clouds. `--no-scale` fits rotation and translation only.
 
 ## How state works
 
