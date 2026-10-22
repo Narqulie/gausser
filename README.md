@@ -53,7 +53,7 @@ LOD set.
 | `gausser solve [--no-masks]` | COLMAP finds the camera poses | `database.db`, `sparse/0/` |
 | `gausser train [--no-masks] [-- args]` | Brush (default) or `--trainer msplat` trains splats; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
-| `gausser composite [--statue PLY] [--context PLY] [--radius N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
+| `gausser composite [--statue PLY] [--context PLY] [--radius N] [--cells N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
 | `gausser status` | Shows what the scene has and which tools are installed | — |
@@ -89,7 +89,8 @@ file in each Brush run folder (older runs have none; pass `--statue` and `--cont
 masked run starts from the whole scene's COLMAP points, so it also keeps opaque background splats.
 Composite first keeps only statue splats that fall inside the masks in at least 80% of the views
 that see them (a visual hull; frames dropped with `--miss drop` don't vote), then removes the context
-splats inside the statue's volume and appends the statue. The output keeps the context's PLY header,
+splats inside the statue's volume and appends the statue. `--cells N` (default 256) sets the carve voxels along the statue's longest side; raise it for
+spread-out statues on a big scene. The output keeps the context's PLY header,
 so `gausser orbit` still works. For cleaner edges, mask with `--dilation -2`: it shrinks the Brush
 masks by 2 px, so edge pixels mixed with background are not trained (COLMAP masks are unchanged).
 

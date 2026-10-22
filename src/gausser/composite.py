@@ -130,20 +130,17 @@ def carve(
     size = (hi - lo).max() / cells
     lo = lo - size * (grow + 2)
     shape = np.ceil((hi - lo) / size).astype(int) + grow + 3
-    grid = np.zeros(shape, bool)
-    grid[tuple(((solid - lo) / size).astype(int).clip(0, shape - 1).T)] = True
+    # Sparse voxel set: int64 keys of occupied cells, so memory follows the splat count, not the volume.
+    strides = np.array([shape[1] * shape[2], shape[2], 1])
+    keys = np.unique(((solid - lo) / size).astype(int).clip(0, shape - 1) @ strides)
     for _ in range(grow):  # 6-neighbour dilation, one voxel per pass
-        grown = grid.copy()
-        for axis in range(3):
-            for step in (1, -1):
-                grown |= np.roll(grid, step, axis)  # the grid has a margin, so wrap-around never matters
-        grid = grown
+        keys = np.unique(np.concatenate([keys, *(keys + sign * stride for stride in strides for sign in (1, -1))]))
 
     points = xyz(context)
     idx = ((points - lo) / size).astype(int)
-    within = np.all((idx >= 0) & (idx < shape), axis=1)
+    within = np.all((idx >= 0) & (idx < shape), axis=1)  # the margin keeps grown keys from wrapping across rows
     inside = np.zeros(len(context), bool)
-    inside[within] = grid[tuple(idx[within].T)]
+    inside[within] = np.isin(idx[within] @ strides, keys)
     keep = ~inside
     if radius:
         centre, height = (lo + hi) / 2, (hi - lo).max()
@@ -170,6 +167,7 @@ def newest_export(scene: Scene, marker: str) -> Path:
 
 def composite(
     scene: Scene, statue: Path | None, context: Path | None, *, radius: float | None, out: Path | None,
+    cells: int = 256,
 ) -> Path:
     """Write runs/composite/<time>/composite.ply (or ``out``); read-only on the scene's other files."""
     import numpy as np
@@ -190,7 +188,7 @@ def composite(
     hull = hull_keep(xyz(statue_data), scene)
     print(f"visual hull keeps {int(hull.sum()):,}/{len(hull):,} statue splats")
     statue_data = statue_data[hull]
-    keep = carve(statue_data, context_data, radius=radius)
+    keep = carve(statue_data, context_data, cells=cells, radius=radius)
     print(f"context keeps {int(keep.sum()):,}/{len(keep):,} splats (carved {int((~keep).sum()):,})")
 
     staged = scene.staging("composite")

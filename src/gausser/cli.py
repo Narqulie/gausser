@@ -162,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     composite.add_argument("--statue", type=Path, help=".ply of the masked run (default: newest masked run)")
     composite.add_argument("--context", type=Path, help=".ply of the --no-masks run (default: newest unmasked run)")
     composite.add_argument("--radius", type=float, help="also drop context farther than N statue heights from the statue")
+    composite.add_argument("--cells", type=int, default=256, help="carve voxels along the statue's longest side (default 256)")
     composite.add_argument("-o", "--output", type=Path, help="write here instead of runs/composite/<time>/composite.ply")
 
     commands.add_parser("status", parents=[common], help="show scene progress and installed tools")
@@ -342,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "composite":  # reads existing files and only adds a new output; needs no lock
             from .composite import composite
 
-            composite(scene, args.statue, args.context, radius=args.radius, out=args.output)
+            composite(scene, args.statue, args.context, radius=args.radius, out=args.output, cells=args.cells)
             return 0
         with scene.lock():
             keep_awake()

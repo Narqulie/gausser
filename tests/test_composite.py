@@ -8,7 +8,7 @@ import pytest
 np = pytest.importorskip("numpy")
 image_module = pytest.importorskip("PIL.Image")
 
-from gausser import composite  # noqa: E402
+from gausser import cli, composite  # noqa: E402
 from gausser.scene import GausserError, Scene  # noqa: E402
 
 SIZE, FOCAL, DISTANCE, VIEWS = 256, 400.0, 5.0, 12
@@ -66,6 +66,25 @@ def test_carve_drops_context_inside_the_statue_and_keeps_the_rest(tmp_path):
     _, statue = composite.read_ply(tmp_path / "s.ply")
     _, context = composite.read_ply(tmp_path / "c.ply")
     assert composite.carve(statue, context, cells=16).tolist() == [False, True]
+
+
+def test_carve_with_many_cells_carves_only_near_each_of_two_distant_clusters(tmp_path):
+    near = np.array(cube())
+    splat(tmp_path / "s.ply", [*(near - [10, 0, 0]).tolist(), *(near + [10, 0, 0]).tolist()])
+    splat(tmp_path / "c.ply", [[-10, 0, 0], [10, 0, 0], [0, 0, 0], [-10, 0.5, 0]])
+    _, statue = composite.read_ply(tmp_path / "s.ply")
+    _, context = composite.read_ply(tmp_path / "c.ply")
+    # 2000 cells over 20 m: 1 cm voxels (a dense grid would need 8e9 cells)
+    assert composite.carve(statue, context, cells=2000).tolist() == [False, False, True, True]
+
+
+def test_composite_command_passes_cells_to_carve(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(composite, "composite", lambda scene, statue, context, **kw: seen.update(kw))
+    assert cli.main(["composite", "-s", str(tmp_path), "--cells", "512"]) == 0
+    assert seen["cells"] == 512
+    assert cli.main(["composite", "-s", str(tmp_path)]) == 0
+    assert seen["cells"] == 256
 
 
 def test_newest_export_picks_runs_by_their_marker(tmp_path):
