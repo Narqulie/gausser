@@ -15,7 +15,7 @@ from . import steps
 from .scene import GausserError, Scene, registered_images
 
 STEPS = ("frames", "mask", "solve", "train", "lod")
-COMMANDS = ("run", *STEPS, "view", "status")
+COMMANDS = ("run", *STEPS, "view", "orbit", "status")
 QUICK_START = """\
 quick start:
   gausser clip.mp4              guided: makes clip/ next to the video and walks you through
@@ -141,6 +141,18 @@ def build_parser() -> argparse.ArgumentParser:
     view = commands.add_parser("view", parents=[common], help="open a splat in a local SuperSplat editor")
     view.add_argument("source", type=Path, nargs="?", help=".ply to open (default: newest export)")
 
+    orbit = commands.add_parser(
+        "orbit", parents=[common], help="render a 360° orbit video of a splat",
+        description="Render a 360° orbit video with SuperSplat's video renderer in a browser window. "
+        "Needs the scene's COLMAP model (camera path) and a Brush export (vertical axis).",
+    )
+    orbit.add_argument("source", type=Path, nargs="?", help=".ply to render (default: newest export)")
+    orbit.add_argument("--seconds", type=float, default=12.0, help="video length (default 12)")
+    orbit.add_argument("--size", default="1920x1080", help="video size WIDTHxHEIGHT (default 1920x1080)")
+    orbit.add_argument("--zoom", type=float, default=1.3, help="orbit radius times the median camera distance (default 1.3)")
+    orbit.add_argument("--drop", type=float, default=0.35, help="aim this far below the centre, in splat units (default 0.35)")
+    orbit.add_argument("-o", "--output", type=Path, help="write the video here instead of runs/orbit/<time>/orbit.mp4")
+
     commands.add_parser("status", parents=[common], help="show scene progress and installed tools")
     return parser
 
@@ -257,6 +269,7 @@ def status(scene: Scene) -> None:
         "colmap": steps.COLMAP_HINT,
         "brush": steps.BRUSH_HINT,
         "splat-transform": steps.SPLAT_TRANSFORM_HINT,
+        "node": "brew install node",
     }
     for name, hint in tools.items():
         path = shutil.which(name)
@@ -268,6 +281,10 @@ def status(scene: Scene) -> None:
         print(f"  ✗ {'sam3':16}installed but missing patches/sam3-macos.patch; rerun scripts/install-macos.sh")
     else:
         print(f"  ✓ {'sam3':16}patched for macOS")
+    from .orbit import has_playwright, node_dir
+
+    found = has_playwright()
+    print(f"  {'✓' if found else '✗'} {'playwright-core':16}{node_dir() if found else 'optional, for `gausser orbit`; run scripts/install-macos.sh'}")
     found = importlib.util.find_spec("msplat") is not None
     print(f"  {'✓' if found else '✗'} {'msplat':16}{'importable' if found else 'optional; pip install -e .[msplat]'}")
     from .view import supersplat_dist
@@ -302,6 +319,14 @@ def main(argv: list[str] | None = None) -> int:
             from .view import view
 
             view(scene, args.source)
+            return 0
+        if args.command == "orbit":  # like view: needs no lock; it only adds a new run folder
+            from .orbit import orbit
+
+            orbit(
+                scene, args.source, seconds=args.seconds, size=args.size,
+                zoom=args.zoom, drop=args.drop, out=args.output,
+            )
             return 0
         with scene.lock():
             keep_awake()

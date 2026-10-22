@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "Photos or video in, Gaussian splats out"
 readme = "README.md"
 requires-python = ">=3.12"  # msplat ships only cp312/cp313 wheels
-dependencies = ["questionary>=2,<3"]
+dependencies = ["numpy>=1.26,<2", "questionary>=2,<3"]  # numpy: orbit camera maths
 
 [project.optional-dependencies]
 # SAM3 itself is installed separately at a pinned commit and patched for macOS (see README).
@@ -30,6 +30,9 @@ dev = ["pytest>=8.0", "ruff>=0.15,<0.16", "mypy>=1.19,<2", "numpy>=1.26,<2", "Pi
 
 [project.scripts]
 gausser = "gausser.cli:main"
+
+[tool.setuptools.package-data]
+gausser = ["orbit.mjs"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

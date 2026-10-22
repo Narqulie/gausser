@@ -18,7 +18,9 @@ src/gausser/
 ├── steps.py   frames (sharp-frames), mask, solve (COLMAP), train_brush, lod (splat-transform)
 ├── sam.py     SAM3 predictor + mask writers; imported only by `mask` (needs torch)
 ├── msplat.py  experimental Msplat trainer with checkpoint resume; masks via black compositing
-├── view.py    `gausser view`: serves a SuperSplat build plus one splat on 127.0.0.1
+├── view.py    `gausser view`: serves a SuperSplat build plus one splat on 127.0.0.1 (`serve()` is shared with orbit)
+├── orbit.py   `gausser orbit`: camera path from sparse/0 + PLY "Vertical axis"; runs orbit.mjs with node
+├── orbit.mjs  Playwright driver: sets camera keys in SuperSplat and saves its `render.video` download
 └── scene.py   Scene paths, image listing, replace()/remove(), run_tool()
 ```
 
@@ -45,8 +47,11 @@ src/gausser/
   while it is still empty. Without a TTY the menu refuses (exit 2).
 - `solve` publishes the model, then raises if fewer than half the images were
   registered, so `run` stops before a wasted training run.
-- Every command except `status` and `view` holds `Scene.lock()` (flock on
+- Every command except `status`, `view` and `orbit` holds `Scene.lock()` (flock on
   `.gausser/lock`). A second command fails fast; it never waits.
+- `orbit` renders in a headed Chromium via `playwright-core` (installed under `~/.local/share/gausser/node`,
+  `GAUSSER_NODE_DIR` overrides; Playwright's pinned Chromium revision must be installed, or set `GAUSSER_CHROME`).
+  It takes no lock because it only adds `runs/orbit/<time>/`; the driver is not run by tests.
 - Brush scans every file under its input folder and picks the `cameras.bin` with
   the most registered images (on a tie, the lowest path). It also matches any
   `masks` folder. That includes Msplat dataset copies, failed attempts and the old

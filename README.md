@@ -54,11 +54,20 @@ LOD set.
 | `gausser train [--no-masks] [-- args]` | Brush (default) or `--trainer msplat` trains splats; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
+| `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
 | `gausser status` | Shows what the scene has and which tools are installed | — |
 
 Every command takes `-s/--scene DIR` (default: current folder) and `--help`.
 Only one command at a time can change a scene; a second one stops with an error
-instead of overwriting the first one's work. `status` and `view` always run.
+instead of overwriting the first one's work. `status`, `view` and `orbit` always run
+(`orbit` only adds a new run folder).
+
+`gausser orbit` needs `sparse/0` and a Brush export. The camera circles the point nearest all
+camera viewing axes, at the median camera distance times `--zoom` (1.3) and aimed `--drop` (0.35, splat
+units) below that point, with "up" from the PLY's `Vertical axis` header. It drives a visible Chromium
+window through Playwright (installed by `scripts/install-macos.sh` into `~/.local/share/gausser/node`;
+override with `GAUSSER_NODE_DIR`, and `GAUSSER_CHROME` picks another browser executable), so leave the window alone
+while it renders.
 
 ## Subject plus context from one solve
 
@@ -144,7 +153,7 @@ The script is safe to rerun. It installs:
 - splat-transform (npm);
 - a `.venv` with gausser, Sharp Frames, SAM3 (patched) and Msplat;
 - Brush at a pinned commit (`cargo install`);
-- a SuperSplat build for `gausser view`;
+- a SuperSplat build for `gausser view` and `gausser orbit`, and Playwright with Chromium for `orbit`;
 - `gausser` and `sharp-frames` in `~/.local/bin`.
 
 It ends with `gausser status`. After you reinstall SAM3 by hand, rerun the script:

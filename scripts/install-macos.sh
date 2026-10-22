@@ -42,6 +42,12 @@ else
   echo "already built"
 fi
 
+step "Playwright + Chromium (gausser orbit)"
+NODE_DIR="${GAUSSER_NODE_DIR:-$HOME/.local/share/gausser/node}"
+mkdir -p "$NODE_DIR"
+npm install --prefix "$NODE_DIR" playwright-core
+"$NODE_DIR/node_modules/.bin/playwright-core" install chromium
+
 step "Commands in ~/.local/bin"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$ROOT/.venv/bin/gausser" "$HOME/.local/bin/gausser"
