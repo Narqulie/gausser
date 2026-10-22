@@ -80,7 +80,10 @@ src/gausser/
   This was verified: all-black masks mean no growth and opacity falls to 0.
   `train_brush` sets `RUST_LOG=brush_cli=info` unless RUST_LOG is already set;
   without it a non-TTY run prints nothing, including the `--eval-split` PSNR/SSIM lines.
-- COLMAP: `ImageReader.single_camera=1`, GPU off on macOS (Homebrew has no CUDA),
+- COLMAP: `feature_extractor` gets `--image_list_path` (the filtered image names), because exFAT drives
+  add `._*` AppleDouble sidecars that COLMAP would otherwise try to read as images (hundreds of
+  `BITMAP_ERROR`s). The mapper needs no list: it reads only what is in the database.
+  `ImageReader.single_camera=1`, GPU off on macOS (Homebrew has no CUDA),
   largest sub-model chosen by the `images.bin` header becomes `sparse/0`.
   Exhaustive matching on >200 images takes hours, so `auto` switches to sequential.
   Sequential always adds `--SequentialMatching.loop_detection 1`; COLMAP 4.2 downloads

@@ -102,6 +102,25 @@ def test_solve_no_masks_ignores_existing_colmap_masks(tmp_path, tools):
     assert "--ImageReader.mask_path" not in tools.commands[0]
 
 
+def test_solve_gives_colmap_only_the_real_images_not_appledouble_sidecars(tmp_path, tools):
+    scene = make_scene(tmp_path)
+    (scene.images / "._img0.jpg").write_bytes(b"junk")
+    (scene.images / "._selected_metadata.json").write_bytes(b"junk")
+    listed: list[str] = []
+
+    def fake_colmap(command):
+        if command[1] == "feature_extractor":
+            Path(command[command.index("--database_path") + 1]).write_bytes(b"db")
+            listed.extend(Path(command[command.index("--image_list_path") + 1]).read_text().split())
+        if command[1] == "mapper":
+            write_model(Path(command[command.index("--output_path") + 1]) / "0", 3)
+
+    tools.on_run(fake_colmap)
+    steps.solve(scene)
+
+    assert listed == ["img0.jpg", "img1.jpg", "img2.jpg"]
+
+
 def test_solve_stops_the_pipeline_when_most_images_are_not_placed(tmp_path, tools):
     scene = make_scene(tmp_path, images=5)
 

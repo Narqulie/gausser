@@ -113,10 +113,15 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
 
     staged = scene.staging("solve")
     database, sparse = staged / "database.db", staged / "sparse"
+    # COLMAP would otherwise try every file in images/, including AppleDouble `._*` sidecars on exFAT.
+    # The mapper reads only what is in the database, so it needs no list.
+    image_list = staged / "images.txt"
+    image_list.write_text("".join(f"{image.name}\n" for image in images))
     extract = [
         colmap, "feature_extractor",
         "--database_path", str(database),
         "--image_path", str(scene.images),
+        "--image_list_path", str(image_list),
         "--ImageReader.single_camera", "1",
         "--FeatureExtraction.use_gpu", gpu,
     ]
