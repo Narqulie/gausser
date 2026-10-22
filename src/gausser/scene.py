@@ -150,7 +150,7 @@ class Scene:
     def exports(self) -> list[Path]:
         """Trained PLY exports, oldest first."""
         found = [*self.runs.glob("brush/*/exports/*.ply"), *self.runs.glob("msplat/*/exports/*.ply")]
-        return sorted(found, key=lambda path: path.stat().st_mtime)
+        return sorted((p for p in found if not p.name.startswith("._")), key=lambda path: path.stat().st_mtime)
 
     def lod_runs(self) -> list[Path]:
         return sorted(path.parent for path in self.runs.glob("lod/*/lod-meta.json"))

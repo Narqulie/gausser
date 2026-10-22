@@ -74,6 +74,7 @@ def test_newest_export_picks_runs_by_their_marker(tmp_path):
         run = scene.runs / "brush" / name
         (run / "exports").mkdir(parents=True)
         (run / "exports" / "export_2.ply").write_bytes(b"ply")
+        (run / "exports" / "._export_3.ply").write_bytes(b"AppleDouble")  # exFAT sidecar, newer
         if marker:
             (run / marker).touch()
     assert composite.newest_export(scene, "masked") == scene.runs / "brush" / "3" / "exports" / "export_2.ply"

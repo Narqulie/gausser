@@ -154,7 +154,10 @@ def carve(
 def newest_export(scene: Scene, marker: str) -> Path:
     """Newest export of the newest Brush run marked ``masked`` or ``unmasked`` by `gausser train`."""
     for run in sorted(scene.runs.glob("brush/*"), reverse=True):
-        exports = sorted(run.glob("exports/*.ply"), key=lambda path: path.stat().st_mtime)
+        exports = sorted(
+            (p for p in run.glob("exports/*.ply") if not p.name.startswith("._")),  # exFAT AppleDouble sidecars
+            key=lambda path: path.stat().st_mtime,
+        )
         if (run / marker).is_file() and exports:
             return exports[-1]
     role = "statue" if marker == "masked" else "context"
