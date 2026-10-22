@@ -193,6 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
     align.add_argument("moving", type=Path, metavar="MOVING", help=".ply to move (a Brush export)")
     align.add_argument("--to", dest="reference", type=Path, nargs="+", required=True, metavar="REFERENCE", help="published splat(s)")
     align.add_argument("--no-scale", dest="scale", action="store_false", help="estimate rotation and translation only")
+    align.add_argument("--moving-is-part", action="store_true", help="MOVING is a piece of REFERENCE (default: REFERENCE is a piece of MOVING)")
     align.add_argument("-o", "--output", type=Path, required=True, help="aligned .ply to write")
 
     subset = commands.add_parser(
@@ -365,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "align":  # no scene: reads two splats and writes one file
             from .align import align
 
-            align(args.moving, args.reference, args.output, with_scale=args.scale)
+            align(args.moving, args.reference, args.output, with_scale=args.scale, moving_is_part=args.moving_is_part)
             return 0
         scene = Scene(args.scene)
         if args.command == "status":

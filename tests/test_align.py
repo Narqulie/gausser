@@ -130,3 +130,23 @@ def test_align_refuses_an_output_that_is_an_input(tmp_path, monkeypatch):
     monkeypatch.setattr(align, "require_tool", lambda name, hint: name)
     with pytest.raises(GausserError, match="must not be one of the inputs"):
         align.align(tmp_path / "a.ply", [tmp_path / "a.ply"], tmp_path / "a.ply")
+
+
+@pytest.mark.parametrize("seed, scale", [(11, 0.5), (12, 2.0), (13, 1.1)])
+def test_estimate_part_recovers_a_moving_chunk_of_the_reference(seed, scale):
+    rng = np.random.default_rng(seed)
+    reference = scene_points(rng)
+    centre = np.array([0.5, 2.5, 2.5])
+    chunk = reference[np.linalg.norm(reference - centre, axis=1) < 2.6]  # part of the column, the ball and some ground: no symmetry
+    assert 0.1 < len(chunk) / len(reference) < 0.25
+    r, t = random_rotation(rng), np.array([4.0, -2.0, 7.5])
+    moving = (np.einsum("ij,nj->ni", r, chunk) - np.einsum("ij,j->i", r, centre)) / scale + t  # reference → moving
+    moving += rng.normal(scale=0.002, size=moving.shape)
+
+    fit = align.estimate_part(moving, reference, random_count=100)
+
+    # fit maps moving → reference, so it must undo the transform above
+    assert fit.scale == pytest.approx(scale, rel=0.01)
+    back = scale * np.einsum("ij,nj->ni", fit.rotation, moving) + fit.translation
+    assert np.abs(back - chunk).max() < 0.1
+    assert fit.inliers > 0.95

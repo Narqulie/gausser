@@ -29,6 +29,8 @@ SPLAT_TRANSFORM_HINT = "npm install -g @playcanvas/splat-transform"
 VERTICAL = "comment Vertical axis:"
 COARSE_POINTS, FINE_POINTS = (1_000, 20_000), (50_000, 150_000)  # (reference, moving) samples per stage
 SCALE_STEPS = (0.6, 1.0, 1.7)  # around the ratio of the clouds' median radii
+PART_SCALE_STEPS = (0.8, 1.0, 1.25, 1.6, 2.0, 2.5, 3.1, 3.9, 4.9, 6.1, 7.6, 9.5, 12.0)  # the part is smaller than the whole, so true scale is >= the radii ratio
+ANCHORS, PROBES, WHOLE_POINTS = 600, 40, 30_000  # part-mode coarse search: candidate whole points, part points scored, whole sample
 
 
 @dataclass
@@ -46,8 +48,8 @@ def opaque_centres(data: Any) -> Any:
     return xyz(data)[1 / (1 + np.exp(-data["opacity"])) > 0.5].astype(np.float64)
 
 
-def umeyama(src: Any, dst: Any, with_scale: bool = True) -> tuple[float, Any, Any]:
-    """Least-squares (s, R, t) with dst ≈ s·R·src + t."""
+def umeyama(src: Any, dst: Any, with_scale: bool = True, fixed_scale: float | None = None) -> tuple[float, Any, Any]:
+    """Least-squares (s, R, t) with dst ≈ s·R·src + t; ``fixed_scale`` keeps s as given."""
     import numpy as np
 
     mean_src, mean_dst = src.mean(0), dst.mean(0)
@@ -55,7 +57,7 @@ def umeyama(src: Any, dst: Any, with_scale: bool = True) -> tuple[float, Any, An
     u, sing, vt = np.linalg.svd(b.T @ a / len(src))
     flip = np.diag([1.0, 1.0, np.sign(np.linalg.det(u) * np.linalg.det(vt))])
     r = u @ flip @ vt
-    s = float((sing * flip.diagonal()).sum() / (a**2).sum(1).mean()) if with_scale else 1.0
+    s = fixed_scale or (float((sing * flip.diagonal()).sum() / (a**2).sum(1).mean()) if with_scale else 1.0)
     return s, r, mean_dst - s * r @ mean_src
 
 
@@ -80,10 +82,11 @@ def rotation_starts(random_count: int = 300) -> Any:
 class Matcher:
     """Residuals of REFERENCE points against a moving cloud under x' = s·R·x + t, in reference units."""
 
-    def __init__(self, moving: Any, reference: Any, cap: float, with_scale: bool, reach: float = math.inf) -> None:
+    def __init__(self, moving: Any, reference: Any, cap: float, with_scale: bool, reach: float = math.inf, fixed_scale: bool = False) -> None:
         from scipy.spatial import cKDTree
 
         self.moving, self.reference, self.cap, self.with_scale, self.reach = moving, reference, cap, with_scale, reach
+        self.fixed_scale = fixed_scale  # ICP keeps each start's scale: a free scale drifts into wrong basins on a dense whole
         self.tree = cKDTree(moving, leafsize=64, balanced_tree=False, compact_nodes=False)  # builds fast, queries ~4x faster here
 
     def residuals(self, s: float, r: Any, t: Any) -> tuple[Any, Any]:
@@ -115,24 +118,51 @@ class Matcher:
             keep = (res <= np.quantile(res, trim)) & np.isfinite(res)
             if keep.sum() < 10:
                 break
-            s, r, t = umeyama(self.moving[index[keep]], self.reference[keep], self.with_scale)
+            s, r, t = umeyama(self.moving[index[keep]], self.reference[keep], self.with_scale, start[0] if self.fixed_scale else None)
             if not (math.isfinite(s) and start[0] / 4 < s < start[0] * 4):  # a collapsing fit is a dead end
                 break
             pose = (s, r, t)
         return best
 
 
-def estimate(moving: Any, reference: Any, with_scale: bool = True, random_count: int = 300) -> Fit:
-    """Fit x' = s·R·x + t from MOVING to REFERENCE centres (n,3 arrays; REFERENCE is a part of MOVING)."""
+def _anchored_starts(coarse: Matcher, reference: Any, centre_r: Any, scales: list[float], rotations: Any, cap: float, rng: Any, keep: int = 150) -> list[tuple[float, Any, Any]]:
+    """Starts for a reference much smaller than the moving cloud.
+
+    For each (rotation, scale), put the reference point nearest its median on each of ANCHORS moving points and score
+    PROBES reference points with a loose cap; the best anchor per (rotation, scale) gives a start, the best ``keep`` are returned.
+    """
+    import numpy as np
+
+    anchors = coarse.moving[rng.choice(len(coarse.moving), min(ANCHORS, len(coarse.moving)), replace=False)]
+    probes = reference[rng.choice(len(reference), min(PROBES, len(reference)), replace=False)]
+    p0 = reference[np.argmin(np.linalg.norm(reference - centre_r, axis=1))]
+    scored = []
+    for r in rotations:
+        for s in scales:
+            queries = anchors[:, None, :] + (probes - p0) @ r / s  # Rᵀ(p - p0)/s around each anchor, in moving units
+            distance, _ = coarse.tree.query(queries.reshape(-1, 3), distance_upper_bound=cap / s, workers=-1)
+            loss = (np.minimum(s * distance.reshape(len(anchors), -1), cap) ** 2).mean(1)
+            best = int(loss.argmin())
+            scored.append((float(loss[best]), len(scored), (s, r, p0 - s * r @ anchors[best])))
+    scored.sort(key=lambda item: item[:2])
+    return [item[2] for item in scored[:keep]]
+
+
+def estimate(moving: Any, reference: Any, with_scale: bool = True, random_count: int = 300, anchored: bool = False) -> Fit:
+    """Fit x' = s·R·x + t from MOVING to REFERENCE centres (n,3 arrays; REFERENCE is a part of MOVING).
+
+    ``anchored``: REFERENCE may be much smaller than MOVING, so the median-to-median start is useless;
+    also try putting one reference point on each of many MOVING points (see `_anchored_starts`).
+    """
     import numpy as np
 
     if len(moving) < 100 or len(reference) < 100:
         raise GausserError("Too few opaque splats to align (need at least 100 in each)")
     with np.errstate(all="ignore"):  # Accelerate's matmul raises spurious FP warnings
-        return _estimate(moving, reference, with_scale, random_count)
+        return _estimate(moving, reference, with_scale, random_count, anchored)
 
 
-def _estimate(moving: Any, reference: Any, with_scale: bool, random_count: int) -> Fit:
+def _estimate(moving: Any, reference: Any, with_scale: bool, random_count: int, anchored: bool) -> Fit:
     import numpy as np
 
     rng = np.random.default_rng(0)
@@ -144,19 +174,20 @@ def _estimate(moving: Any, reference: Any, with_scale: bool, random_count: int) 
     extent = float(np.linalg.norm(np.percentile(reference, 99, 0) - np.percentile(reference, 1, 0)))
     cap = 0.05 * extent
     ratio = float(np.median(np.linalg.norm(reference - centre_r, axis=1)) / np.median(np.linalg.norm(moving - centre_m, axis=1)))
-    scales = [ratio * f for f in SCALE_STEPS] if with_scale else [1.0]
+    scales = [ratio * f for f in (PART_SCALE_STEPS if anchored else SCALE_STEPS)] if with_scale else [1.0]
 
-    coarse = Matcher(sample(moving, COARSE_POINTS[1]), sample(reference, COARSE_POINTS[0]), cap, with_scale, 0.3 * extent)
+    coarse = Matcher(sample(moving, WHOLE_POINTS if anchored else COARSE_POINTS[1]), sample(reference, COARSE_POINTS[0]), cap, with_scale, 0.3 * extent, fixed_scale=anchored)
     ranked: list[tuple[float, int, tuple[float, Any, Any]]] = []
-    for r in rotation_starts(random_count):
-        for s in scales:
-            start = (s, r, centre_r - s * r @ centre_m)
-            loss, pose = coarse.icp(start, steps=6, trim=0.8)
-            ranked.append((loss, len(ranked), pose))
+    starts = _anchored_starts(coarse, reference, centre_r, scales, rotation_starts(random_count), 0.2 * extent, rng) if anchored else (
+        (s, r, centre_r - s * r @ centre_m) for r in rotation_starts(random_count) for s in scales
+    )
+    for start in starts:
+        loss, pose = coarse.icp(start, steps=20 if anchored else 6, trim=0.8)
+        ranked.append((loss, len(ranked), pose))
     ranked.sort(key=lambda item: item[:2])
 
     fine = Matcher(sample(moving, FINE_POINTS[1]), sample(reference, FINE_POINTS[0]), cap, with_scale)
-    finalists = sorted((fine.icp(pose, steps=40, trim=0.8) for _, _, pose in ranked[:5]), key=lambda item: item[0])
+    finalists = sorted((fine.icp(pose, steps=40, trim=0.8) for _, _, pose in ranked[:15 if anchored else 5]), key=lambda item: item[0])
     loss, pose = fine.icp(finalists[0][1], steps=150, trim=0.9)
 
     # Report on every reference point and all opaque moving splats.
@@ -164,6 +195,18 @@ def _estimate(moving: Any, reference: Any, with_scale: bool, random_count: int) 
     res, _ = report.residuals(*pose)
     best = np.sort(res)[: int(0.7 * len(res))]
     return Fit(pose[0], pose[1], pose[2], float(np.sqrt((best**2).mean())), float((res < 0.02 * extent).mean()))
+
+
+def estimate_part(part: Any, whole: Any, with_scale: bool = True, random_count: int = 300) -> Fit:
+    """Fit x' = s·R·x + t from PART to WHOLE when PART is a piece of WHOLE (the reverse of `estimate`).
+
+    The fit runs whole→part, so the part's points look up their nearest whole point, then inverts it.
+    ``rms`` is converted to whole units; ``inliers`` counts the part's points within 2% of the part's extent.
+    """
+    inverse = estimate(whole, part, with_scale, random_count, anchored=True)
+    s = 1 / inverse.scale
+    r = inverse.rotation.T
+    return Fit(s, r, -s * r @ inverse.translation, inverse.rms * s, inverse.inliers)
 
 
 def euler_for_splat_transform(r: Any) -> tuple[float, float, float]:
@@ -189,7 +232,7 @@ def transform_args(fit: Fit) -> list[str]:
     return ["-s", f"{fit.scale:.9g}", "-r", f"{x:.9g},{y:.9g},{z:.9g}", "-t", f"{-tx:.9g},{-ty:.9g},{tz:.9g}"]
 
 
-def align(moving: Path, references: list[Path], out: Path, *, with_scale: bool = True) -> Fit:
+def align(moving: Path, references: list[Path], out: Path, *, with_scale: bool = True, moving_is_part: bool = False) -> Fit:
     """Write MOVING moved into the REFERENCE frame to ``out``; inputs stay untouched."""
     import numpy as np
 
@@ -208,10 +251,10 @@ def align(moving: Path, references: list[Path], out: Path, *, with_scale: bool =
         # splat-transform decodes SOG (log-encoded means) and LOD children itself; never decode them here.
         run_tool([tool, "-w", *map(str, references), str(work / "reference.ply")], cwd=work)
         _, reference = read_ply(work / "reference.ply")
-        fit = estimate(opaque_centres(data), opaque_centres(reference), with_scale)
+        fit = (estimate_part if moving_is_part else estimate)(opaque_centres(data), opaque_centres(reference), with_scale)
         print(f"scale {fit.scale:.6g}\nrotation\n{np.array2string(fit.rotation, precision=6, suppress_small=True)}")
         print(f"translation {np.array2string(fit.translation, precision=6)}")
-        print(f"trimmed RMS {fit.rms:.4g}, inliers {fit.inliers:.1%} of reference splats (within 2% of its extent)")
+        print(f"trimmed RMS {fit.rms:.4g}, inliers {fit.inliers:.1%} of {'moving' if moving_is_part else 'reference'} splats (within 2% of its extent)")
         run_tool([tool, "-w", str(moving), *transform_args(fit), str(work / "aligned.ply")], cwd=work)
         aligned_header, aligned = read_ply(work / "aligned.ply")
         expected = fit.scale * np.einsum("ij,nj->ni", fit.rotation, xyz(data).astype(np.float64)) + fit.translation  # einsum: no spurious matmul warnings
