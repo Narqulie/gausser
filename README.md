@@ -49,9 +49,9 @@ LOD set.
 | Command | Does | Writes |
 |---|---|---|
 | `gausser frames SOURCE [-- args]` | Sharp Frames picks sharp frames from a video | `images/` |
-| `gausser mask PROMPT` | SAM3 masks the subject | `masks/`, `colmap/masks/` |
-| `gausser solve` | COLMAP finds the camera poses | `database.db`, `sparse/0/` |
-| `gausser train [-- args]` | Brush (default) or `--trainer msplat` trains splats; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
+| `gausser mask PROMPT [--miss drop]` | SAM3 masks the subject | `masks/`, `colmap/masks/` |
+| `gausser solve [--no-masks]` | COLMAP finds the camera poses | `database.db`, `sparse/0/` |
+| `gausser train [--no-masks] [-- args]` | Brush (default) or `--trainer msplat` trains splats; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser status` | Shows what the scene has and which tools are installed | — |
@@ -59,6 +59,22 @@ LOD set.
 Every command takes `-s/--scene DIR` (default: current folder) and `--help`.
 Only one command at a time can change a scene; a second one stops with an error
 instead of overwriting the first one's work. `status` and `view` always run.
+
+## Subject plus context from one solve
+
+Mask the subject, but solve COLMAP on the whole images: masks that restrict COLMAP
+to the subject lose registrations and leave no background points. Then train twice on
+that one model, so the two splats share coordinates and can be merged later:
+
+```bash
+gausser mask statue --miss drop   # frames SAM3 misses are ignored by Brush, not trained whole
+gausser solve --no-masks          # COLMAP sees the whole image
+gausser train --no-masks          # context splat: unmasked
+gausser train                     # statue splat: masked
+```
+
+`gausser run --prompt statue --no-masks` makes the masks and then solves and trains
+without them (the first two steps of the recipe, minus `--miss drop`).
 
 ## How state works
 
@@ -86,8 +102,12 @@ The files are the state. There is no database or manifest.
 
 - **Masks.** Brush reads `masks/<stem>.png`. COLMAP reads `colmap/masks/<name><ext>.png`;
   the double extension is required. If SAM3 finds nothing in an image, that image
-  gets a white mask, so it is kept whole and the run continues. Try
-  `--threshold 0.3` if many images miss.
+  gets a white mask, so it is kept whole and the run continues (`--miss keep`, the
+  default). With `--miss drop` its Brush mask is black, so Brush ignores that image,
+  and its COLMAP mask stays white, so it still registers. Use `drop` when a whole-image
+  fallback would train people, water or sky into the subject. Try
+  `--threshold 0.3` if many images miss. `--no-masks` on `solve` and `train` ignores
+  existing masks; masks are still deleted when new ones are made.
 - **Matching.** `--matcher auto` uses exhaustive matching up to 200 images and
   sequential matching with loop detection above that. Exhaustive matching on 500+
   images runs for hours. Loop detection also matches distant images that look
@@ -108,7 +128,8 @@ The files are the state. There is no database or manifest.
   runs with the same split.
 - **Msplat** is experimental. It has no mask input, so with masks gausser
   composites each image onto black and trains against a black background. The
-  masked-out areas become empty space. Ctrl+C saves a checkpoint; continue with
+  masked-out areas become empty space (so `--miss drop` images become all black
+  there; prefer Brush for that). Ctrl+C saves a checkpoint; continue with
   `gausser train --resume <run>`.
 
 ## Install (macOS, Apple Silicon)

@@ -86,6 +86,22 @@ def test_solve_publishes_the_largest_colmap_model_as_sparse_0(tmp_path, tools):
     assert match[1] == "exhaustive_matcher"  # auto: few images
 
 
+def test_solve_no_masks_ignores_existing_colmap_masks(tmp_path, tools):
+    scene = make_scene(tmp_path)
+    scene.colmap_masks.mkdir(parents=True)
+
+    def fake_colmap(command):
+        if command[1] == "feature_extractor":
+            Path(command[command.index("--database_path") + 1]).write_bytes(b"db")
+        if command[1] == "mapper":
+            write_model(Path(command[command.index("--output_path") + 1]) / "0", 3)
+
+    tools.on_run(fake_colmap)
+    steps.solve(scene, no_masks=True)
+
+    assert "--ImageReader.mask_path" not in tools.commands[0]
+
+
 def test_solve_stops_the_pipeline_when_most_images_are_not_placed(tmp_path, tools):
     scene = make_scene(tmp_path, images=5)
 
@@ -154,7 +170,7 @@ def test_mask_keeps_whole_image_on_a_miss_but_fails_when_nothing_matches(tmp_pat
             name = Path(image.filename).name
             return (np.zeros((2, 4), dtype=bool), 0.9) if name in hits else None
 
-    def save_masks(mask, image, brush_dir, colmap_dir, dilation, feather):
+    def save_masks(mask, image, brush_dir, colmap_dir, dilation, feather, colmap_mask=None):
         (brush_dir / f"{image.stem}.png").write_bytes(b"white" if mask.all() else b"subject")
         (colmap_dir / f"{image.name}.png").write_bytes(b"")
 
@@ -172,6 +188,52 @@ def test_mask_keeps_whole_image_on_a_miss_but_fails_when_nothing_matches(tmp_pat
     with pytest.raises(GausserError, match="no 'statue'"):
         steps.mask(scene, "statue")
     assert (scene.masks / "hit.png").read_bytes() == b"subject"  # previous masks untouched
+
+
+def test_mask_miss_drop_writes_black_brush_mask_and_white_colmap_mask(tmp_path, monkeypatch):
+    np = pytest.importorskip("numpy")
+    image_module = pytest.importorskip("PIL.Image")
+    scene = Scene(tmp_path)
+    scene.images.mkdir()
+    for name in ("hit.png", "miss.png"):
+        image_module.new("RGB", (4, 2)).save(scene.images / name)
+
+    class Predictor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def predict(self, image, prompt, threshold, all_instances):
+            return (np.zeros((2, 4), dtype=bool), 0.9) if Path(image.filename).name == "hit.png" else None
+
+    saved = {}
+
+    def save_masks(mask, image, brush_dir, colmap_dir, dilation, feather, colmap_mask=None):
+        saved[image.name] = (mask.any(), mask.all() if colmap_mask is None else colmap_mask.all())
+        (brush_dir / f"{image.stem}.png").write_bytes(b"")
+        (colmap_dir / f"{image.name}.png").write_bytes(b"")
+
+    monkeypatch.setitem(sys.modules, "gausser.sam", types.SimpleNamespace(Predictor=Predictor, save_masks=save_masks))
+
+    steps.mask(scene, "statue", miss="drop")
+
+    # (Brush mask has any subject pixel, COLMAP mask is all white)
+    assert saved == {"hit.png": (False, False), "miss.png": (False, True)}
+
+
+def test_mask_save_masks_colmap_override_is_independent_of_the_brush_mask(tmp_path):
+    np = pytest.importorskip("numpy")
+    image_module = pytest.importorskip("PIL.Image")
+    pytest.importorskip("torch")
+    from gausser import sam
+
+    brush, colmap = tmp_path / "b", tmp_path / "c"
+    brush.mkdir()
+    colmap.mkdir()
+    black = np.zeros((2, 4), dtype=bool)
+    sam.save_masks(black, Path("a.jpg"), brush, colmap, 0, 0, ~black)
+
+    with image_module.open(brush / "a.png") as b, image_module.open(colmap / "a.jpg.png") as c:
+        assert b.getextrema() == (0, 0) and c.getextrema() == (255, 255)
 
 
 def test_lod_uses_newest_export_and_current_splat_transform_flags(tmp_path, tools):
@@ -202,7 +264,7 @@ def no_caffeinate(monkeypatch):
 @pytest.fixture
 def fake_steps(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(steps, "solve", lambda scene, matcher: calls.append("solve"))
+    monkeypatch.setattr(steps, "solve", lambda scene, matcher, no_masks: calls.append("solve"))
     monkeypatch.setattr(steps, "train_brush", lambda scene, **kwargs: calls.append("train"))
     return calls
 
@@ -254,6 +316,34 @@ def test_brush_only_sees_current_inputs(tmp_path, tools):
     assert seen == [{"images", "sparse", "masks"}]
     assert tools.commands[-1][-2:] == ["--alpha-mode", "transparent"]
     assert sorted(path.name for path in run.iterdir()) == ["exports"]
+
+
+def test_brush_no_masks_leaves_masks_out_of_its_folder(tmp_path, tools):
+    scene = make_scene(tmp_path)
+    write_model(scene.sparse / "0", 3)
+    scene.masks.mkdir()
+    seen: list[set[str]] = []
+
+    def fake_brush(command):
+        seen.append({path.name for path in Path(command[1]).iterdir()})
+        export = Path(command[command.index("--export-path") + 1]) / "export_10.ply"
+        export.parent.mkdir(parents=True)
+        export.write_bytes(b"ply")
+
+    tools.on_run(fake_brush)
+    steps.train_brush(scene, iterations=10, export_every=5, no_masks=True)
+
+    assert seen == [{"images", "sparse"}]
+
+
+def test_run_passes_no_masks_to_solve_and_train(tmp_path, monkeypatch):
+    make_scene(tmp_path)
+    seen = []
+    monkeypatch.setattr(steps, "solve", lambda scene, matcher, no_masks: seen.append(("solve", no_masks)))
+    monkeypatch.setattr(steps, "train_brush", lambda scene, **kwargs: seen.append(("train", kwargs["no_masks"])))
+
+    assert cli.main(["run", "-s", str(tmp_path), "--no-masks"]) == 0
+    assert seen == [("solve", True), ("train", True)]
 
 
 def test_status_runs_on_an_empty_folder(tmp_path, capsys):

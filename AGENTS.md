@@ -33,6 +33,9 @@ src/gausser/
 - Changing an input deletes what was built from it. New frames delete the masks,
   `database.db` and `sparse/`; new masks delete `database.db` and `sparse/`.
   Never delete `runs/`.
+- `--no-masks` (`run`, `solve`, `train`) ignores existing masks: no COLMAP `mask_path`, no `masks` link in
+  Brush's staging folder, no Msplat compositing. `mask --miss drop` writes a black Brush mask and a white
+  COLMAP mask for an image SAM3 misses (default `keep`: white in both).
 - Explicit step commands always run. Only `run` skips steps.
 - Entry: `gausser`, `gausser FOLDER` or `gausser VIDEO` (one argument that isn't a
   command and that exists or looks like a path) opens `guide.guided` in a terminal.

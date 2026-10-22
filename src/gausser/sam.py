@@ -62,10 +62,18 @@ class Predictor:
         return merged, hits[0][0]
 
 
-def save_masks(mask: np.ndarray, image: Path, brush_dir: Path, colmap_dir: Path, dilation: int, feather: int) -> None:
-    """Write the Brush mask (<stem>.png, softened) and the COLMAP mask (<name><ext>.png, hard)."""
+def save_masks(
+    mask: np.ndarray, image: Path, brush_dir: Path, colmap_dir: Path, dilation: int, feather: int,
+    colmap_mask: np.ndarray | None = None,
+) -> None:
+    """Write the Brush mask (<stem>.png, softened) and the COLMAP mask (<name><ext>.png, hard).
+
+    The COLMAP mask is ``mask`` unless ``colmap_mask`` says otherwise.
+    """
     hard = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
-    hard.save(colmap_dir / f"{image.name}.png")
+    Image.fromarray((mask if colmap_mask is None else colmap_mask).astype(np.uint8) * 255, mode="L").save(
+        colmap_dir / f"{image.name}.png"
+    )
     soft = hard
     if dilation > 0:
         soft = soft.filter(ImageFilter.MaxFilter(dilation * 2 + 1))

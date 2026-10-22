@@ -37,6 +37,18 @@ def _add_mask_options(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--feather", type=int, default=0, help="blur Brush mask edges by N pixels")
     group.add_argument("--device", default="auto", help="auto, mps, cuda or cpu")
     group.add_argument("--sam-checkpoint", help="local SAM3 checkpoint instead of Hugging Face")
+    group.add_argument(
+        "--miss", choices=("keep", "drop"), default="keep",
+        help="when SAM3 finds nothing in an image: keep = train on the whole image (default); "
+        "drop = Brush ignores the image, COLMAP still uses it",
+    )
+
+
+def _add_no_masks_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-masks", action="store_true",
+        help="ignore existing masks: COLMAP sees whole images, Brush and Msplat train on whole images",
+    )
 
 
 def _add_solve_options(parser: argparse.ArgumentParser) -> None:
@@ -96,6 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--from", dest="from_step", choices=STEPS, help="redo this step and every step after it")
     for add in (_add_mask_options, _add_solve_options, _add_train_options, _add_lod_options):
         add(run)
+    _add_no_masks_option(run)
 
     frames = commands.add_parser(
         "frames", parents=[common], help="select sharp video frames into images/",
@@ -110,12 +123,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     solve = commands.add_parser("solve", parents=[common], help="find camera poses with COLMAP")
     _add_solve_options(solve)
+    _add_no_masks_option(solve)
 
     train = commands.add_parser(
         "train", parents=[common], help="train splats with Brush or Msplat",
         description="Train splats. Extra arguments after -- go to Brush, e.g. -- --alpha-mode transparent.",
     )
     _add_train_options(train)
+    _add_no_masks_option(train)
     train.add_argument("--resume", metavar="RUN", help="Msplat: continue an interrupted run")
     train.add_argument("extra", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
 
@@ -140,7 +155,7 @@ def _levels(raw: str) -> tuple[int, ...]:
 def _mask(scene: Scene, prompt: str, args: argparse.Namespace) -> None:
     steps.mask(
         scene, prompt, threshold=args.threshold, all_instances=args.all_instances, dilation=args.dilation,
-        feather=args.feather, device=args.device, checkpoint=args.sam_checkpoint,
+        feather=args.feather, device=args.device, checkpoint=args.sam_checkpoint, miss=args.miss,
     )
 
 
@@ -150,14 +165,14 @@ def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None, ex
 
         export = msplat.train(
             scene, iterations=args.iterations, downscale_factor=args.downscale,
-            checkpoint_every=args.checkpoint_every, resume=resume,
+            checkpoint_every=args.checkpoint_every, resume=resume, no_masks=args.no_masks,
         )
         print(f"Export: {export}")
     else:
         steps.train_brush(
             scene, iterations=args.iterations, export_every=args.export_every,
             max_splats=args.max_splats, max_resolution=args.max_resolution, eval_split=args.eval_split,
-            extra=extra or [],
+            extra=extra or [], no_masks=args.no_masks,
         )
 
 
@@ -196,7 +211,7 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
         _mask(scene, args.prompt, args)
         ran("mask")
     if due("solve", scene.solve_done(images)):
-        steps.solve(scene, args.matcher)
+        steps.solve(scene, args.matcher, args.no_masks)
         ran("solve")
     if due("train", scene.train_done()):
         _train(scene, args)
@@ -348,7 +363,7 @@ def dispatch(scene: Scene, args: argparse.Namespace) -> None:
     elif args.command == "mask":
         _mask(scene, args.prompt, args)
     elif args.command == "solve":
-        steps.solve(scene, args.matcher)
+        steps.solve(scene, args.matcher, args.no_masks)
     elif args.command == "train":
         if args.resume:
             args.trainer = "msplat"  # only Msplat runs can be resumed

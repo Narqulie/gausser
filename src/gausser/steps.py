@@ -44,11 +44,13 @@ def mask(
     feather: int = 0,
     device: str = "auto",
     checkpoint: str | None = None,
+    miss: str = "keep",
 ) -> None:
     """Mask the prompted subject with SAM3 into masks/ and colmap/masks/.
 
-    An image without a hit gets an all-white mask (keep the whole image) so one
-    miss never throws away the rest of the run.
+    An image without a hit gets an all-white mask (`miss="keep"`: train on the whole image) so
+    one miss never throws away the rest of the run. With `miss="drop"` its Brush mask is
+    all black (ignored in training) and its COLMAP mask stays white (still registers).
     """
     images = scene.require_images()
     try:
@@ -74,14 +76,18 @@ def mask(
     for index, path in enumerate(images, start=1):
         with Image.open(path) as image:
             result = predictor.predict(image, prompt, threshold, all_instances)
+            colmap_subject = None
             if result is None:
                 misses.append(path.name)
                 subject = np.ones((image.height, image.width), dtype=bool)
                 note = "no hit, keeping whole image"
+                if miss == "drop":
+                    colmap_subject, subject = subject, ~subject
+                    note = "no hit, dropped from training"
             else:
                 subject, score = result
                 note = f"{score:.2f}"
-        sam.save_masks(subject, path, brush_dir, colmap_dir, dilation, feather)
+        sam.save_masks(subject, path, brush_dir, colmap_dir, dilation, feather, colmap_subject)
         print(f"[{index}/{len(images)}] {path.name}  {note}", flush=True)
 
     if len(misses) == len(images):
@@ -92,11 +98,12 @@ def mask(
     shutil.rmtree(staged, ignore_errors=True)
     print(f"Masked {len(images) - len(misses)}/{len(images)} images")
     if misses:
-        print("No hit (unmasked): " + ", ".join(misses))
+        outcome = "dropped from training, kept for COLMAP" if miss == "drop" else "unmasked"
+        print(f"No hit ({outcome}): " + ", ".join(misses))
 
 
-def solve(scene: Scene, matcher: str = "auto") -> None:
-    """Run COLMAP structure-from-motion into database.db and sparse/0."""
+def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
+    """Run COLMAP structure-from-motion into database.db and sparse/0; `no_masks` ignores colmap/masks/."""
     colmap = require_tool("colmap", COLMAP_HINT)
     images = scene.require_images()
     if matcher == "auto":
@@ -113,7 +120,7 @@ def solve(scene: Scene, matcher: str = "auto") -> None:
         "--ImageReader.single_camera", "1",
         "--FeatureExtraction.use_gpu", gpu,
     ]
-    if scene.colmap_masks.is_dir():
+    if scene.colmap_masks.is_dir() and not no_masks:
         extract += ["--ImageReader.mask_path", str(scene.colmap_masks)]
     run_tool(extract, cwd=staged)
     match = [colmap, f"{matcher}_matcher", "--database_path", str(database), "--FeatureMatching.use_gpu", gpu]
@@ -160,8 +167,12 @@ def train_brush(
     max_resolution: int | None = None,
     eval_split: int | None = None,
     extra: list[str] | None = None,
+    no_masks: bool = False,
 ) -> Path:
-    """Train with Brush into a new runs/brush/<time>/ folder; `extra` goes to Brush last."""
+    """Train with Brush into a new runs/brush/<time>/ folder; `extra` goes to Brush last.
+
+    `no_masks` leaves masks/ out of Brush's folder, so it trains on whole images.
+    """
     brush = require_tool("brush", BRUSH_HINT)
     scene.require_model()
     staged = scene.staging("brush")
@@ -170,7 +181,7 @@ def train_brush(
     # Give it a folder that holds only the current inputs.
     dataset = staged / "dataset"
     dataset.mkdir()
-    for source in (scene.images, scene.sparse, scene.masks):
+    for source in (scene.images, scene.sparse, *(() if no_masks else (scene.masks,))):
         if source.is_dir():
             (dataset / source.name).symlink_to(source)
     command = [

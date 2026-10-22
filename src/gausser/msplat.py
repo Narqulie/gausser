@@ -31,7 +31,10 @@ def _composite(image: Path, mask: Path, output: Path) -> None:
     Image.composite(rgb, Image.new("RGB", rgb.size), alpha).save(output, quality=95)
 
 
-def train(scene: Scene, *, iterations: int, downscale_factor: float, checkpoint_every: int, resume: str | None) -> Path:
+def train(
+    scene: Scene, *, iterations: int, downscale_factor: float, checkpoint_every: int, resume: str | None,
+    no_masks: bool = False,
+) -> Path:
     try:
         import msplat
     except ImportError as exc:
@@ -52,7 +55,7 @@ def train(scene: Scene, *, iterations: int, downscale_factor: float, checkpoint_
         dataset.mkdir(parents=True)
         for name in ("cameras.bin", "images.bin", "points3D.bin"):
             shutil.copy2(model / name, dataset / name)
-        masked = scene.masks_done(images)
+        masked = not no_masks and scene.masks_done(images)
         for index, image in enumerate(images, start=1):
             if masked:
                 _composite(image, scene.masks / f"{image.stem}.png", dataset / image.name)
