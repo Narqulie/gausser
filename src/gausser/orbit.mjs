@@ -28,13 +28,27 @@ await page.evaluate(async ({ orbit, frames, keys, fps }) => {
     const scene = window.scene;
     const events = scene.events;
     const splat = scene.elements.find(e => e.type === 'splat');
-    const m = splat.entity.getWorldTransform().data; // column-major 4x4
+    const Vec3 = scene.camera.position.constructor;
+    let m = splat.entity.getWorldTransform().data; // column-major 4x4
     const toWorld = ([x, y, z], w = 1) => [
         m[0] * x + m[4] * y + m[8] * z + m[12] * w,
         m[1] * x + m[5] * y + m[9] * z + m[13] * w,
         m[2] * x + m[6] * y + m[10] * z + m[14] * w
     ];
-    const Vec3 = scene.camera.position.constructor;
+    // SuperSplat's camera keeps world Y up, so turn the splat until the scene's up is world Y
+    // (otherwise the orbit rolls whenever the scene's up is not the PLY's -y).
+    {
+        const [ux, uy, uz] = toWorld(orbit.up, 0);
+        const l = Math.hypot(ux, uy, uz);
+        const angle = Math.acos(Math.max(-1, Math.min(1, uy / l))) * 180 / Math.PI;
+        if (angle > 0.01) {
+            const Quat = splat.entity.getLocalRotation().constructor;
+            const axis = Math.hypot(uz, ux) > 1e-9 ? new Vec3(-uz, 0, ux).normalize() : new Vec3(1, 0, 0);
+            const turn = new Quat().setFromAxisAngle(axis, angle);
+            splat.move(undefined, new Quat().mul2(turn, splat.entity.getLocalRotation()));
+            m = splat.entity.getWorldTransform().data;
+        }
+    }
     const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
     const norm = a => { const l = Math.hypot(...a); return a.map(v => v / l); };
 
