@@ -1,7 +1,7 @@
 """`gausser orbit`: render a 360° orbit video of a splat with SuperSplat's own video renderer.
 
-The camera path comes from the COLMAP model (cameras look at the subject), the vertical
-axis from the Brush export. A headed Chromium driven by ``orbit.mjs`` (Playwright) does the rendering.
+The camera path and the vertical axis come from the COLMAP model (cameras look at the
+subject; their image rows stay level). A headed Chromium driven by ``orbit.mjs`` (Playwright) does the rendering.
 """
 
 from __future__ import annotations
@@ -36,11 +36,11 @@ def has_playwright() -> bool:
     return (node_dir() / "node_modules" / "playwright-core").is_dir()
 
 
-def read_cameras(images_bin: Path) -> tuple[Any, Any]:
+def read_cameras(images_bin: Path) -> tuple[Any, Any, Any]:
     """Centres and viewing directions of all registered cameras in a binary COLMAP images.bin."""
     import numpy as np
 
-    centres, directions = [], []
+    centres, directions, axes = [], [], []
     with images_bin.open("rb") as f:
         (count,) = struct.unpack("<Q", f.read(8))
         for _ in range(count):
@@ -56,21 +56,21 @@ def read_cameras(images_bin: Path) -> tuple[Any, Any]:
             ])
             centres.append(-r.T @ np.array([tx, ty, tz]))
             directions.append(r.T @ np.array([0, 0, 1.0]))
-    return np.array(centres), np.array(directions)
+            axes.append(r[:2])  # camera right and image-down axes in world coordinates
+    return np.array(centres), np.array(directions), np.array(axes)
 
 
-def vertical_axis(ply: Path) -> Any:
-    """Unit up vector from Brush's `comment Vertical axis: x y z` PLY header line."""
+def camera_up(images_bin: Path) -> Any:
+    """Unit up vector: normal to the cameras' (level) right axes, on the side image-up points to.
+
+    Brush's `Vertical axis` guess can be far off when many frames look straight down (72° on a
+    drone set with top-down passes); a stabilised gimbal keeps every camera's right axis level.
+    """
     import numpy as np
 
-    with ply.open("rb") as f:
-        for line in iter(f.readline, b""):
-            if line.startswith(b"comment Vertical axis:"):
-                up = np.array([float(x) for x in line.split(b":")[1].split()])
-                return up / np.linalg.norm(up)
-            if line.startswith(b"end_header"):
-                break
-    raise GausserError(f"{ply.name} has no `comment Vertical axis` header; only Brush exports have one")
+    _, _, axes = read_cameras(images_bin)
+    up = np.linalg.svd(axes[:, 0], full_matrices=False)[2][-1]
+    return up if up @ -axes[:, 1].mean(0) > 0 else -up
 
 
 def orbit_params(images_bin: Path, up: Any, zoom: float = 1.3, drop: float = 0.35) -> dict[str, Any]:
@@ -81,7 +81,7 @@ def orbit_params(images_bin: Path, up: Any, zoom: float = 1.3, drop: float = 0.3
     """
     import numpy as np
 
-    centres, directions = read_cameras(images_bin)
+    centres, directions, _ = read_cameras(images_bin)
     side = np.abs(directions @ up) < 0.7  # top-down frames do not aim at the subject's centre
     if side.sum() < 3:
         raise GausserError(f"Only {int(side.sum())} registered cameras look sideways; cannot find an orbit centre")
@@ -164,7 +164,7 @@ def orbit(
         raise GausserError(f"playwright-core not found in {node_dir()}; run scripts/install-macos.sh")
     model = scene.require_model()
     splat = resolve_splat(scene, source)
-    params = orbit_params(model / "images.bin", vertical_axis(splat), zoom, drop)
+    params = orbit_params(model / "images.bin", camera_up(model / "images.bin"), zoom, drop)
 
     staged = scene.staging("orbit")
     (staged / "orbit.json").write_text(json.dumps(params))

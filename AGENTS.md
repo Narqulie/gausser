@@ -21,7 +21,7 @@ src/gausser/
 ├── composite.py `gausser composite`: visual-hull filter of the statue splat, voxel carve of the context, PLY merge
 ├── align.py   `gausser align`: fits a similarity (multi-start trimmed ICP) of a splat onto a published one; splat-transform applies it
 ├── view.py    `gausser view`: serves a SuperSplat build plus one splat on 127.0.0.1 (`serve()` is shared with orbit)
-├── orbit.py   `gausser orbit`: camera path from sparse/0 + PLY "Vertical axis"; runs orbit.mjs with node
+├── orbit.py   `gausser orbit`: camera path and up from sparse/0 (cameras' level right axes); runs orbit.mjs with node
 ├── orbit.mjs  Playwright driver: sets camera keys in SuperSplat and saves its `render.video` download
 └── scene.py   Scene paths, image listing, replace()/remove(), run_tool()
 ```

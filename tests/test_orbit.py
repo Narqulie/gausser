@@ -70,13 +70,22 @@ def test_orbit_params_zoom_and_drop_keep_the_camera_height(tmp_path):
     assert params["target"][2] + params["height"] == pytest.approx(1.5)  # camera stays where it was
 
 
-def test_vertical_axis_needs_the_brush_header(tmp_path):
-    (tmp_path / "a.ply").write_bytes(PLY_HEADER)
-    (tmp_path / "b.ply").write_bytes(b"ply\nend_header\n")
+def test_camera_up_comes_from_level_camera_rows_even_with_top_down_frames(tmp_path):
+    write_ring(tmp_path / "images.bin", [1.0, -2.0, 0.5], radius=4.0, height=1.5)
+    with (tmp_path / "images.bin").open("r+b") as f:  # add straight-down cameras, as drones film them
+        count = struct.unpack("<Q", f.read(8))[0]
+        f.seek(0, 2)
+        for i in range(count, count + 12):
+            yaw = 2 * np.pi * i / 12
+            x = np.array([np.cos(yaw), np.sin(yaw), 0.0])
+            z = np.array([0.0, 0.0, -1.0])
+            r = np.array([x, np.cross(z, x), z])
+            f.write(struct.pack("<idddddddi", i, *quaternion(r), *(-r @ [1.0, -2.0, 9.0]), 1))
+            f.write(f"img{i}.jpg\0".encode() + struct.pack("<Q", 0))
+        f.seek(0)
+        f.write(struct.pack("<Q", count + 12))
 
-    assert list(orbit.vertical_axis(tmp_path / "a.ply")) == [0, 0, 1]
-    with pytest.raises(GausserError, match="Vertical axis"):
-        orbit.vertical_axis(tmp_path / "b.ply")
+    assert orbit.camera_up(tmp_path / "images.bin") == pytest.approx([0.0, 0.0, 1.0], abs=1e-9)
 
 
 @pytest.fixture

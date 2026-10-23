@@ -68,7 +68,7 @@ instead of overwriting the first one's work. `align` needs no scene at all. `sta
 
 `gausser orbit` needs `sparse/0` and a Brush export. The camera circles the point nearest all
 camera viewing axes, at the median camera distance times `--zoom` (1.3) and aimed `--drop` (0.35, splat
-units) below that point, with "up" from the PLY's `Vertical axis` header. It drives a visible Chromium
+units) below that point, with "up" from the cameras (normal to their level right axes; Brush's `Vertical axis` guess can be far off on top-down-heavy drone sets). It drives a visible Chromium
 window through Playwright (installed by `scripts/install-macos.sh` into `~/.local/share/gausser/node`;
 override with `GAUSSER_NODE_DIR`, and `GAUSSER_CHROME` picks another browser executable), so leave the window alone
 while it renders.
@@ -151,8 +151,8 @@ each, then a refinement on the best. The reference may be a cropped or cleaned p
 axis. It prints scale, rotation, translation, the trimmed RMS and the share of reference splats within 2% of
 the reference's extent: look for an RMS far below the splat size and ~100% inliers. `splat-transform`
 applies the result (quaternions and spherical harmonics rotate with it), and gausser reads the output back
-and compares it with the planned means. The Brush `Vertical axis` header is rotated along, so `orbit` still
-works. Expect about a minute for million-splat clouds. `--no-scale` fits rotation and translation only.
+and compares it with the planned means. The Brush `Vertical axis` header is rotated along. `orbit` follows the scene's cameras, so render
+orbits of the unaligned splat. Expect about a minute for million-splat clouds. `--no-scale` fits rotation and translation only.
 
 ## How state works
 
