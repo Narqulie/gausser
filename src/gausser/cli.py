@@ -165,6 +165,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="#rrggbb, `jutaka` (the public-art viewer's sky), or 'linear-gradient(to bottom, rgb(r,g,b) P%%, ...)' "
         "(default: SuperSplat's background); a gradient renders twice and blends with ffmpeg",
     )
+    orbit.add_argument("--target", type=float, nargs=3, metavar=("X", "Y", "Z"), help="orbit this point (splat coordinates) instead of the cameras' centre")
+    orbit.add_argument("--radius", type=float, help="orbit radius in splat units (overrides --zoom)")
     orbit.add_argument("-o", "--output", type=Path, help="write the video here instead of runs/orbit/<time>/orbit.mp4")
 
     composite = commands.add_parser(
@@ -382,6 +384,7 @@ def main(argv: list[str] | None = None) -> int:
             orbit(
                 scene, args.source, seconds=args.seconds, size=args.size,
                 zoom=args.zoom, drop=args.drop, out=args.output, background=args.background,
+                target=args.target, radius=args.radius,
             )
             return 0
         if args.command == "composite":  # reads existing files and only adds a new output; needs no lock

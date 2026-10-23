@@ -238,3 +238,20 @@ def test_orbit_bad_background_fails_before_rendering(orbit_scene, monkeypatch, c
 
     assert cli.main(["orbit", "-s", str(scene.root), "--background", "blue"]) == 1
     assert "--background" in capsys.readouterr().err
+
+
+
+def test_orbit_target_and_radius_override_the_camera_centre(orbit_scene, monkeypatch):
+    scene, _ = orbit_scene
+    seen: dict = {}
+
+    def run_tool(command, *, cwd, env=None):
+        seen["params"] = json.loads(Path(command[3]).read_text())
+        Path(command[4]).write_bytes(b"mp4")
+
+    monkeypatch.setattr(orbit, "run_tool", run_tool)
+
+    assert cli.main(["orbit", "-s", str(scene.root), "--target", "3", "3", "0", "--radius", "2", "--drop", "0"]) == 0
+
+    assert seen["params"]["target"] == pytest.approx([3.0, 3.0, 0.0])
+    assert seen["params"]["radius"] == pytest.approx(2.0)
