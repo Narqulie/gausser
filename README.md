@@ -58,7 +58,7 @@ LOD set.
 | `gausser composite [--statue PLY] [--context PLY] [--radius N] [--column R [--floor F]] [--cells N] [--slack N] [--grow N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` or `--exclude-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
 | `gausser align MOVING.ply --to REF… -o OUT.ply [--no-scale]` | Moves a re-trained splat into the coordinate frame of a published one (scale, rotation, translation fitted to the splat centres) | `OUT.ply` |
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
-| `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [--background jutaka] [--target X Y Z --radius R] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
+| `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [--background jutaka] [--target X Y Z --radius R --height H] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
 | `gausser status` | Shows what the scene has and which tools are installed | — |
 
 Every command takes `-s/--scene DIR` (default: current folder) and `--help`.

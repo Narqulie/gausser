@@ -167,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     orbit.add_argument("--target", type=float, nargs=3, metavar=("X", "Y", "Z"), help="orbit this point (splat coordinates) instead of the cameras' centre")
     orbit.add_argument("--radius", type=float, help="orbit radius in splat units (overrides --zoom)")
+    orbit.add_argument("--height", type=float, help="camera height above the target in splat units (default: the cameras' median)")
     orbit.add_argument("-o", "--output", type=Path, help="write the video here instead of runs/orbit/<time>/orbit.mp4")
 
     composite = commands.add_parser(
@@ -384,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
             orbit(
                 scene, args.source, seconds=args.seconds, size=args.size,
                 zoom=args.zoom, drop=args.drop, out=args.output, background=args.background,
-                target=args.target, radius=args.radius,
+                target=args.target, radius=args.radius, height=args.height,
             )
             return 0
         if args.command == "composite":  # reads existing files and only adds a new output; needs no lock

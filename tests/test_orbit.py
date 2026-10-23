@@ -251,7 +251,8 @@ def test_orbit_target_and_radius_override_the_camera_centre(orbit_scene, monkeyp
 
     monkeypatch.setattr(orbit, "run_tool", run_tool)
 
-    assert cli.main(["orbit", "-s", str(scene.root), "--target", "3", "3", "0", "--radius", "2", "--drop", "0"]) == 0
+    assert cli.main(["orbit", "-s", str(scene.root), "--target", "3", "3", "0", "--radius", "2", "--height", "0.5", "--drop", "0"]) == 0
 
     assert seen["params"]["target"] == pytest.approx([3.0, 3.0, 0.0])
     assert seen["params"]["radius"] == pytest.approx(2.0)
+    assert seen["params"]["height"] == pytest.approx(0.5)

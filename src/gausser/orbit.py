@@ -152,11 +152,13 @@ def composite_gradient(ffmpeg: str, black: Path, white: Path, gradient: Path, ou
 def orbit(
     scene: Scene, source: Path | None, *, seconds: float, size: str, zoom: float, drop: float, out: Path | None,
     background: str | None = None, target: list[float] | None = None, radius: float | None = None,
+    height: float | None = None,
 ) -> Path:
     """Render runs/orbit/<time>/orbit.mp4 (or ``out``); needs sparse/0 and a Brush export.
 
     ``target`` (x y z in the splat's coordinates) and ``radius`` override the camera-derived
-    orbit centre and radius, e.g. to circle one of several statues in a scene.
+    orbit centre and radius (``height``: camera height above the target), e.g. to circle one of
+    several statues in a scene.
     """
     match = re.fullmatch(r"(\d+)x(\d+)", size)
     if not match or seconds <= 0 or zoom <= 0:
@@ -174,6 +176,8 @@ def orbit(
         params["target"] = [t - drop * u for t, u in zip(target, up.tolist())]
     if radius is not None:
         params["radius"] = radius
+    if height is not None:
+        params["height"] = height
 
     staged = scene.staging("orbit")
     (staged / "orbit.json").write_text(json.dumps(params))
