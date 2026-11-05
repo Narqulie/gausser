@@ -91,7 +91,8 @@ def _cut(source: Path, out: Path, ranges: list[tuple[float, float]], fisheyes: b
         if span:
             command += ["-ss", f"{span[0]:g}", "-to", f"{span[1]:g}"]
         command += ["-i", str(source)]
-        command += ["-filter_complex", "[0:0][0:1]hstack"] if fisheyes else ["-map", "0:v:0"]
+        # QooCam lens streams are stored mirrored (qoocam.py): vflip un-mirrors each one.
+        command += ["-filter_complex", "[0:0]vflip[a];[0:1]vflip[b];[a][b]hstack"] if fisheyes else ["-map", "0:v:0"]
         run_tool([*command, "-an", *encode, str(out / f"part{index}.mp4")], cwd=out)
     return out
 

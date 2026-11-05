@@ -332,7 +332,7 @@ def test_qoocam_video_becomes_per_lens_views_solved_as_a_calibrated_two_lens_rig
 
     cuts = [c for c in tools.commands if c[0] == "ffmpeg"]
     assert [c[c.index("-ss") + 1 : c.index("-to") + 2] for c in cuts] == [["1.5", "-to", "32.5"], ["57", "-to", "80"]]
-    assert all("[0:0][0:1]hstack" in c for c in cuts)
+    assert all("[0:0]vflip[a];[0:1]vflip[b];[a][b]hstack" in c for c in cuts)  # stored lens images are mirrored
     rig = pano.lenses(scene.panos)
     assert rig is not None and rig["camera"] == "QooCam 8K"
     assert len(scene.image_files()) == 2 * pano.VIEWS

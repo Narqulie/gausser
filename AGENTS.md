@@ -136,9 +136,10 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + rec
   shared SIMPLE_PINHOLE camera and `pano.split_cameras` copies it per view index before configuring. Feature
   masks = the view's partition (each pano pixel in one view, as pycolmap does) AND colmap/masks AND masks-exclude.
   `pano.py` uses einsum, not `@`: numpy 1.26's Accelerate matmul emits spurious divide-by-zero warnings on macOS.
-- QooCam 8K calibration (kfix `LENS`): x_cam = M·(R·X + t), M = diag(1,−1,1), because the stored frames are the
-  calibration images flipped vertically (cy → 3839 − cy); t is in cm. Verified by SIFT matches across the
-  lens overlap (0.2° residual); without M the lenses disagree by ~5°. Rig frame = lens 0's camera frame; the
+- QooCam 8K calibration (kfix `LENS`, also `LENS=` in photo JPEG headers): x_cam = R·X + t, t in cm. The camera
+  stores every lens image vertically flipped, i.e. MIRRORED, relative to it (the lenses agree to 0.2° across their
+  overlap only with that flip; ~5° without). `frames` vflips each lens image on ingest (ffmpeg `vflip`, photos in
+  `qoocam.side_by_side`); treating the stored images as true via a flipped calibration gave mirrored splats. Rig frame = lens 0's camera frame; the
   grip is +x there. A fisheye rig keeps VIEWS = 14 (2 × 7) so view names and counts match equirect scenes.
 - `solve` levels every 360° model (`pano.level_transform` → `colmap model_transformer`, format
   "scale qw qx qy qz tx ty tz"): down = normal of the camera-centre plane, signed by the frames' own down

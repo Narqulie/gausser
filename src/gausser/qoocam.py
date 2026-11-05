@@ -3,9 +3,10 @@
 The raw .MOV holds two 3840×3840 HEVC streams (lens 0 and lens 1) and a top-level ``kfix`` box
 whose ``LENS`` entry is one hex line per lens of little-endian float32: 6 header values, f, cx,
 cy (lens 1 in side-by-side pixels), equidistant fisheye k1..k4, R (3×3, row-major) and t (cm),
-with x_cam = R·X + t. The stored frames are the calibration images flipped vertically, so
-cy becomes 3839 − cy and x_cam = M·(R·X + t), M = diag(1, −1, 1). Verified on a real clip by
-SIFT matches between the two lenses where they overlap: the calibration then agrees to 0.2°.
+with x_cam = R·X + t. The camera stores every lens image (video and photo) flipped vertically,
+i.e. mirrored, relative to that calibration: the two lenses agree to 0.2° where they overlap only
+with the flip (SIFT matches on a real clip), and splats built from the stored images came out
+mirrored. `frames` therefore flips each lens image back on ingest and uses the calibration as is.
 """
 
 from __future__ import annotations
@@ -89,8 +90,9 @@ def side_by_side(photo: Path, out: Path) -> None:
         if image.height != 2 * side:
             raise GausserError(f"{photo.name} is {image.width}x{image.height}, not two lens images one above the other")
         frame = Image.new("RGB", (2 * side, side))
-        frame.paste(image.crop((0, 0, side, side)), (0, 0))
-        frame.paste(image.crop((0, side, side, 2 * side)), (side, 0))
+        for index in (0, 1):  # un-mirror each lens image (see the module docstring)
+            lens = image.crop((0, index * side, side, (index + 1) * side)).transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+            frame.paste(lens, (index * side, 0))
     frame.save(out, quality=95)
 
 
@@ -104,14 +106,13 @@ def calibration(path: Path) -> dict[str, Any] | None:
     text = _lens_text(path)
     if text is None:
         return None
-    flip = np.diag([1.0, -1.0, 1.0])
     raw = []
     for index, line in enumerate(line for line in text.split("\r\n") if line.strip()):
         v = _lens_floats(line)
         f, cx, cy, k = v[6], v[7] - index * SIDE, v[8], v[9:13]
-        rotation = flip @ np.array(v[13:22]).reshape(3, 3)
-        translation = flip @ np.array(v[22:25]) / 100  # cm → m
-        raw.append((f, cx, SIDE - 1 - cy, k, rotation, translation))
+        rotation = np.array(v[13:22]).reshape(3, 3)
+        translation = np.array(v[22:25]) / 100  # cm → m
+        raw.append((f, cx, cy, k, rotation, translation))
     if len(raw) != 2:
         return None
     # Express every lens relative to lens 0: lens_from_rig = lens_from_world · (lens0_from_world)⁻¹.
