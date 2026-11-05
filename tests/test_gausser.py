@@ -465,7 +465,8 @@ def test_a_second_command_on_the_same_scene_fails_fast(tmp_path):
         with pytest.raises(GausserError, match="already working"):
             with Scene(tmp_path).lock():
                 pass
-        assert monitor.holder(scene)["argv"] == ["train"]  # the refused command did not erase the holder
+        held = monitor.holder(scene)
+        assert held and held["argv"] == ["train"]  # the refused command did not erase the holder
     with scene.lock():  # released again
         pass
 

@@ -157,6 +157,8 @@ function View({ id, sync, model, frame, show, pointSize, splat, selected, onPick
   splat: Splat | null; selected: string | null; onPick: (name: string) => void; look: LookRequest | null; label?: string;
 }) {
   const [status, setStatus] = useState("");
+  const [hover, setHover] = useState<{ name: string; x: number; y: number } | null>(null);
+  const depth = (frame?.scale ?? 1) * 0.06;
   const group = useRef<THREE.Group>(null);
   const photo = model?.cameras.find((c) => c.name === selected);
   // Looking through a camera hides its photo, so the splat shows from where the photo was taken; touching the view ends it.
@@ -174,7 +176,7 @@ function View({ id, sync, model, frame, show, pointSize, splat, selected, onPick
         {sync && <SyncCamera id={id} sync={sync} />}
         <group ref={group} quaternion={frame?.rotation} position={frame?.offset}>
           {model && show.points && <Points model={model} size={pointSize * (frame?.scale ?? 1) * 0.004} />}
-          {model && show.cameras && <Frustums cameras={model.cameras} depth={(frame?.scale ?? 1) * 0.06} focus={selected} />}
+          {model && show.cameras && <Frustums cameras={model.cameras} depth={depth} focus={selected} hover={hover?.name ?? null} />}
           {photo && show.cameras && !looking && (
             <Suspense fallback={null}>
               <Photo camera={photo} depth={(frame?.scale ?? 1) * 0.15} />
@@ -182,12 +184,13 @@ function View({ id, sync, model, frame, show, pointSize, splat, selected, onPick
           )}
           {show.splat && splat && <SplatView path={splat.path} onStatus={setStatus} />}
         </group>
-        {model && show.cameras && <CameraPicker cameras={model.cameras} group={group} onPick={onPick} />}
+        {model && show.cameras && <CameraPicker cameras={model.cameras} depth={depth} group={group} onPick={onPick} onHover={setHover} />}
         {model && frame && <LookThrough request={look} cameras={model.cameras} group={group} scale={frame.scale} />}
         {show.grid && frame && <gridHelper args={[frame.scale * 8, 40, "#34294f", "#34294f"]} position={[0, frame.floor, 0]} />}
         <OrbitControls makeDefault enableDamping dampingFactor={0.12} />
       </Canvas>
       {label && <div className="canvas-label">{label}</div>}
+      {hover && <div className="canvas-tip" style={{ left: hover.x + 14, top: hover.y + 10 }}>{hover.name}</div>}
       {status && <div className="canvas-note">{status}</div>}
     </div>
   );
@@ -283,35 +286,104 @@ function cameraWorld(camera: Camera, group: THREE.Group, x: number, y: number, z
   return group.localToWorld(local);
 }
 
-/** A click (not a drag) picks the camera whose centre is nearest on screen, within 14 px. */
-function CameraPicker({ cameras, group, onPick }: { cameras: Camera[]; group: MutableRefObject<THREE.Group | null>; onPick: (name: string) => void }) {
+/** The pointer is inside triangle abc (screen pixels). */
+function inTriangle(x: number, y: number, a: number[], b: number[], c: number[]): boolean {
+  const side = (p: number[], q: number[]) => (q[0] - p[0]) * (y - p[1]) - (q[1] - p[1]) * (x - p[0]);
+  const s1 = side(a, b);
+  const s2 = side(b, c);
+  const s3 = side(c, a);
+  return (s1 >= 0 && s2 >= 0 && s3 >= 0) || (s1 <= 0 && s2 <= 0 && s3 <= 0);
+}
+
+/** Distance from the pointer to segment pq (screen pixels). */
+function toSegment(x: number, y: number, p: number[], q: number[]): number {
+  const dx = q[0] - p[0];
+  const dy = q[1] - p[1];
+  const t = Math.max(0, Math.min(1, ((x - p[0]) * dx + (y - p[1]) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(x - p[0] - t * dx, y - p[1] - t * dy);
+}
+
+const EDGE_PX = 8; // a pointer this close to a frustum's lines counts as on it
+
+/**
+ * The camera under the pointer: any point of its drawn frustum (the pyramid's faces and base, or within
+ * 8 px of its lines) counts. Of several, the one nearest the viewer wins.
+ */
+function cameraAt(x: number, y: number, cameras: Camera[], depth: number, group: THREE.Group, view: THREE.Camera, size: { width: number; height: number }): string | null {
+  const screen = (v: THREE.Vector3) => {
+    v.project(view);
+    return [((v.x + 1) / 2) * size.width, ((1 - v.y) / 2) * size.height, v.z];
+  };
+  let best: [number, string] | null = null;
+  for (const c of cameras) {
+    const apex = screen(cameraWorld(c, group, 0, 0, 0));
+    if (apex[2] > 1 || (best && apex[2] >= best[0])) continue; // behind the viewer, or farther than a hit
+    const w = (c.width / 2 / c.fx) * depth;
+    const h = (c.height / 2 / c.fy) * depth;
+    const corners = [[-w, -h], [w, -h], [w, h], [-w, h]].map(([u, v]) => screen(cameraWorld(c, group, u, v, depth)));
+    if (corners.some((p) => p[2] > 1)) continue;
+    const xs = [apex[0], ...corners.map((p) => p[0])];
+    const ys = [apex[1], ...corners.map((p) => p[1])];
+    if (x < Math.min(...xs) - EDGE_PX || x > Math.max(...xs) + EDGE_PX || y < Math.min(...ys) - EDGE_PX || y > Math.max(...ys) + EDGE_PX) continue;
+    let hit = inTriangle(x, y, corners[0], corners[1], corners[2]) || inTriangle(x, y, corners[0], corners[2], corners[3]);
+    for (let i = 0; i < 4 && !hit; i++) {
+      const next = corners[(i + 1) % 4];
+      hit = inTriangle(x, y, apex, corners[i], next) || toSegment(x, y, apex, corners[i]) < EDGE_PX || toSegment(x, y, corners[i], next) < EDGE_PX;
+    }
+    if (hit) best = [apex[2], c.name];
+  }
+  return best ? best[1] : null;
+}
+
+/** Hovering a camera highlights it and names its photo; a click (not a drag) selects it. */
+function CameraPicker({ cameras, depth, group, onPick, onHover }: {
+  cameras: Camera[]; depth: number; group: MutableRefObject<THREE.Group | null>;
+  onPick: (name: string) => void; onHover: (hover: { name: string; x: number; y: number } | null) => void;
+}) {
   const { camera, gl, size } = useThree();
   useEffect(() => {
     const element = gl.domElement;
     let down: [number, number] | null = null;
+    let frame = 0;
+    const find = (e: PointerEvent) => {
+      if (!group.current) return null;
+      const rect = element.getBoundingClientRect();
+      group.current.updateWorldMatrix(true, false);
+      return cameraAt(e.clientX - rect.left, e.clientY - rect.top, cameras, depth, group.current, camera, size);
+    };
+    const move = (e: PointerEvent) => {
+      if (e.buttons) return; // orbiting
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const name = find(e);
+        element.style.cursor = name ? "pointer" : "";
+        const rect = element.getBoundingClientRect();
+        onHover(name ? { name, x: e.clientX - rect.left, y: e.clientY - rect.top } : null);
+      });
+    };
+    const leave = () => {
+      cancelAnimationFrame(frame);
+      element.style.cursor = "";
+      onHover(null);
+    };
     const press = (e: PointerEvent) => (down = [e.clientX, e.clientY]);
     const release = (e: PointerEvent) => {
-      if (!down || !group.current || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
-      const rect = element.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      group.current.updateWorldMatrix(true, false);
-      let best: [number, string] | null = null;
-      for (const c of cameras) {
-        const p = cameraWorld(c, group.current, 0, 0, 0).project(camera);
-        if (p.z > 1) continue; // behind the viewer
-        const d = Math.hypot(((p.x + 1) / 2) * size.width - x, ((1 - p.y) / 2) * size.height - y);
-        if (d < 14 && (!best || d < best[0])) best = [d, c.name];
-      }
-      if (best) onPick(best[1]);
+      if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
+      const name = find(e);
+      if (name) onPick(name);
     };
+    element.addEventListener("pointermove", move);
+    element.addEventListener("pointerleave", leave);
     element.addEventListener("pointerdown", press);
     element.addEventListener("pointerup", release);
     return () => {
+      cancelAnimationFrame(frame);
+      element.removeEventListener("pointermove", move);
+      element.removeEventListener("pointerleave", leave);
       element.removeEventListener("pointerdown", press);
       element.removeEventListener("pointerup", release);
     };
-  }, [cameras, camera, gl, size, group, onPick]);
+  }, [cameras, depth, camera, gl, size, group, onPick, onHover]);
   return null;
 }
 
@@ -357,34 +429,43 @@ function Points({ model, size }: { model: Model; size: number }) {
 }
 
 /** Camera frustums as one line set; the focused image's camera in pink. */
-function Frustums({ cameras, depth, focus }: { cameras: Camera[]; depth: number; focus: string | null }) {
-  const [all, focused] = useMemo(() => {
-    const build = (list: Camera[], scale: number) => {
-      const vertices: number[] = [];
-      for (const c of list) {
-        const r = c.rotation;
-        const world = (x: number, y: number, z: number) => [
-          r[0] * x + r[1] * y + r[2] * z + c.center[0],
-          r[3] * x + r[4] * y + r[5] * z + c.center[1],
-          r[6] * x + r[7] * y + r[8] * z + c.center[2],
-        ];
-        const d = depth * scale;
-        const w = (c.width / 2 / c.fx) * d;
-        const h = (c.height / 2 / c.fy) * d;
-        const corners = [world(-w, -h, d), world(w, -h, d), world(w, h, d), world(-w, h, d)];
-        const apex = world(0, 0, 0);
-        for (let i = 0; i < 4; i++) vertices.push(...apex, ...corners[i], ...corners[i], ...corners[(i + 1) % 4]);
-        vertices.push(...world(-w * 0.5, -h * 1.15, d), ...world(0, -h * 1.5, d)); // a tick for image-up
-        vertices.push(...world(0, -h * 1.5, d), ...world(w * 0.5, -h * 1.15, d));
-      }
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
-      return g;
-    };
+/** Frustum outlines of `list` as one line set, `depth` deep, with a tick on the image's top edge. */
+function frustumLines(list: Camera[], depth: number): THREE.BufferGeometry {
+  const vertices: number[] = [];
+  for (const c of list) {
+    const r = c.rotation;
+    const world = (x: number, y: number, z: number) => [
+      r[0] * x + r[1] * y + r[2] * z + c.center[0],
+      r[3] * x + r[4] * y + r[5] * z + c.center[1],
+      r[6] * x + r[7] * y + r[8] * z + c.center[2],
+    ];
+    const w = (c.width / 2 / c.fx) * depth;
+    const h = (c.height / 2 / c.fy) * depth;
+    const corners = [world(-w, -h, depth), world(w, -h, depth), world(w, h, depth), world(-w, h, depth)];
+    const apex = world(0, 0, 0);
+    for (let i = 0; i < 4; i++) vertices.push(...apex, ...corners[i], ...corners[i], ...corners[(i + 1) % 4]);
+    vertices.push(...world(-w * 0.5, -h * 1.15, depth), ...world(0, -h * 1.5, depth));
+    vertices.push(...world(0, -h * 1.5, depth), ...world(w * 0.5, -h * 1.15, depth));
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+  return g;
+}
+
+/** All camera frustums; the selected one larger in pink, the hovered one in white over everything. */
+function Frustums({ cameras, depth, focus, hover }: { cameras: Camera[]; depth: number; focus: string | null; hover: string | null }) {
+  const all = useMemo(() => frustumLines(cameras, depth), [cameras, depth]);
+  const focused = useMemo(() => {
     const hit = cameras.filter((c) => c.name === focus);
-    return [build(cameras, 1), hit.length ? build(hit, 2.5) : null];
+    return hit.length ? frustumLines(hit, depth * 2.5) : null;
   }, [cameras, depth, focus]);
-  useEffect(() => () => { all.dispose(); focused?.dispose(); }, [all, focused]);
+  const hovered = useMemo(() => {
+    const hit = hover && hover !== focus ? cameras.filter((c) => c.name === hover) : [];
+    return hit.length ? frustumLines(hit, depth * 1.5) : null; // a little larger, so it stands out in a dense rig
+  }, [cameras, depth, hover, focus]);
+  useEffect(() => () => all.dispose(), [all]);
+  useEffect(() => () => focused?.dispose(), [focused]);
+  useEffect(() => () => hovered?.dispose(), [hovered]);
   return (
     <>
       <lineSegments geometry={all}>
@@ -393,6 +474,11 @@ function Frustums({ cameras, depth, focus }: { cameras: Camera[]; depth: number;
       {focused && (
         <lineSegments geometry={focused}>
           <lineBasicMaterial color="#ff7edb" />
+        </lineSegments>
+      )}
+      {hovered && (
+        <lineSegments geometry={hovered} renderOrder={10}>
+          <lineBasicMaterial color="#f0eff1" depthTest={false} transparent />
         </lineSegments>
       )}
     </>
