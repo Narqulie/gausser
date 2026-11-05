@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import steps
+from . import pano, steps
 from .scene import GausserError, Scene, registered_images
 
 STEPS = ("frames", "mask", "solve", "train", "lod")
@@ -293,6 +293,9 @@ def status(scene: Scene) -> None:
     stale = "  (out of date)"
     print(f"Scene   {scene.root}")
     print(f"images  {len(images)}")
+    if scene.is_pano():
+        panos = sum(1 for _ in scene.panos.iterdir())
+        print(f"        360°: {panos} frames in panos/, {pano.VIEWS} views each")
     if not images:
         loose = scene.loose_photos()
         if loose:

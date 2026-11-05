@@ -8,8 +8,9 @@ import types
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
-from gausser import cli, msplat, steps
+from gausser import cli, msplat, pano, steps
 from gausser.scene import GausserError, Scene, registered_images
 
 
@@ -171,7 +172,7 @@ def test_new_frames_clear_everything_built_from_the_old_images(tmp_path, tools):
     def fake_sharp_frames(command):
         output = Path(command[2])
         output.mkdir(parents=True)
-        (output / "frame1.jpg").write_bytes(b"jpg")
+        Image.new("RGB", (40, 30)).save(output / "frame1.jpg")
 
     tools.on_run(fake_sharp_frames)
     steps.frames(scene, tmp_path / "images", [])
@@ -180,6 +181,47 @@ def test_new_frames_clear_everything_built_from_the_old_images(tmp_path, tools):
     assert not scene.masks.exists() and not scene.colmap_masks.exists()
     assert not scene.database.exists() and not scene.sparse.exists()
     assert (scene.runs / "brush" / "old").is_dir()  # training history is kept
+
+
+def test_360_frames_become_rig_views_that_colmap_solves_as_one_rig(tmp_path, tools):
+    scene = Scene(tmp_path)
+    (scene.masks_exclude).mkdir()  # an old operator mask is cleared; a new one masks features
+    rig_names: list[set[str]] = []
+
+    def fake_tools(command):
+        if command[0] == "sharp-frames":
+            Path(command[2]).mkdir(parents=True)
+            for name in ("a", "b"):
+                Image.new("RGB", (64, 32)).save(Path(command[2]) / f"{name}.jpg")
+        elif command[1] == "feature_extractor":
+            with sqlite3.connect(command[command.index("--database_path") + 1]) as db:
+                db.execute("CREATE TABLE cameras (camera_id, model, width, height, params, prior_focal_length)")
+                db.execute("INSERT INTO cameras VALUES (1, 0, 16, 16, x'00', 1)")
+                db.execute("CREATE TABLE images (image_id, name, camera_id)")
+                db.executemany("INSERT INTO images VALUES (?, ?, 1)", enumerate(sorted(p.name for p in scene.image_files())))
+        elif command[1] == "rig_configurator":
+            with sqlite3.connect(command[command.index("--database_path") + 1]) as db:
+                cameras = db.execute("SELECT camera_id, group_concat(substr(name, 5)) FROM images GROUP BY camera_id").fetchall()
+            rig_names.extend(set(names.split(",")) for _, names in cameras)
+        elif command[1] == "mapper":
+            write_model(Path(command[command.index("--output_path") + 1]) / "0", 24)
+
+    tools.on_run(fake_tools)
+    (tmp_path / "clip.mp4").write_bytes(b"mp4")
+    steps.frames(scene, tmp_path / "clip.mp4", [])
+    assert sorted(p.name for p in scene.panos.iterdir()) == ["a.jpg", "b.jpg"]
+    assert len(scene.image_files()) == 2 * pano.VIEWS and not scene.masks_exclude.exists()
+    scene.masks_exclude.mkdir()
+    Image.new("L", (16, 16)).save(scene.masks_exclude / "c04_a.png")  # all black: no features
+    steps.solve(scene)
+
+    assert rig_names == [{"a.jpg", "b.jpg"}] * pano.VIEWS  # one camera per view, shared by both panoramas
+    extract = next(c for c in tools.commands if c[1:2] == ["feature_extractor"])
+    masks = Path(extract[extract.index("--ImageReader.mask_path") + 1])
+    assert extract[extract.index("--ImageReader.camera_params") + 1] == "8,8,8"
+    match = next(c for c in tools.commands if c[1:2] == ["exhaustive_matcher"])
+    assert "--FeatureMatching.skip_image_pairs_in_same_frame" in match
+    assert scene.model() is not None and not masks.exists()  # staging is cleaned up
 
 
 def test_mask_keeps_whole_image_on_a_miss_but_fails_when_nothing_matches(tmp_path, monkeypatch):

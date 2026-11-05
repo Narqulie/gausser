@@ -11,6 +11,9 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
+from . import pano
 from .scene import GausserError, Scene, is_image, registered_images, remove, replace, require_tool, run_tool
 
 BRUSH_HINT = "build Brush (cargo build --release) and put `brush` on PATH"
@@ -20,7 +23,10 @@ SPLAT_TRANSFORM_HINT = "npm install -g @playcanvas/splat-transform"
 
 
 def frames(scene: Scene, source: Path, extra: list[str]) -> int:
-    """Select sharp frames from a video (or image folder) into images/."""
+    """Select sharp frames from a video (or image folder) into images/.
+
+    360° (2:1 equirectangular) frames go to panos/ instead, and images/ gets their pinhole views.
+    """
     tool = require_tool("sharp-frames", SHARP_FRAMES_HINT)
     source = source.expanduser().resolve()
     if not source.exists():
@@ -31,10 +37,20 @@ def frames(scene: Scene, source: Path, extra: list[str]) -> int:
     count = sum(1 for path in staged.iterdir() if is_image(path)) if staged.is_dir() else 0
     if count == 0:
         raise GausserError("Sharp Frames selected no images")
-    replace(staged, scene.images)
+    panos = sorted(path for path in staged.iterdir() if is_image(path))
+    if pano.is_pano(panos[0]):
+        views = staging / "views"
+        views.mkdir()
+        print(f"{count} 360° frames: rendering {pano.VIEWS} views each", flush=True)
+        pano.render(panos, views)
+        replace(views, scene.images)
+        replace(staged, scene.panos)
+    else:
+        replace(staged, scene.images)
+        remove(scene.panos)
     remove(staging)
     remove(scene.masks, scene.masks_exclude, scene.colmap_masks, scene.database, scene.sparse)  # built from the old images
-    print(f"{count} frames in {scene.images}")
+    print(f"{count} frames in {scene.panos if scene.is_pano() else scene.images}")
     return count
 
 
@@ -86,6 +102,9 @@ def mask(
         _exclude(scene, images, predictor, prompt, threshold, dilation, brush_dir)
         replace(brush_dir, scene.masks_exclude)
         shutil.rmtree(staged, ignore_errors=True)
+        if scene.is_pano() and not (scene.sparse / NO_MASKS).is_file():
+            # The operator moves with a 360° camera; `solve` masks its features out.
+            remove(scene.database, scene.sparse)
         return
     colmap_dir.mkdir()
     misses: list[str] = []
@@ -158,7 +177,11 @@ def _exclude(
 
 
 def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
-    """Run COLMAP structure-from-motion into database.db and sparse/0; `no_masks` ignores colmap/masks/."""
+    """Run COLMAP structure-from-motion into database.db and sparse/0; `no_masks` ignores colmap/masks/.
+
+    In a 360° scene the views of one panorama form a COLMAP rig with fixed, known rotations, and
+    masks-exclude/ also masks features (the operator moves with the camera, so it would match).
+    """
     colmap = require_tool("colmap", COLMAP_HINT)
     images = scene.require_images()
     if matcher == "auto":
@@ -180,10 +203,35 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         "--ImageReader.single_camera", "1",
         "--FeatureExtraction.use_gpu", gpu,
     ]
-    if scene.colmap_masks.is_dir() and not no_masks:
+    rig = scene.is_pano()
+    if rig:
+        masks = staged / "masks"
+        masks.mkdir()
+        pano.feature_masks(images, masks, [] if no_masks else [scene.colmap_masks, scene.masks_exclude])
+        with Image.open(images[0]) as first:
+            params = pano.camera_params(first.width)
+        extract += [
+            "--ImageReader.mask_path", str(masks),
+            "--ImageReader.camera_model", "SIMPLE_PINHOLE", "--ImageReader.camera_params", params,
+        ]
+    elif scene.colmap_masks.is_dir() and not no_masks:
         extract += ["--ImageReader.mask_path", str(scene.colmap_masks)]
     run_tool(extract, cwd=staged)
     match = [colmap, f"{matcher}_matcher", "--database_path", str(database), "--FeatureMatching.use_gpu", gpu]
+    mapper = [colmap, "mapper", "--database_path", str(database), "--image_path", str(scene.images), "--output_path", str(sparse)]
+    if rig:
+        pano.split_cameras(database)
+        pano.write_rig(staged / "rig.json")
+        run_tool(
+            [colmap, "rig_configurator", "--database_path", str(database), "--rig_config_path", str(staged / "rig.json")],
+            cwd=staged,
+        )
+        # The views of one panorama share its centre and see disjoint pixels (feature_masks).
+        match += ["--FeatureMatching.rig_verification", "1", "--FeatureMatching.skip_image_pairs_in_same_frame", "1"]
+        mapper += [
+            "--Mapper.ba_refine_sensor_from_rig", "0", "--Mapper.ba_refine_focal_length", "0",
+            "--Mapper.ba_refine_principal_point", "0", "--Mapper.ba_refine_extra_params", "0",
+        ]
     if matcher == "sequential":
         # Loop detection adds vocabulary-tree matches between non-neighbours, so a walk that
         # returns to its start, or unordered photos, still connect. COLMAP downloads the tree
@@ -191,10 +239,7 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         match += ["--SequentialMatching.loop_detection", "1"]
     run_tool(match, cwd=staged)
     sparse.mkdir()
-    run_tool(
-        [colmap, "mapper", "--database_path", str(database), "--image_path", str(scene.images), "--output_path", str(sparse)],
-        cwd=staged,
-    )
+    run_tool(mapper, cwd=staged)
 
     # COLMAP can split the scene into several models; keep the largest as sparse/0.
     models = [path for path in sparse.iterdir() if path.is_dir() and path.name.isdigit()]

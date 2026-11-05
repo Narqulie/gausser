@@ -56,6 +56,7 @@ class Scene:
         if not self.root.is_dir():
             raise GausserError(f"Scene folder does not exist: {self.root}")
         self.images = self.root / "images"
+        self.panos = self.root / "panos"  # 360° source frames; images/ then holds their views (pano.py)
         self.masks = self.root / "masks"  # Brush: <stem>.png
         self.masks_exclude = self.root / "masks-exclude"  # Brush: <stem>.png, black = transient objects
         self.colmap_masks = self.root / "colmap" / "masks"  # COLMAP: <name><ext>.png
@@ -72,6 +73,9 @@ class Scene:
         if len(set(stems)) != len(stems):
             raise GausserError("Two images share a file stem (e.g. a.jpg and a.png); Brush masks would collide")
         return files
+
+    def is_pano(self) -> bool:
+        return self.panos.is_dir()
 
     def require_images(self) -> list[Path]:
         files = self.image_files()

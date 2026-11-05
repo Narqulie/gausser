@@ -17,6 +17,7 @@ src/gausser/
 ├── guide.py   scene-aware guided menu: summary, recommended next step, minimal questions
 ├── steps.py   frames (sharp-frames), mask, solve (COLMAP), subset (colmap image_deleter + filtered database), train_brush, lod (splat-transform)
 ├── sam.py     SAM3 predictor + mask writers; imported only by `mask` (needs torch)
+├── pano.py    360° frames: 14 pinhole views per equirect (pycolmap.panorama's 12 + zenith/nadir), feature partition masks, COLMAP rig
 ├── msplat.py  experimental Msplat trainer with checkpoint resume; masks via black compositing
 ├── composite.py `gausser composite`: visual-hull filter of the statue splat, voxel carve of the context, PLY merge
 ├── align.py   `gausser align`: fits a similarity (multi-start trimmed ICP) of a splat onto a published one; splat-transform applies it
@@ -107,6 +108,11 @@ src/gausser/
 - `splat-transform` `-r/-t` act in a frame turned 180° about z: file rotation M is given as euler of
   D·M·D and translation as (-tx,-ty,tz), with D = diag(-1,-1,1); `-s -r -t` run in order, so they give
   x' = s·R·x + t. `align` re-reads its output and checks it against numpy, so a CLI change fails loudly.
+- 360° scenes (`panos/` exists): views are `images/cNN_<frame>.jpg`; COLMAP's rig groups a frame's views by
+  stripping the `cNN_` image prefix. `rig_configurator` needs one camera per prefix, so `solve` extracts with one
+  shared SIMPLE_PINHOLE camera and `pano.split_cameras` copies it per view index before configuring. Feature
+  masks = the view's partition (each pano pixel in one view, as pycolmap does) AND colmap/masks AND masks-exclude.
+  `pano.py` uses einsum, not `@`: numpy 1.26's Accelerate matmul emits spurious divide-by-zero warnings on macOS.
 - Msplat requires exactly `msplat==1.1.4` and a binary model. It has no mask input.
   When every image has a mask, `msplat.train` writes composited copies (black
   background) into the run's `dataset/`, sets `bg_color` to black and records
