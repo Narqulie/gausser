@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { duration, STEPS, useLog, useSceneState } from "./api";
 import { NotifyToggle, Toasts, useStepToasts } from "./Toasts";
 import type { HistoryRecord, State, Step } from "./api";
@@ -26,6 +26,7 @@ export function App() {
     ? { images: state.images.count, frames: state.images.panos || state.images.count, iterations: Number(current?.iterations) || undefined }
     : null;
   const now = state && totals ? progressOf(state, live.lines, live.partial, totals) : null;
+  const left = useRemaining(state, now);
 
   useEffect(() => {
     if (!state) return;
@@ -49,7 +50,7 @@ export function App() {
       <section className="rail">
         {STEPS.map((step) => (
           <StepCard
-            key={step} step={step} state={state} progress={current?.step === step ? now : null}
+            key={step} step={step} state={state} progress={current?.step === step ? now : null} left={left}
             onClick={() => {
               setLogPick(lastRun(state, step) ?? null);
               setTab("logs");
@@ -104,7 +105,9 @@ function RunLine({ state, offline }: { state: State; offline: boolean }) {
   );
 }
 
-function StepCard({ step, state, progress, onClick }: { step: Step; state: State; progress: Progress | null; onClick: () => void }) {
+function StepCard({ step, state, progress, left, onClick }: {
+  step: Step; state: State; progress: Progress | null; left: number | null; onClick: () => void;
+}) {
   const run = lastRun(state, step);
   const [status, label] = stepStatus(step, state, run, progress !== null);
   const [metric, sub] = stepMetric(step, state);
@@ -119,11 +122,37 @@ function StepCard({ step, state, progress, onClick }: { step: Step; state: State
       <span className="station-metric">{progress ? progressText(progress) : metric}</span>
       <span className="station-sub">
         {progress
-          ? `${progress.phase} · ${duration(state.now - (state.current?.start ?? state.now))}`
+          ? `${progress.phase} · ${duration(state.now - (state.current?.start ?? state.now))}${left !== null ? ` · ~${duration(left)} left` : ""}`
           : [status === "done" || status === "idle" ? sub : label, elapsed !== undefined && duration(elapsed)].filter(Boolean).join(" · ")}
       </span>
     </button>
   );
+}
+
+const WINDOW = 300; // seconds of progress the rate is measured over
+
+/**
+ * Seconds left in the running phase: the rate over the last five minutes of progress seen by this page.
+ * Until the page has seen 20 s of progress, a step whose count starts with the step (mask, train) uses its
+ * whole run so far. A solve's phases each count their own thing, so the estimate is for the phase only.
+ */
+function useRemaining(state: State | null, progress: Progress | null): number | null {
+  const samples = useRef<{ key: string; points: [number, number][] }>({ key: "", points: [] });
+  const current = state?.current;
+  if (!state || !current || !progress || progress.done === null || !progress.total) return null;
+  const key = `${current.step}-${current.start}-${progress.phase}-${progress.total}`;
+  if (samples.current.key !== key) samples.current = { key, points: [] };
+  const points = samples.current.points;
+  const last = points[points.length - 1];
+  if (!last || last[0] !== state.now) points.push([state.now, progress.done]);
+  while (points.length > 2 && state.now - points[0][0] > WINDOW) points.shift();
+
+  const remaining = progress.total - progress.done;
+  const [t0, d0] = points[0];
+  let rate = 0;
+  if (state.now - t0 >= 20 && progress.done > d0) rate = (progress.done - d0) / (state.now - t0);
+  else if ((current.step === "mask" || current.step === "train") && progress.done > 0) rate = progress.done / (state.now - current.start);
+  return rate > 0 ? remaining / rate : null;
 }
 
 function progressText(progress: Progress): string {
