@@ -302,6 +302,16 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     final = staged / "final"
     final.mkdir()
     best.rename(final / "0")
+    if rig:  # COLMAP's frame is arbitrary (for fisheyes, a lens's); turn the model so gravity is +y
+        transform = staged / "level.txt"
+        transform.write_text(pano.level_transform(final / "0" / "images.bin", lenses))
+        (staged / "level").mkdir()
+        run_tool(
+            [colmap, "model_transformer", "--input_path", str(final / "0"), "--output_path", str(staged / "level"),
+             "--transform_path", str(transform)],
+            cwd=staged,
+        )
+        replace(staged / "level", final / "0")
     if no_masks:
         (final / NO_MASKS).touch()
     replace(database, scene.database)

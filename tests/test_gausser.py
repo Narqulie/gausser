@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from gausser import cli, monitor, msplat, pano, steps
+from gausser import cli, monitor, msplat, pano, qoocam, steps
 from gausser.scene import GausserError, Scene, registered_images, run_tool
 
 
@@ -27,6 +27,33 @@ def write_model(model: Path, registered: int) -> None:
     (model / "images.bin").write_bytes(struct.pack("<Q", registered))
     (model / "cameras.bin").write_bytes(b"")
     (model / "points3D.bin").write_bytes(b"")
+
+
+def write_rig_model(model: Path, rig: dict | None, rig_from_world: list, centres: list) -> None:
+    """A binary images.bin of 360° frames: every view of frame i, posed through the rig layout."""
+    np = pytest.importorskip("numpy")
+    rotation_type = pytest.importorskip("scipy.spatial.transform").Rotation
+    model.mkdir(parents=True)
+    records = []
+    for index, (rig_rotation, centre) in enumerate(zip(rig_from_world, centres, strict=True)):
+        for view, (cam_from_rig, translation, _) in enumerate(pano.layout(rig)):
+            r = cam_from_rig @ rig_rotation
+            t = translation - r @ np.asarray(centre, dtype=float)
+            x, y, z, w = rotation_type.from_matrix(r).as_quat()
+            name = f"c{view:02d}_f{index}.jpg".encode()
+            records.append(struct.pack("<idddddddi", len(records) + 1, w, x, y, z, *t, 1) + name + b"\0" + struct.pack("<Q", 0))
+    (model / "images.bin").write_bytes(struct.pack("<Q", len(records)) + b"".join(records))
+    (model / "cameras.bin").write_bytes(b"")
+    (model / "points3D.bin").write_bytes(b"")
+
+
+def copy_model(command: list[str]) -> None:
+    """Fake `colmap model_transformer`: output = input."""
+    import shutil
+
+    source, target = (Path(command[command.index(flag) + 1]) for flag in ("--input_path", "--output_path"))
+    for path in source.iterdir():
+        shutil.copy(path, target / path.name)
 
 
 def write_model_files(model: Path, registered: int) -> None:
@@ -205,7 +232,10 @@ def test_360_frames_become_rig_views_that_colmap_solves_as_one_rig(tmp_path, too
                 cameras = db.execute("SELECT camera_id, group_concat(substr(name, 5)) FROM images GROUP BY camera_id").fetchall()
             rig_names.extend(set(names.split(",")) for _, names in cameras)
         elif command[1] == "mapper":
-            write_model(Path(command[command.index("--output_path") + 1]) / "0", 24)
+            identity = [[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]]
+            write_rig_model(Path(command[command.index("--output_path") + 1]) / "0", None, [identity] * 3, [[0, 0, 0], [1, 0, 0], [0, 0, 1]])
+        elif command[1] == "model_transformer":
+            copy_model(command)
 
     tools.on_run(fake_tools)
     (tmp_path / "clip.mp4").write_bytes(b"mp4")
@@ -267,10 +297,14 @@ def test_qoocam_video_becomes_per_lens_views_solved_as_a_calibrated_two_lens_rig
         elif command[1] == "rig_configurator":
             rig_config.extend(json.loads(Path(command[command.index("--rig_config_path") + 1]).read_text())[0]["cameras"])
         elif command[1] == "mapper":
-            write_model(Path(command[command.index("--output_path") + 1]) / "0", 28)
+            upright = [[0.0, 1, 0], [-1, 0, 0], [0, 0, 1]]  # grip (+x) down
+            write_rig_model(Path(command[command.index("--output_path") + 1]) / "0", rig, [upright] * 3, [[0, 0, 0], [1, 0, 0], [0, 0, 1]])
+        elif command[1] == "model_transformer":
+            copy_model(command)
 
     tools.on_run(fake_tools)
     _qoocam_file(tmp_path / "Q360.MOV")
+    rig = qoocam.calibration(tmp_path / "Q360.MOV")
     steps.frames(scene, tmp_path / "Q360.MOV", [], [(1.5, 32.5), (57.0, 80.0)])
 
     cuts = [c for c in tools.commands if c[0] == "ffmpeg"]
@@ -290,6 +324,28 @@ def test_qoocam_video_becomes_per_lens_views_solved_as_a_calibrated_two_lens_rig
     lens1 = [camera for camera in rig_config if camera["image_prefix"] >= "c07_"]
     assert len(rig_config) == pano.VIEWS and len(lens1) == 7
     assert all(abs(sum(t * t for t in camera["cam_from_rig_translation"]) ** 0.5 - 0.02952) < 1e-4 for camera in lens1)
+
+
+@pytest.mark.parametrize("fisheye", [False, True])
+def test_level_transform_turns_a_tilted_360_model_so_gravity_is_plus_y(tmp_path, fisheye):
+    np = pytest.importorskip("numpy")
+    rotation_type = pytest.importorskip("scipy.spatial.transform").Rotation
+    rig = None
+    if fisheye:
+        _qoocam_file(tmp_path / "Q360.MOV")
+        rig = qoocam.calibration(tmp_path / "Q360.MOV")
+    # Upright frames walking a loop at one height in a world where gravity is +y; the rig's own
+    # down (pano +y, or the fisheye grip +x) points along gravity. Then the whole world is tilted.
+    base = np.eye(3) if rig is None else np.array([[0.0, 1, 0], [-1, 0, 0], [0, 0, 1]])
+    angles = np.radians(np.arange(0, 360, 30))
+    frames = [base @ rotation_type.from_euler("y", a).as_matrix() for a in angles]
+    centres = [np.array([2 * np.cos(a), 0.05 * np.sin(3 * a), 3 * np.sin(a)]) for a in angles]
+    tilt = rotation_type.from_euler("xyz", [50, -20, 110], degrees=True).as_matrix()
+    write_rig_model(tmp_path / "m", rig, [r @ tilt.T for r in frames], [tilt @ c for c in centres])
+
+    scale, w, x, y, z, *_ = map(float, pano.level_transform(tmp_path / "m" / "images.bin", rig).split())
+    level = rotation_type.from_quat([x, y, z, w]).as_matrix()
+    assert scale == 1 and np.allclose(level @ tilt @ [0, 1, 0], [0, 1, 0], atol=0.01)
 
 
 def test_mask_keeps_whole_image_on_a_miss_but_fails_when_nothing_matches(tmp_path, monkeypatch):

@@ -299,6 +299,32 @@ def split_cameras(database: Path) -> None:
         db.commit()
 
 
+def level_transform(images_bin: Path, rig: dict[str, Any] | None = None) -> str:
+    """`colmap model_transformer` similarity ("scale qw qx qy qz tx ty tz") that makes gravity +y.
+
+    COLMAP leaves the model in an arbitrary frame (for a fisheye rig, a lens's, so the room lies
+    on its side). Down is the normal of the plane the camera centres lie in (the camera was carried
+    at about one height), on the side the frames' own down points to: the panorama's down, or for
+    a fisheye rig the grip. Without such a plane, the frames' mean down.
+    """
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+
+    from .orbit import read_cameras
+
+    centres, _, axes, names = read_cameras(images_bin)
+    views = layout(rig)
+    down_in_rig = np.array([0.0, 1.0, 0.0]) if rig is None else _matrix(rig["grip"])
+    world_from_cam = np.stack([np.stack([a[0], a[1], np.cross(a[0], a[1])], 1) for a in axes])
+    in_cam = np.stack([views[view_index(name)][0] @ down_in_rig for name in names])  # cam_from_rig · down
+    vote = np.einsum("nij,nj->ni", world_from_cam, in_cam).mean(0)
+    _, spread, vt = np.linalg.svd(centres - centres.mean(0), full_matrices=False)
+    down = vt[2] * np.sign(vt[2] @ vote) if spread[2] < 0.5 * spread[1] else vote
+    rotation = Rotation.align_vectors([[0.0, 1.0, 0.0]], [down / np.linalg.norm(down)])[0]
+    x, y, z, w = rotation.as_quat()
+    return f"1 {w:.12g} {x:.12g} {y:.12g} {z:.12g} 0 0 0\n"
+
+
 def write_rig(path: Path, rig: dict[str, Any] | None = None) -> None:
     """COLMAP rig config: one rig, sensor i = prefix cII_, poses relative to view 0."""
     from scipy.spatial.transform import Rotation

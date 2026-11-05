@@ -36,17 +36,19 @@ def has_playwright() -> bool:
     return (node_dir() / "node_modules" / "playwright-core").is_dir()
 
 
-def read_cameras(images_bin: Path) -> tuple[Any, Any, Any]:
-    """Centres and viewing directions of all registered cameras in a binary COLMAP images.bin."""
+def read_cameras(images_bin: Path) -> tuple[Any, Any, Any, list[str]]:
+    """Centres, viewing directions, right/down axes and names of the registered cameras in a binary images.bin."""
     import numpy as np
 
-    centres, directions, axes = [], [], []
+    centres, directions, axes, names = [], [], [], []
     with images_bin.open("rb") as f:
         (count,) = struct.unpack("<Q", f.read(8))
         for _ in range(count):
             _id, qw, qx, qy, qz, tx, ty, tz, _camera = struct.unpack("<idddddddi", f.read(64))
-            while f.read(1) not in (b"\0", b""):  # image name
-                pass
+            name = b""
+            while (char := f.read(1)) not in (b"\0", b""):
+                name += char
+            names.append(name.decode())
             (points,) = struct.unpack("<Q", f.read(8))
             f.seek(points * 24, 1)
             r = np.array([
@@ -57,20 +59,30 @@ def read_cameras(images_bin: Path) -> tuple[Any, Any, Any]:
             centres.append(-r.T @ np.array([tx, ty, tz]))
             directions.append(r.T @ np.array([0, 0, 1.0]))
             axes.append(r[:2])  # camera right and image-down axes in world coordinates
-    return np.array(centres), np.array(directions), np.array(axes)
+    return np.array(centres), np.array(directions), np.array(axes), names
 
 
 def camera_up(images_bin: Path) -> Any:
-    """Unit up vector: normal to the cameras' (level) right axes, on the side image-up points to.
+    """Unit up vector of a COLMAP model; see `level_up`."""
+    _, _, axes, _ = read_cameras(images_bin)
+    return level_up(axes[:, 0], axes[:, 1])
+
+
+def level_up(rights: Any, downs: Any) -> Any:
+    """Normal to the cameras' (level) right axes, on the side image-up points to.
 
     Brush's `Vertical axis` guess can be far off when many frames look straight down (72° on a
     drone set with top-down passes); a stabilised gimbal keeps every camera's right axis level.
+    When the right axes are not level (the tilted views of a fisheye rig), -y: `solve` turns
+    360° models so that gravity is +y.
     """
     import numpy as np
 
-    _, _, axes = read_cameras(images_bin)
-    up = np.linalg.svd(axes[:, 0], full_matrices=False)[2][-1]
-    return up if up @ -axes[:, 1].mean(0) > 0 else -up
+    _, spread, vt = np.linalg.svd(np.asarray(rights), full_matrices=False)
+    if len(rights) < 3 or spread[2] > 0.3 * spread[1]:
+        return np.array([0.0, -1.0, 0.0])
+    up = vt[-1]
+    return up if up @ -np.asarray(downs).mean(0) > 0 else -up
 
 
 def orbit_params(images_bin: Path, up: Any, zoom: float = 1.3, drop: float = 0.35) -> dict[str, Any]:
@@ -81,7 +93,7 @@ def orbit_params(images_bin: Path, up: Any, zoom: float = 1.3, drop: float = 0.3
     """
     import numpy as np
 
-    centres, directions, _ = read_cameras(images_bin)
+    centres, directions, _, _ = read_cameras(images_bin)
     side = np.abs(directions @ up) < 0.7  # top-down frames do not aim at the subject's centre
     if side.sum() < 3:
         raise GausserError(f"Only {int(side.sum())} registered cameras look sideways; cannot find an orbit centre")

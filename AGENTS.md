@@ -140,6 +140,10 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + rec
   calibration images flipped vertically (cy → 3839 − cy); t is in cm. Verified by SIFT matches across the
   lens overlap (0.2° residual); without M the lenses disagree by ~5°. Rig frame = lens 0's camera frame; the
   grip is +x there. A fisheye rig keeps VIEWS = 14 (2 × 7) so view names and counts match equirect scenes.
+- `solve` levels every 360° model (`pano.level_transform` → `colmap model_transformer`, format
+  "scale qw qx qy qz tx ty tz"): down = normal of the camera-centre plane, signed by the frames' own down
+  (pano +y, fisheye grip); gravity becomes +y. `orbit.level_up` (also used by the monitor) falls back to -y
+  when the cameras' right axes are not level, as with fisheye ring views.
 - Msplat requires exactly `msplat==1.1.4` and a binary model. It has no mask input.
   When every image has a mask, `msplat.train` writes composited copies (black
   background) into the run's `dataset/`, sets `bg_color` to black and records

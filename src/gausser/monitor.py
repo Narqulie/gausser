@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
 
-from . import pano
+from . import orbit, pano
 from .scene import GausserError, Scene, index, index_path, is_image, mtime, registered_images
 
 WEB = Path(__file__).with_name("web")
@@ -238,11 +238,7 @@ def read_model(model: Path, max_points: int = MAX_POINTS) -> dict[str, Any]:
             "fx": fx, "fy": fy, "width": width, "height": height, "points": int((observed >= 0).sum()),
         })
 
-    # Up: normal to the cameras' level right axes, on the side image-up points to (see orbit.camera_up).
-    up = [0.0, -1.0, 0.0]
-    if len(rights) >= 3:
-        normal = np.linalg.svd(np.array(rights), full_matrices=False)[2][-1]
-        up = (normal if normal @ -np.mean(downs, axis=0) > 0 else -normal).tolist()
+    up = orbit.level_up(rights, downs).tolist() if rights else [0.0, -1.0, 0.0]
 
     data = (model / "points3D.bin").read_bytes()
     (count,), at = struct.unpack_from("<Q", data), 8
