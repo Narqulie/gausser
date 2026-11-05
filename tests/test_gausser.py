@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from gausser import cli, msplat, pano, steps
-from gausser.scene import GausserError, Scene, registered_images
+from gausser import cli, monitor, msplat, pano, steps
+from gausser.scene import GausserError, Scene, registered_images, run_tool
 
 
 def make_scene(root: Path, images: int = 3) -> Scene:
@@ -453,10 +453,11 @@ def test_missing_scene_is_a_clean_error(tmp_path, capsys):
 
 def test_a_second_command_on_the_same_scene_fails_fast(tmp_path):
     scene = Scene(tmp_path)
-    with scene.lock():
+    with scene.lock(["train"]):
         with pytest.raises(GausserError, match="already working"):
             with Scene(tmp_path).lock():
                 pass
+        assert monitor.holder(scene)["argv"] == ["train"]  # the refused command did not erase the holder
     with scene.lock():  # released again
         pass
 
@@ -744,3 +745,74 @@ def test_mask_command_passes_exclude(tmp_path, monkeypatch):
     assert cli.main(["mask", "person", "-s", str(tmp_path), "--exclude", "--dilation", "8"]) == 0
     assert cli.main(["mask", "statue", "-s", str(tmp_path)]) == 0
     assert seen == [("person", True, 8), ("statue", False, 0)]
+
+
+def test_a_step_logs_its_output_and_tool_output_and_records_its_outcome(tmp_path):
+    scene = Scene(tmp_path)
+    with scene.step("solve", matcher="auto"):
+        print("python says hi")
+        run_tool(["sh", "-c", "printf 'tool line\\n'"], cwd=tmp_path)
+    with pytest.raises(GausserError):
+        with scene.step("train"):
+            run_tool(["sh", "-c", "exit 3"], cwd=tmp_path)
+
+    solve, train = monitor.history(scene)
+    assert (solve["step"], solve["ok"], solve["matcher"]) == ("solve", True, "auto")
+    assert (train["ok"], train["error"]) == (False, "`sh` failed with exit code 3")
+    log = (scene.logs / solve["log"]).read_text()
+    assert "python says hi" in log and "tool line" in log
+    assert sys.stdout.__class__.__name__ != "_Tee"  # restored
+
+
+def write_colmap_model(model: Path) -> None:
+    """One PINHOLE camera, two images 2 units apart looking along +z, three points."""
+    model.mkdir(parents=True)
+    (model / "cameras.bin").write_bytes(struct.pack("<QiiQQ4d", 1, 1, 1, 640, 480, 500.0, 500.0, 320.0, 240.0))
+    images = struct.pack("<Q", 2)
+    for image_id, tx, name, observed in ((1, 0.0, b"a.jpg", (0, -1)), (2, -2.0, b"b.jpg", (1, 2))):
+        images += struct.pack("<idddddddi", image_id, 1, 0, 0, 0, tx, 0, 0, 1) + name + b"\0"
+        images += struct.pack("<Q", len(observed)) + b"".join(struct.pack("<ddq", 0, 0, p) for p in observed)
+    (model / "images.bin").write_bytes(images)
+    points = struct.pack("<Q", 3)
+    for point_id in range(3):
+        points += struct.pack("<QdddBBBdQ", point_id, point_id, 0, 5, 255, 0, 0, 0.5, 2) + struct.pack("<iiii", 1, 0, 2, 0)
+    (model / "points3D.bin").write_bytes(points)
+
+
+def test_monitor_reads_a_binary_colmap_model(tmp_path):
+    write_colmap_model(tmp_path / "0")
+    model = monitor.read_model(tmp_path / "0")
+    a, b = model["cameras"]
+    assert (a["name"], a["center"], a["points"], a["fx"]) == ("a.jpg", [0, 0, 0], 1, 500.0)
+    assert (b["name"], b["center"], b["points"]) == ("b.jpg", [2, 0, 0], 2)
+    assert model["up"] == pytest.approx([0, -1, 0])  # image-down is +y in COLMAP's camera axes
+    assert model["points"]["xyz"] == [0, 0, 5, 1, 0, 5, 2, 0, 5]
+    assert model["stats"]["points"] == 3 and model["stats"]["track_lengths"] == [[2, 3]]
+
+
+def test_monitor_shows_the_running_step_and_its_live_snapshot(tmp_path):
+    scene = make_scene(tmp_path)
+    with scene.lock(["solve"]), scene.step("solve"):
+        write_colmap_model(scene.tmp / "solve-20990101-000000" / "snapshots" / "1")
+        state = monitor.state(scene)
+    assert state["holder"]["argv"] == ["solve"]
+    assert state["current"]["step"] == "solve"
+    assert state["current"]["live"]["model"]["registered"] == 2
+    assert monitor.state(scene)["current"] is None  # ended
+
+
+def test_monitor_sees_a_step_of_an_older_gausser_by_its_staging_folder(tmp_path):
+    scene = make_scene(tmp_path)
+    (scene.root / ".gausser").mkdir()
+    (scene.root / ".gausser" / "lock").write_text("")  # older lock files are empty
+    (scene.tmp / "mask-20261105-113838" / "masks").mkdir(parents=True)
+    (scene.tmp / "mask-20261105-113838" / "masks" / "img0.png").write_bytes(b"png")
+    state = monitor.state(scene)
+    assert state["current"]["step"] == "mask" and state["current"]["live"]["count"] == 1
+
+
+def test_monitor_cleans_terminal_output_and_serves_only_the_scene(tmp_path):
+    assert monitor.clean(b"\x1b[32mok\x1b[0m\n10%\r50%\r100%\r\n") == "ok\n100%\n"
+    app = monitor.Monitor(Scene(tmp_path))
+    with pytest.raises(PermissionError):
+        app.path("../../etc/passwd")

@@ -42,6 +42,9 @@ else
   echo "already built"
 fi
 
+step "Monitor page (gausser monitor)"
+(cd "$ROOT/web" && npm ci && npm run build)
+
 step "Playwright + Chromium (gausser orbit)"
 NODE_DIR="${GAUSSER_NODE_DIR:-$HOME/.local/share/gausser/node}"
 mkdir -p "$NODE_DIR"

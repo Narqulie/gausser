@@ -14,3 +14,4 @@ build/
 /database.db
 /sparse/
 /runs/
+/src/gausser/web/

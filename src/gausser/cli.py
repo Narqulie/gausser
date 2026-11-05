@@ -15,7 +15,7 @@ from . import pano, steps
 from .scene import GausserError, Scene, is_image, registered_images
 
 STEPS = ("frames", "mask", "solve", "train", "lod")
-COMMANDS = ("run", *STEPS, "subset", "composite", "align", "view", "orbit", "status")
+COMMANDS = ("run", *STEPS, "subset", "composite", "align", "view", "orbit", "status", "monitor")
 QUICK_START = """\
 quick start:
   gausser clip.mp4              guided: makes clip/ next to the video and walks you through
@@ -85,6 +85,9 @@ def _add_lod_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("-s", "--scene", type=Path, default=Path("."), help="scene folder (default: current folder)")
+    # Commands that change the scene; they can open the web monitor.
+    working = argparse.ArgumentParser(add_help=False, parents=[common])
+    working.add_argument("--monitor", action="store_true", help="watch this command in the web monitor (`gausser monitor`)")
 
     parser = argparse.ArgumentParser(
         prog="gausser",
@@ -95,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     run = commands.add_parser(
-        "run", parents=[common], help="run every step that is missing or out of date",
+        "run", parents=[working], help="run every step that is missing or out of date",
         description="Run the pipeline unattended. Steps that are already up to date are skipped.",
     )
     run.add_argument("--video", type=Path, help="extract frames from this video first")
@@ -111,13 +114,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_no_masks_option(run)
 
     frames = commands.add_parser(
-        "frames", parents=[common], help="select sharp video frames into images/",
+        "frames", parents=[working], help="select sharp video frames into images/",
         description="Select sharp frames into images/. Extra arguments after -- go to sharp-frames.",
     )
     frames.add_argument("source", type=Path, help="video file, or folder of videos or images")
     frames.add_argument("extra", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
 
-    mask = commands.add_parser("mask", parents=[common], help="mask the subject with SAM3")
+    mask = commands.add_parser("mask", parents=[working], help="mask the subject with SAM3")
     mask.add_argument("prompt", help='what to keep, e.g. "statue"')
     _add_mask_options(mask)
     mask.add_argument(
@@ -126,12 +129,12 @@ def build_parser() -> argparse.ArgumentParser:
         "and inside masks/; for `train --exclude-masks`. Leaves masks/ and COLMAP alone; --miss and --feather do not apply",
     )
 
-    solve = commands.add_parser("solve", parents=[common], help="find camera poses with COLMAP")
+    solve = commands.add_parser("solve", parents=[working], help="find camera poses with COLMAP")
     _add_solve_options(solve)
     _add_no_masks_option(solve)
 
     train = commands.add_parser(
-        "train", parents=[common], help="train splats with Brush or Msplat",
+        "train", parents=[working], help="train splats with Brush or Msplat",
         description="Train splats. Extra arguments after -- go to Brush, e.g. -- --alpha-mode transparent.",
     )
     _add_train_options(train)
@@ -143,7 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--resume", metavar="RUN", help="Msplat: continue an interrupted run")
     train.add_argument("extra", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
 
-    lod = commands.add_parser("lod", parents=[common], help="build a streamed PlayCanvas LOD set")
+    lod = commands.add_parser("lod", parents=[working], help="build a streamed PlayCanvas LOD set")
     lod.add_argument("source", type=Path, nargs="?", help=".ply to convert (default: newest export)")
     _add_lod_options(lod)
 
@@ -208,6 +211,15 @@ def build_parser() -> argparse.ArgumentParser:
     subset.add_argument("-o", "--output", type=Path, required=True, help="new scene folder (must not have images/)")
 
     commands.add_parser("status", parents=[common], help="show scene progress and installed tools")
+
+    monitor = commands.add_parser(
+        "monitor", parents=[common], help="watch the scene in a web page: steps, logs, COLMAP cameras, splats",
+        description="Serve a read-only web monitor of the scene on 127.0.0.1. It shows the running command live "
+        "and works as a viewer afterwards. `--monitor` on run, frames, mask, solve, train and lod starts it in the background.",
+    )
+    monitor.add_argument("--port", type=int, default=0, help="port (default: any free port)")
+    monitor.add_argument("--no-open", action="store_true", help="do not open a browser")
+    monitor.add_argument("--quit-when-idle", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -270,20 +282,25 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
     if args.import_photos:
         scene.import_loose_photos()
     if args.video and due("frames", bool(scene.image_files())):
-        steps.frames(scene, args.video, [])
+        with scene.step("frames", source=str(args.video)):
+            steps.frames(scene, args.video, [])
         ran("frames")
     images = scene.require_images()
     if args.prompt and due("mask", scene.masks_done(images)):
-        _mask(scene, args.prompt, args)
+        with scene.step("mask", prompt=args.prompt):
+            _mask(scene, args.prompt, args)
         ran("mask")
     if due("solve", scene.solve_done(images)):
-        steps.solve(scene, args.matcher, args.no_masks)
+        with scene.step("solve", matcher=args.matcher):
+            steps.solve(scene, args.matcher, args.no_masks)
         ran("solve")
     if due("train", scene.train_done()):
-        _train(scene, args)
+        with scene.step("train", trainer=args.trainer, iterations=args.iterations):
+            _train(scene, args)
         ran("train")
     if args.lod and due("lod", scene.lod_done()):
-        _lod(scene, None, args)
+        with scene.step("lod"):
+            _lod(scene, None, args)
 
 
 def status(scene: Scene) -> None:
@@ -399,8 +416,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "subset":  # only reads the source scene; the new one is built in place
             steps.subset(scene, args.patterns, args.output)
             return 0
-        with scene.lock():
+        if args.command == "monitor":
+            from .monitor import monitor
+
+            monitor(scene, port=args.port, open_browser=not args.no_open, quit_when_idle=args.quit_when_idle)
+            return 0
+        with scene.lock(argv):
             keep_awake()
+            if args.monitor:
+                from .monitor import spawn
+
+                spawn(scene)
             dispatch(scene, args)
     except GausserError as exc:
         print(f"gausser: {exc}", file=sys.stderr)
@@ -455,11 +481,14 @@ def dispatch(scene: Scene, args: argparse.Namespace) -> None:
         run_pipeline(scene, args)
     elif args.command == "frames":
         extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
-        steps.frames(scene, args.source, extra)
+        with scene.step("frames", source=str(args.source)):
+            steps.frames(scene, args.source, extra)
     elif args.command == "mask":
-        _mask(scene, args.prompt, args, args.exclude)
+        with scene.step("mask", prompt=args.prompt, exclude=args.exclude):
+            _mask(scene, args.prompt, args, args.exclude)
     elif args.command == "solve":
-        steps.solve(scene, args.matcher, args.no_masks)
+        with scene.step("solve", matcher=args.matcher):
+            steps.solve(scene, args.matcher, args.no_masks)
     elif args.command == "train":
         if args.resume:
             args.trainer = "msplat"  # only Msplat runs can be resumed
@@ -468,9 +497,11 @@ def dispatch(scene: Scene, args: argparse.Namespace) -> None:
             raise GausserError("Arguments after -- go to Brush; Msplat takes none")
         if args.exclude_masks and (args.trainer != "brush" or args.no_masks):
             raise GausserError("--exclude-masks is for Brush and cannot be combined with --no-masks")
-        _train(scene, args, args.resume, extra)
+        with scene.step("train", trainer=args.trainer, iterations=args.iterations):
+            _train(scene, args, args.resume, extra)
     elif args.command == "lod":
-        _lod(scene, args.source, args)
+        with scene.step("lod"):
+            _lod(scene, args.source, args)
 
 
 if __name__ == "__main__":

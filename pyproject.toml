@@ -32,7 +32,7 @@ dev = ["pytest>=8.0", "ruff>=0.15,<0.16", "mypy>=1.19,<2", "numpy>=1.26,<2", "Pi
 gausser = "gausser.cli:main"
 
 [tool.setuptools.package-data]
-gausser = ["orbit.mjs"]
+gausser = ["orbit.mjs", "web/*", "web/assets/*"]  # web/: built from the repository's web/ (npm run build)
 
 [tool.setuptools.packages.find]
 where = ["src"]

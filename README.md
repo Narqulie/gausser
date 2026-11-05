@@ -23,9 +23,15 @@ The direct way, for scripts and overnight runs:
 ```bash
 mkdir -p statue/images && cd statue
 cp ~/photos/statue/*.jpg images/        # or: gausser frames walkaround.mp4
-gausser run --prompt "statue"            # mask → solve → train
+gausser run --prompt "statue" --monitor  # mask → solve → train, watched in the browser
 gausser view                             # open the result in SuperSplat
 ```
+
+`--monitor` (on `run`, `frames`, `mask`, `solve`, `train` and `lod`) opens a web page of the scene:
+each step's progress, its live log, step timings, the COLMAP cameras and points as the mapper adds them,
+and the splat as Brush trains it (every `--export-every` steps, 5000 by default). It is read-only and
+stays up as a viewer after the run; it quits 10 minutes after its last browser tab closes.
+`gausser monitor` opens the same page for any scene.
 
 A scene is a folder with its photos in `images/`. If the photos are in the
 folder itself, `gausser run --import` moves them into `images/`.
@@ -60,10 +66,11 @@ LOD set.
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [--background jutaka] [--target X Y Z --radius R --height H] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
 | `gausser status` | Shows what the scene has and which tools are installed | — |
+| `gausser monitor [--port N] [--no-open]` | Web page of the scene: steps, logs, timings and stats, images with masks, COLMAP cameras and points, splats | — |
 
 Every command takes `-s/--scene DIR` (default: current folder) and `--help`.
 Only one command at a time can change a scene; a second one stops with an error
-instead of overwriting the first one's work. `align` needs no scene at all. `status`, `view`, `orbit`, `composite` and `subset` always run
+instead of overwriting the first one's work. `align` needs no scene at all. `status`, `view`, `orbit`, `monitor`, `composite` and `subset` always run
 (`orbit` and `composite` only add a new run folder; `subset` only reads the source scene).
 
 `gausser orbit` needs `sparse/0` and a Brush export. The camera circles the point nearest all
@@ -253,6 +260,7 @@ The script is safe to rerun. It installs:
 - a `.venv` with gausser, Sharp Frames, SAM3 (patched) and Msplat;
 - Brush at a pinned commit (`cargo install`);
 - a SuperSplat build for `gausser view` and `gausser orbit`, and Playwright with Chromium for `orbit`;
+- the monitor page (`web/`, built into `src/gausser/web/`);
 - `gausser` and `sharp-frames` in `~/.local/bin`.
 
 It ends with `gausser status`. After you reinstall SAM3 by hand, rerun the script:

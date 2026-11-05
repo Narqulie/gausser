@@ -239,6 +239,12 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         match += ["--SequentialMatching.loop_detection", "1"]
     run_tool(match, cwd=staged)
     sparse.mkdir()
+    # Snapshots of the growing model, about 20 per solve, for `gausser monitor`.
+    (staged / "snapshots").mkdir()
+    mapper += [
+        "--Mapper.snapshot_path", str(staged / "snapshots"),
+        "--Mapper.snapshot_frames_freq", str(max(5, len(images) // (pano.VIEWS if rig else 1) // 20)),
+    ]
     run_tool(mapper, cwd=staged)
 
     # COLMAP can split the scene into several models; keep the largest as sparse/0.

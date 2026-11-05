@@ -5,7 +5,9 @@
 A single `gausser` CLI (`gausser.cli:main`) that turns photos or video into
 Gaussian splats: `frames → mask → solve → train → lod`. It is deliberately
 small. Do not reintroduce manifests, scene locks, invalidation archives, a JSON
-engine, or a GUI without an explicit request from the Captain. The native
+engine, or a GUI without an explicit request from the Captain. The one GUI is
+`gausser monitor` (2026-11-05, requested): a read-only web page that never drives
+the pipeline. The native
 Studio app, `gausser-engine`, and the separate `sammer`/`colmapper`/`brusher`/…
 commands were removed on 2026-10-19 (branch `simplify`); git history has them.
 
@@ -24,6 +26,8 @@ src/gausser/
 ├── view.py    `gausser view`: serves a SuperSplat build plus one splat on 127.0.0.1 (`serve()` is shared with orbit)
 ├── orbit.py   `gausser orbit`: camera path and up from sparse/0 (cameras' level right axes); runs orbit.mjs with node
 ├── orbit.mjs  Playwright driver: sets camera keys in SuperSplat and saves its `render.video` download
+├── monitor.py `gausser monitor` / `--monitor`: read-only HTTP JSON API + the built page in web/ (gitignored)
+web/           the monitor page: Vite + React + three/R3F + Spark (splats) + recharts; `npm run build` → src/gausser/web/
 └── scene.py   Scene paths, image listing, replace()/remove(), run_tool()
 ```
 
@@ -51,8 +55,19 @@ src/gausser/
   while it is still empty. Without a TTY the menu refuses (exit 2).
 - `solve` publishes the model, then raises if fewer than half the images were
   registered, so `run` stops before a wasted training run.
-- Every command except `status`, `view`, `orbit` and `align` (which has no scene) holds `Scene.lock()` (flock on
-  `.gausser/lock`). A second command fails fast; it never waits.
+- Every command except `status`, `view`, `orbit`, `monitor` and `align` (which has no scene) holds `Scene.lock()` (flock on
+  `.gausser/lock`). A second command fails fast; it never waits. The lock file holds the holder's
+  pid/argv as JSON (opened `a+`, so a refused command does not erase it).
+- `gausser monitor` only reads. It must never take the lock (not even briefly to probe it): a running
+  holder is the lock file's pid being alive. Each locked step runs inside `Scene.step()`, which appends
+  start/end records to `.gausser/history.jsonl` and tees everything printed, and `run_tool` output
+  (through a pty on a terminal, so progress bars still draw), into `.gausser/logs/<time>-<step>.log`.
+  Nothing in the pipeline reads these. Live data comes from staging folders: Brush's
+  `.gausser/tmp/brush-*/exports/*.ply` and the COLMAP mapper's `snapshots/` (~20 per solve,
+  `--Mapper.snapshot_frames_freq`). Scenes run by a gausser without these files show the step only
+  from its recently written staging folder (`monitor.legacy_step`).
+- Log parsing for progress and stats lives in `web/src/parse.ts` only; the CLI still passes tool output
+  straight through.
 - `orbit` renders in a headed Chromium via `playwright-core` (installed under `~/.local/share/gausser/node`,
   `GAUSSER_NODE_DIR` overrides; Playwright's pinned Chromium revision must be installed, or set `GAUSSER_CHROME`).
   It takes no lock because it only adds `runs/orbit/<time>/`; the driver is not run by tests.
@@ -63,7 +78,7 @@ src/gausser/
   that only links `images`, `sparse` and `masks`; never pass the scene root.
 - External tools are found on PATH with `require_tool()` and run through
   `run_tool()`, with output passed straight through. Don't add output parsers or
-  progress UIs for tool output.
+  progress UIs to the CLI; the monitor page parses the step logs.
 
 ## Hard-won constraints
 
@@ -124,7 +139,10 @@ src/gausser/
 .venv/bin/python -m pytest -q
 .venv/bin/ruff check src tests
 .venv/bin/mypy src
+(cd web && npm run build)   # type-checks and builds the monitor page into src/gausser/web/
 ```
+
+`cd web && npm run dev` serves the page with hot reload against `gausser monitor --port 8765`.
 
 Set up everything with `scripts/install-macos.sh`. It is safe to rerun, and it
 creates `.venv` with Homebrew Python 3.13, because msplat has only cp312/cp313
