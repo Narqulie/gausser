@@ -6,15 +6,15 @@ import { clock, duration, useFetched, useLog } from "./api";
 import type { FramesMeta, HistoryRecord, ImageInfo, Model, State, Step } from "./api";
 import { maskScores, solveStats, trainStats } from "./parse";
 
-const COLORS: Record<Step, string> = { frames: "#fede5d", mask: "#b381c5", solve: "#36f9f6", train: "#ff7edb", lod: "#72f1b8" };
-const AXIS = { stroke: "#6f6385", fontSize: 11 };
+const COLORS: Record<Step, string> = { frames: "#fede5d", mask: "#ff8b39", solve: "#36f9f6", train: "#ff7edb", lod: "#72f1b8" };
+const AXIS = { stroke: "#614d85", fontSize: 11, tickLine: false };
 const TOOLTIP = {
-  contentStyle: { background: "#120e1c", border: "1px solid #495495", borderRadius: 6, fontFamily: "inherit" },
-  labelStyle: { color: "#a99bbd" },
+  contentStyle: { background: "#171520", border: "1px solid #34294f", borderRadius: 3, fontFamily: "inherit" },
+  labelStyle: { color: "#848bbd" },
   itemStyle: { color: "#f4eefa" },
   cursor: { fill: "rgba(255,126,219,.08)" },
 };
-const GRID = <CartesianGrid stroke="#3b2f55" strokeDasharray="3 4" vertical={false} />;
+const GRID = <CartesianGrid stroke="#2e2445" vertical={false} />;
 
 function lastOf(state: State, step: Step): HistoryRecord | null {
   return [...state.history].reverse().find((r) => r.step === step && r.log) ?? null;
@@ -64,12 +64,12 @@ export function Stats({ state }: { state: State }) {
 
   return (
     <div className="stats">
-      <section className="panel wide">
-        <h3>Step timings</h3>
-        <p className="note">
+      <section className="chart wide">
+        <h2>Time per step</h2>
+        <p>
           {totals.length
             ? totals.map((t) => `${t.step} ${duration(t.seconds)}${t.runs > 1 ? ` (${t.runs} runs)` : ""}`).join(" · ")
-            : "No step has been recorded in .gausser/history.jsonl yet."}
+            : "Steps appear here as they finish."}
         </p>
         {timings.length > 0 && (
           <ResponsiveContainer width="100%" height={Math.max(120, timings.length * 22 + 40)}>
@@ -87,10 +87,10 @@ export function Stats({ state }: { state: State }) {
       </section>
 
       {frames && (
-        <section className="panel">
-          <h3>Sharp Frames selection</h3>
-          <p className="note">
-            {frames.total_selected} frames chosen{extracted ? ` of ${extracted} extracted` : ""} · {frames.selection_method} · min buffer {frames.min_buffer}
+        <section className="chart">
+          <h2>Frames sharp-frames chose</h2>
+          <p>
+            {frames.total_selected} of {extracted ?? "?"} extracted frames, {frames.selection_method}, at least {frames.min_buffer} apart. Sharpness by position in the video.
           </p>
           <ResponsiveContainer width="100%" height={220}>
             <ScatterChart margin={{ right: 20 }}>
@@ -105,9 +105,9 @@ export function Stats({ state }: { state: State }) {
       )}
 
       {sharpness.length > 0 && (
-        <section className="panel">
-          <h3>Image sharpness</h3>
-          <p className="note">Variance of the Laplacian at 512 px{model ? "; red = not registered by COLMAP" : ""}</p>
+        <section className="chart">
+          <h2>Sharpness per image</h2>
+          <p>Laplacian variance at 512 px.{model ? " Red: COLMAP could not place the image." : ""}</p>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={sharpness} margin={{ right: 20 }}>
               {GRID}
@@ -123,12 +123,13 @@ export function Stats({ state }: { state: State }) {
       )}
 
       {model && (
-        <section className="panel">
-          <h3>COLMAP: 3D points seen per image</h3>
-          <p className="note">
-            {model.cameras.length}/{state.images.count} registered · {model.stats.points.toLocaleString()} points ·
-            reprojection {model.stats.mean_error.toFixed(2)} px{solve.pairs ? ` · ${solve.pairs} matching` : ""}
-            {solve.features.length ? ` · ${Math.round(solve.features.reduce((a, b) => a + b, 0) / solve.features.length)} features/image` : ""}
+        <section className="chart">
+          <h2>Points each image sees</h2>
+          <p>
+            {model.cameras.length} of {state.images.count} placed, {model.stats.points.toLocaleString()} points,{" "}
+            {model.stats.mean_error.toFixed(2)} px reprojection error
+            {solve.features.length ? `, ${Math.round(solve.features.reduce((a, b) => a + b, 0) / solve.features.length)} features per image` : ""}
+            {solve.pairs ? `, ${solve.pairs} matching` : ""}
           </p>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={seen} margin={{ right: 20 }}>
@@ -143,27 +144,27 @@ export function Stats({ state }: { state: State }) {
       )}
 
       {model && (
-        <section className="panel">
-          <h3>COLMAP: track lengths</h3>
-          <p className="note">Images that see each 3D point (mean {model.stats.mean_track.toFixed(1)}; the last bar is 30 or more)</p>
+        <section className="chart">
+          <h2>Track lengths</h2>
+          <p>How many images see each point: {model.stats.mean_track.toFixed(1)} on average. The last bar is 30 or more.</p>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={model.stats.track_lengths.map(([length, count]) => ({ length, count }))} margin={{ right: 20 }}>
               {GRID}
               <XAxis dataKey="length" {...AXIS} />
               <YAxis {...AXIS} />
               <Tooltip {...TOOLTIP} />
-              <Bar dataKey="count" fill="#b381c5" />
+              <Bar dataKey="count" fill="#36f9f6" />
             </BarChart>
           </ResponsiveContainer>
         </section>
       )}
 
       {scores.length > 0 && (
-        <section className="panel">
-          <h3>SAM3 {maskRun?.exclude ? "exclusion" : "scores"}</h3>
-          <p className="note">
-            {maskRun?.prompt ? `prompt "${String(maskRun.prompt)}" · ` : ""}
-            {scores.filter((s) => s.score !== null).length}/{scores.length} hits{maskRun?.exclude ? " · share of each image excluded" : ""}
+        <section className="chart">
+          <h2>{maskRun?.exclude ? "Share of each image excluded" : "SAM3 score per image"}</h2>
+          <p>
+            {maskRun?.prompt ? `"${String(maskRun.prompt)}": ` : ""}
+            found in {scores.filter((s) => s.score !== null).length} of {scores.length} images
           </p>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={scores.map((s, index) => ({ ...s, index, value: s.score ?? 0 }))} margin={{ right: 20 }}>
@@ -172,7 +173,7 @@ export function Stats({ state }: { state: State }) {
               <YAxis {...AXIS} domain={[0, 1]} />
               <Tooltip {...TOOLTIP} labelFormatter={(_, p) => p?.[0]?.payload?.name ?? ""} formatter={(_, __, p) => p.payload.note} />
               <Bar dataKey="value">
-                {scores.map((s, i) => <Cell key={i} fill={s.score === null ? "#fe4450" : "#b381c5"} />)}
+                {scores.map((s, i) => <Cell key={i} fill={s.score === null ? "#fe4450" : "#ff8b39"} />)}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -180,9 +181,9 @@ export function Stats({ state }: { state: State }) {
       )}
 
       {sharpness.some((s) => s.mask !== null) && (
-        <section className="panel">
-          <h3>Mask coverage</h3>
-          <p className="note">Share of each image the trainer uses (white in the mask)</p>
+        <section className="chart">
+          <h2>Mask coverage</h2>
+          <p>Share of each image the trainer learns from.</p>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={sharpness} margin={{ right: 20 }}>
               {GRID}
@@ -196,11 +197,11 @@ export function Stats({ state }: { state: State }) {
       )}
 
       {train.refine.length > 0 && (
-        <section className="panel">
-          <h3>Training: splat count</h3>
-          <p className="note">
+        <section className="chart">
+          <h2>Splats during training</h2>
+          <p>
             {String(trainRun?.trainer ?? "brush")}
-            {train.views ? ` · ${train.views.train} training views, ${train.views.eval} eval` : ""}
+            {train.views ? `, ${train.views.train} training views${train.views.eval ? `, ${train.views.eval} held out` : ""}` : ""}
             {rate(train.refine)}
           </p>
           <ResponsiveContainer width="100%" height={220}>
@@ -209,16 +210,16 @@ export function Stats({ state }: { state: State }) {
               <XAxis dataKey="iteration" type="number" {...AXIS} />
               <YAxis {...AXIS} tickFormatter={(v) => (v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${Math.round(v / 1e3)}k` : String(v))} />
               <Tooltip {...TOOLTIP} formatter={(v) => Number(v).toLocaleString()} />
-              <Line dataKey="splats" stroke="#ff7edb" strokeWidth={2} dot={false} isAnimationActive={false} />
+              <Line dataKey="splats" stroke="#ff7edb" strokeWidth={1.5} dot={false} isAnimationActive={false} />
             </LineChart>
           </ResponsiveContainer>
         </section>
       )}
 
       {train.evals.length > 0 && (
-        <section className="panel">
-          <h3>Training: eval PSNR / SSIM</h3>
-          <p className="note">On the held-out images (`gausser train --eval-split N`)</p>
+        <section className="chart">
+          <h2>PSNR and SSIM on held-out images</h2>
+          <p>From `gausser train --eval-split N`, every 1000 steps.</p>
           <ResponsiveContainer width="100%" height={220}>
             <LineChart data={train.evals} margin={{ right: 20 }}>
               {GRID}
@@ -241,5 +242,5 @@ function rate(refine: { iteration: number; seconds: number }[]): string {
   if (timed.length < 2) return "";
   const a = timed[0];
   const b = timed[timed.length - 1];
-  return ` · ${((b.iteration - a.iteration) / (b.seconds - a.seconds)).toFixed(1)} steps/s`;
+  return `, ${((b.iteration - a.iteration) / (b.seconds - a.seconds)).toFixed(1)} steps/s`;
 }

@@ -27,7 +27,9 @@ export function Images({ state, onShow }: { state: State; onShow: (name: string)
     return [...list].sort((a, b) => (key[sort](a) < key[sort](b) ? -1 : key[sort](a) > key[sort](b) ? 1 : 0));
   }, [images, model, cameras, filter, sort]);
 
-  if (!images) return <div className="empty">{state.images.count ? `Reading ${state.images.count} images…` : "No images yet."}</div>;
+  if (!images) {
+    return <div className="empty">{state.images.count ? `Reading ${state.images.count.toLocaleString()} images` : "No images yet. Add photos to images/ or run `gausser frames VIDEO`."}</div>;
+  }
   const aspect = state.images.size ? state.images.size[0] / state.images.size[1] : 1;
   const registered = model ? images.filter((i) => cameras.has(i.name)).length : null;
   const pano = state.images.panos > 0 && sort === "name";
@@ -44,7 +46,7 @@ export function Images({ state, onShow }: { state: State; onShow: (name: string)
         </div>
         <div className="tile-info">
           <span className="name">{pano ? image.view : image.name}</span>
-          {model && (camera ? <span className="reg">{camera.points}</span> : <span className="unreg">✗</span>)}
+          {camera && <span title="3D points this image sees">{camera.points}</span>}
         </div>
       </div>
     );
@@ -53,30 +55,29 @@ export function Images({ state, onShow }: { state: State; onShow: (name: string)
   return (
     <div className="images">
       <div className="toolbar">
-        <span>
-          <b style={{ color: "var(--cyan)" }}>{images.length}</b> images
-          {registered !== null && <> · <b style={{ color: "var(--green)" }}>{registered}</b> registered</>}
-          {state.images.panos > 0 && <> · {state.images.panos} panoramas × {state.images.views} views</>}
+        <span className="count">
+          {state.images.panos > 0 ? `${state.images.panos} panoramas × ${state.images.views} views` : `${images.length.toLocaleString()} images`}
+          {registered !== null && <span className="label">, {registered.toLocaleString()} placed by colmap</span>}
         </span>
         <label>overlay
           <select value={overlay} onChange={(e) => setOverlay(e.target.value as Overlay)}>
             <option value="none">none</option>
             <option value="mask" disabled={!state.masks.count}>subject mask</option>
-            <option value="exclude" disabled={!state.masks.exclude}>exclude mask</option>
+            <option value="exclude" disabled={!state.masks.exclude}>exclusion mask</option>
           </select>
         </label>
         <label>sort
           <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
             <option value="name">name</option>
             <option value="sharpness">sharpness</option>
-            <option value="points" disabled={!model}>3D points seen</option>
+            <option value="points" disabled={!model}>points seen</option>
           </select>
         </label>
         <label>show
           <select value={filter} onChange={(e) => setFilter(e.target.value as Filter)} disabled={!model}>
             <option value="all">all</option>
-            <option value="unregistered">unregistered</option>
-            <option value="registered">registered</option>
+            <option value="unregistered">not placed</option>
+            <option value="registered">placed</option>
           </select>
         </label>
         <label>size <input type="range" min={70} max={360} value={size} onChange={(e) => setSize(Number(e.target.value))} /></label>
@@ -117,11 +118,11 @@ function Lightbox({ image, camera, modelLoaded, onClose, onShow }: {
       <dl className="kv" onClick={(e) => e.stopPropagation()}>
         <dt>image</dt><dd>{image.name}</dd>
         <dt>sharpness</dt><dd>{image.sharpness.toFixed(0)}</dd>
-        {image.masks !== undefined && <><dt>mask keeps</dt><dd>{(image.masks * 100).toFixed(1)}%</dd></>}
-        {image["masks-exclude"] !== undefined && <><dt>exclude keeps</dt><dd>{(image["masks-exclude"] * 100).toFixed(1)}%</dd></>}
-        {modelLoaded && <><dt>registered</dt><dd>{camera ? `yes, sees ${camera.points} points` : "no"}</dd></>}
+        {image.masks !== undefined && <><dt>trained on</dt><dd>{(image.masks * 100).toFixed(1)}% (subject mask)</dd></>}
+        {image["masks-exclude"] !== undefined && <><dt>excluded</dt><dd>{((1 - image["masks-exclude"]) * 100).toFixed(1)}%</dd></>}
+        {modelLoaded && <><dt>colmap</dt><dd>{camera ? `placed, sees ${camera.points} points` : "not placed"}</dd></>}
       </dl>
-      {camera && <button className="button" onClick={() => onShow(image.name)}>show camera in 3D</button>}
+      {camera && <button className="button" onClick={() => onShow(image.name)}>Show camera in 3D</button>}
     </div>
   );
 }

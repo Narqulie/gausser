@@ -20,7 +20,7 @@ export function App() {
   const live = useLog(current?.log ?? null, true);
 
   if (!state) {
-    return <div className="empty">{offline ? "The monitor is not reachable." : "Loading…"}</div>;
+    return <div className="empty">{offline ? "No monitor at this address. Start one with `gausser monitor`." : "Loading…"}</div>;
   }
   const totals = { images: state.images.count, frames: state.images.panos || state.images.count };
   const now = progressOf(state, live.lines, live.partial, totals);
@@ -28,12 +28,11 @@ export function App() {
   return (
     <div className="app">
       <header className="header">
-        <span className="brand">gausser</span>
-        <span className="scene-name">{state.name}</span>
-        <span className="scene-root" title={state.root}>{state.root}</span>
-        <RunBadge state={state} offline={offline} />
+        <h1 className="scene-name">{state.name}</h1>
+        <span className="scene-root" title={state.root}>{state.root.replace(/^\/Users\/[^/]+/, "~")}</span>
+        <RunLine state={state} offline={offline} />
       </header>
-      <section className="pipeline">
+      <section className="rail">
         {STEPS.map((step) => (
           <StepCard
             key={step} step={step} state={state} progress={current?.step === step ? now : null}
@@ -76,15 +75,15 @@ function lastRun(state: State, step: Step): HistoryRecord | undefined {
   return [...state.history].reverse().find((record) => record.step === step);
 }
 
-function RunBadge({ state, offline }: { state: State; offline: boolean }) {
-  if (offline) return <span className="badge offline"><span className="dot" />monitor offline</span>;
+function RunLine({ state, offline }: { state: State; offline: boolean }) {
+  if (offline) return <span className="run-line offline">monitor stopped, showing the last state</span>;
   const holder = state.holder;
-  if (!holder) return <span className="badge"><span className="dot" />idle</span>;
+  if (!holder) return <span className="run-line">idle</span>;
   return (
-    <span className="badge running">
-      <span className="dot" />
-      <code>gausser {holder.argv.join(" ")}</code>
-      <span>{duration(state.now - holder.start)}</span>
+    <span className="run-line running">
+      <code>$ gausser {holder.argv.join(" ")}</code>
+      <span className="cursor" aria-hidden>▌</span>
+      <span className="elapsed">{duration(state.now - holder.start)}</span>
     </span>
   );
 }
@@ -93,27 +92,27 @@ function StepCard({ step, state, progress, onClick }: { step: Step; state: State
   const run = lastRun(state, step);
   const [status, label] = stepStatus(step, state, run, progress !== null);
   const [metric, sub] = stepMetric(step, state);
-  const fraction = progress && progress.total ? Math.min(1, (progress.done ?? 0) / progress.total) : null;
+  const fraction = progress ? (progress.total ? Math.min(1, (progress.done ?? 0) / progress.total) : null) : status === "idle" ? 0 : 1;
   const elapsed = run && (run.end ?? state.now) - run.start;
   return (
-    <div className={`step ${progress ? "running" : ""}`} onClick={onClick} title="Show the log">
-      <div className="step-head">
-        <span className={`step-name step-color-${step}`}>{step}</span>
-        <span className={`chip ${status}`}>{label}</span>
-      </div>
-      <div className="step-metric">{metric}</div>
-      <div className="step-sub">
+    <button className={`station ${status}`} onClick={onClick} title={`${step}: show the log`} style={{ "--step": `var(--${step})` } as React.CSSProperties}>
+      <span className="station-name">{step}</span>
+      <span className={`segment ${fraction === null ? "indeterminate" : ""}`}>
+        <span style={{ width: `${(fraction ?? 0.3) * 100}%` }} />
+      </span>
+      <span className="station-metric">{progress ? progressText(progress) : metric}</span>
+      <span className="station-sub">
         {progress
-          ? `${progress.phase}${progress.done !== null && progress.total ? ` · ${progress.done}/${progress.total}` : ""} · ${duration(state.now - (state.current?.start ?? state.now))}`
-          : `${sub}${elapsed !== undefined ? ` · last ${duration(elapsed)}` : ""}`}
-      </div>
-      {progress && (
-        <div className={`bar ${fraction === null ? "indeterminate" : ""}`}>
-          <div style={{ width: `${(fraction ?? 0) * 100}%` }} />
-        </div>
-      )}
-    </div>
+          ? `${progress.phase} · ${duration(state.now - (state.current?.start ?? state.now))}`
+          : [status === "done" || status === "idle" ? sub : label, elapsed !== undefined && duration(elapsed)].filter(Boolean).join(" · ")}
+      </span>
+    </button>
   );
+}
+
+function progressText(progress: Progress): string {
+  if (progress.done === null || !progress.total) return "running";
+  return `${progress.done.toLocaleString()} / ${progress.total.toLocaleString()}`;
 }
 
 function stepStatus(step: Step, state: State, run: HistoryRecord | undefined, running: boolean): [string, string] {
@@ -143,27 +142,23 @@ function stepStatus(step: Step, state: State, run: HistoryRecord | undefined, ru
 
 function stepMetric(step: Step, state: State): [string, string] {
   const { images, masks, model, exports, lods } = state;
+  const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
   switch (step) {
     case "frames":
-      return images.panos
-        ? [`${images.panos} panoramas`, `${images.count} views (${images.views} each)`]
-        : [`${images.count} images`, images.size ? `${images.size[0]}×${images.size[1]}` : images.loose ? `${images.loose} loose photos` : "—"];
+      if (images.panos) return [plural(images.panos, "panorama"), `${images.count.toLocaleString()} views`];
+      if (!images.count) return [images.loose ? plural(images.loose, "loose photo") : "no images", "sharp-frames"];
+      return [plural(images.count, "image"), images.size ? `${images.size[0]}×${images.size[1]}` : "sharp-frames"];
     case "mask":
-      return [
-        masks.count ? `${masks.count}/${images.count} masks` : "—",
-        masks.exclude ? `${masks.exclude} exclude masks` : "SAM3",
-      ];
+      if (masks.count) return [`${masks.count.toLocaleString()} / ${images.count.toLocaleString()}`, "sam3"];
+      return [masks.exclude ? plural(masks.exclude, "exclusion mask") : "not masked", "sam3"];
     case "solve":
-      return model
-        ? [`${model.registered}/${images.count} registered`, model.no_masks ? "solved without masks" : "COLMAP"]
-        : ["—", "COLMAP"];
+      if (!model) return ["not solved", "colmap"];
+      return [`${model.registered.toLocaleString()} / ${images.count.toLocaleString()} placed`, model.no_masks ? "colmap, no masks" : "colmap"];
     case "train": {
       const newest = exports[exports.length - 1];
-      return newest
-        ? [`${exports.length} export${exports.length > 1 ? "s" : ""}`, newest.run.split("/").slice(1).join("/")]
-        : ["—", "Brush / Msplat"];
+      return newest ? [plural(exports.length, "export"), newest.run.split("/").slice(1).join("/")] : ["not trained", "brush"];
     }
     case "lod":
-      return [lods.length ? `${lods.length} LOD set${lods.length > 1 ? "s" : ""}` : "—", "splat-transform"];
+      return [lods.length ? plural(lods.length, "set") : "none", "splat-transform"];
   }
 }

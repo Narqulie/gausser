@@ -28,13 +28,12 @@ export function Logs({ state, pick, onPick, live }: {
   return (
     <div className="logs">
       <div className="runs">
-        {runs.length === 0 && !current && <div className="empty">No steps recorded yet.</div>}
+        {runs.length === 0 && !current && <div className="empty">Steps run with this gausser are listed here.</div>}
         {current && !current.log && (
-          <div className="run active">
-            <span className={`step-color-${current.step}`}>{current.step}</span>
-            <span>running</span>
+          <div className="run active" style={{ "--step": `var(--${current.step})` } as React.CSSProperties}>
+            <span className="what"><span className={`step-${current.step}`}>{current.step}</span> <span className="live">running</span></span>
             <span>{duration(state.now - current.start)}</span>
-            <span className="when">started by an older gausser: no log</span>
+            <span className="when">started by an older gausser, so there is no log</span>
           </div>
         )}
         {runs.map((run) => {
@@ -43,10 +42,12 @@ export function Logs({ state, pick, onPick, live }: {
           return (
             <div
               key={`${run.step}-${run.start}`} className={`run ${chosen === run || (chosen?.start === run.start && chosen.step === run.step) ? "active" : ""}`}
-              onClick={() => onPick(run)}
+              onClick={() => onPick(run)} style={{ "--step": `var(--${run.step})` } as React.CSSProperties}
             >
-              <span className={`step-color-${run.step}`}>{run.step}</span>
-              <span className={status === "ok" ? "reg" : status === "running" ? "step-color-train" : "unreg"}>{status}</span>
+              <span className="what">
+                <span className={`step-${run.step}`}>{run.step}</span>{" "}
+                <span className={status === "ok" ? "ok" : status === "running" ? "live" : "bad"}>{status}</span>
+              </span>
               <span>{duration((run.end ?? state.now) - run.start)}</span>
               <span className="when">{clock(run.start)}{detail(run)}</span>
               {run.error && run.error !== "interrupted" && <span className="error" title={run.error}>{run.error}</span>}
@@ -61,8 +62,8 @@ export function Logs({ state, pick, onPick, live }: {
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
       >
-        {!chosen && "Pick a step."}
-        {log.truncated && <div className="meta">… earlier output not shown (the log is in .gausser/logs/{chosen?.log})</div>}
+        {!chosen && "Choose a step on the left."}
+        {log.truncated && <div className="meta">Showing the last 4 MB; the whole log is .gausser/logs/{chosen?.log}</div>}
         {log.lines.map((line, i) => <Line key={i} text={line} />)}
         {log.partial && <div className="partial">{log.partial}</div>}
       </pre>

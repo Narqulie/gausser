@@ -13,16 +13,16 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
   // Models: the live mapper snapshot while solving, else sparse/0.
   const models = useMemo(() => {
     const list: { path: string; label: string; key: number }[] = [];
-    if (live?.model) list.push({ path: live.model.path, label: `live: ${live.model.registered} registered`, key: live.model.mtime });
-    if (state.model) list.push({ path: state.model.path, label: `${state.model.path} · ${state.model.registered} registered`, key: state.model.mtime });
+    if (live?.model) list.push({ path: live.model.path, label: `solving: ${live.model.registered} placed`, key: live.model.mtime });
+    if (state.model) list.push({ path: state.model.path, label: `${state.model.path}: ${state.model.registered} placed`, key: state.model.mtime });
     return list;
   }, [live?.model, state.model]);
   const splats = useMemo(() => {
     const list: (Export & { label: string })[] = [];
-    for (const e of [...(live?.exports ?? [])].reverse()) list.push({ ...e, label: `live: step ${e.iteration ?? "?"} · ${bytes(e.size)}` });
+    for (const e of [...(live?.exports ?? [])].reverse()) list.push({ ...e, label: `training: step ${e.iteration ?? "?"}, ${bytes(e.size)}` });
     for (const e of [...state.exports].reverse()) {
       const run = e.run.split("/").slice(1).join("/");
-      list.push({ ...e, label: `${run} · ${e.iteration ?? e.path.split("/").pop()}${e.marker ? ` · ${e.marker}` : ""}` });
+      list.push({ ...e, label: `${run}: ${e.iteration ? `step ${e.iteration}` : e.path.split("/").pop()}${e.marker ? `, ${e.marker}` : ""}` });
     }
     return list;
   }, [live?.exports, state.exports]);
@@ -41,22 +41,22 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
   return (
     <div className="viewer">
       <aside className="side">
-        <div>
-          <h3>COLMAP model</h3>
+        <section>
+          <span className="label">model</span>
           <select value={modelPick} onChange={(e) => setModelPick(e.target.value)}>
-            <option value={AUTO}>newest{models[0] ? ` (${models[0].label})` : ""}</option>
+            <option value={AUTO}>{live?.model ? "follow the solve" : "newest"}</option>
             {models.map((m) => <option key={m.path} value={m.path}>{m.label}</option>)}
           </select>
-        </div>
-        <div>
-          <h3>Splat</h3>
+        </section>
+        <section>
+          <span className="label">splat</span>
           <select value={splatPick} onChange={(e) => setSplatPick(e.target.value)}>
-            <option value={AUTO}>newest{splats[0] ? ` (${splats[0].label})` : ""}</option>
+            <option value={AUTO}>{state.current?.step === "train" ? "follow the training" : "newest"}</option>
             {splats.map((s) => <option key={s.path} value={s.path}>{s.label}</option>)}
           </select>
-        </div>
-        <div>
-          <h3>Show</h3>
+        </section>
+        <section>
+          <span className="label">layers</span>
           {(Object.keys(show) as (keyof typeof show)[]).map((key) => (
             <label key={key}>
               <input type="checkbox" checked={show[key]} onChange={() => setShow({ ...show, [key]: !show[key] })} />
@@ -64,32 +64,29 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
             </label>
           ))}
           <label>
-            points
+            point size
             <input type="range" min={0.2} max={4} step={0.1} value={pointSize} onChange={(e) => setPointSize(Number(e.target.value))} />
           </label>
-        </div>
+        </section>
         {model && (
-          <div>
-            <h3>Reconstruction</h3>
+          <section>
+            <span className="label">reconstruction</span>
             <dl className="kv">
-              <dt>cameras</dt><dd>{model.cameras.length}</dd>
+              <dt>cameras</dt><dd>{model.cameras.length.toLocaleString()}</dd>
               <dt>points</dt><dd>{model.stats.points.toLocaleString()}</dd>
-              <dt>shown</dt><dd>{(model.points.xyz.length / 3).toLocaleString()}</dd>
-              <dt>reproj. error</dt><dd>{model.stats.mean_error.toFixed(2)} px</dd>
+              {model.points.xyz.length / 3 < model.stats.points && <><dt>drawn</dt><dd>{(model.points.xyz.length / 3).toLocaleString()}</dd></>}
+              <dt>reprojection</dt><dd>{model.stats.mean_error.toFixed(2)} px</dd>
               <dt>track length</dt><dd>{model.stats.mean_track.toFixed(1)}</dd>
             </dl>
-          </div>
+          </section>
         )}
-        <p className="step-sub" style={{ whiteSpace: "normal" }}>
-          Drag to orbit, right-drag to pan, scroll to zoom. Up is taken from the cameras' level right axes.
-        </p>
       </aside>
       <div className="canvas">
         {!model && !splatChoice ? (
-          <div className="empty">Nothing to show yet: no COLMAP model and no splat.</div>
+          <div className="empty">Cameras appear here once COLMAP places them, and the splat once Brush exports one.</div>
         ) : (
           <Canvas gl={{ antialias: false }} camera={{ fov: 55, near: 0.01, far: 5000 }} dpr={[1, 2]}>
-            <color attach="background" args={["#120e1c"]} />
+            <color attach="background" args={["#171520"]} />
             <SparkSetup />
             {frame && <FitCamera frame={frame} />}
             <group quaternion={frame?.rotation} position={frame?.offset}>
@@ -98,14 +95,15 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
               {show.splat && splatChoice && <Splat path={splatChoice.path} onStatus={setSplatStatus} />}
             </group>
             {show.grid && frame && (
-              <gridHelper args={[frame.scale * 8, 40, "#ff7edb", "#4a2d6b"]} position={[0, frame.floor, 0]} />
+              <gridHelper args={[frame.scale * 8, 40, "#34294f", "#34294f"]} position={[0, frame.floor, 0]} />
             )}
             <OrbitControls makeDefault enableDamping dampingFactor={0.12} />
           </Canvas>
         )}
         {(splatStatus || focus) && (
-          <div className="overlay-note">{[splatStatus, focus && `camera: ${focus}`].filter(Boolean).join(" · ")}</div>
+          <div className="canvas-note">{[splatStatus, focus && `camera ${focus}`].filter(Boolean).join(" · ")}</div>
         )}
+        <div className="canvas-hint">drag to orbit · right-drag to pan · scroll to zoom</div>
       </div>
     </div>
   );
@@ -231,7 +229,7 @@ function Splat({ path, onStatus }: { path: string; onStatus: (status: string) =>
   const [mesh, setMesh] = useState<SplatMesh | null>(null);
   useEffect(() => {
     let cancelled = false;
-    onStatus(`loading ${path.split("/").pop()}…`);
+    onStatus(`loading ${path.split("/").pop()}`);
     const next = new SplatMesh({
       url: fileUrl(path),
       fileName: "export.ply",
@@ -243,7 +241,7 @@ function Splat({ path, onStatus }: { path: string; onStatus: (status: string) =>
       () => {
         if (cancelled) return next.dispose();
         setMesh(next); // the effect below disposes the one it replaces
-        onStatus(`${path.split("/").pop()} · ${next.packedSplats?.numSplats?.toLocaleString() ?? "?"} splats`);
+        onStatus(`${path.split("/").pop()}, ${next.packedSplats?.numSplats?.toLocaleString() ?? "?"} splats`);
       },
       (error: unknown) => !cancelled && onStatus(`could not load ${path}: ${String(error)}`),
     );
