@@ -355,11 +355,17 @@ def no_caffeinate(monkeypatch):
     monkeypatch.setattr(cli, "keep_awake", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def own_index(monkeypatch, tmp_path_factory):
+    """Keep tests out of the real index of all scenes."""
+    monkeypatch.setenv("GAUSSER_HOME", str(tmp_path_factory.mktemp("gausser-home")))
+
+
 @pytest.fixture
 def fake_steps(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(steps, "solve", lambda scene, matcher, no_masks: calls.append("solve"))
-    monkeypatch.setattr(steps, "train_brush", lambda scene, **kwargs: calls.append("train"))
+    monkeypatch.setattr(steps, "train_brush", lambda scene, **kwargs: calls.append("train") or scene.runs / "brush" / "x")
     return calls
 
 
@@ -435,7 +441,9 @@ def test_run_passes_no_masks_to_solve_and_train(tmp_path, monkeypatch):
     make_scene(tmp_path)
     seen = []
     monkeypatch.setattr(steps, "solve", lambda scene, matcher, no_masks: seen.append(("solve", no_masks)))
-    monkeypatch.setattr(steps, "train_brush", lambda scene, **kwargs: seen.append(("train", kwargs["no_masks"])))
+    monkeypatch.setattr(
+        steps, "train_brush", lambda scene, **kwargs: seen.append(("train", kwargs["no_masks"])) or scene.runs / "brush" / "x",
+    )
 
     assert cli.main(["run", "-s", str(tmp_path), "--no-masks"]) == 0
     assert seen == [("solve", True), ("train", True)]
@@ -813,6 +821,28 @@ def test_monitor_sees_a_step_of_an_older_gausser_by_its_staging_folder(tmp_path)
 
 def test_monitor_cleans_terminal_output_and_serves_only_the_scene(tmp_path):
     assert monitor.clean(b"\x1b[32mok\x1b[0m\n10%\r50%\r100%\r\n") == "ok\n100%\n"
-    app = monitor.Monitor(Scene(tmp_path))
+    scene = Scene(tmp_path)
     with pytest.raises(PermissionError):
-        app.path("../../etc/passwd")
+        monitor.Monitor().path(scene, "../../etc/passwd")
+    with pytest.raises(FileNotFoundError):  # only scenes in the index are served
+        monitor.Monitor().scene("/etc")
+
+
+def test_the_index_lists_every_scene_with_its_runs_and_eval_renders(tmp_path):
+    scene = Scene(tmp_path)
+    scene.images.mkdir()
+    Image.new("RGB", (8, 8), (100, 100, 100)).save(scene.images / "a.jpg")
+    with scene.step("train") as made:
+        made["run"] = "runs/brush/1"
+    renders = scene.runs / "brush" / "1" / "exports" / "eval_1000" / "images"
+    renders.mkdir(parents=True)
+    Image.new("RGB", (4, 4), (110, 100, 100)).save(renders / "a.png")
+
+    assert list(monitor.known_scenes()) == [str(scene.root)]
+    (run,) = monitor.recent_runs()
+    assert (run["step"], run["run"], run["ok"]) == ("train", "runs/brush/1", True)
+    app = monitor.Monitor()
+    (evaluation,) = app.evals(app.scene(str(scene.root)), "runs/brush/1")
+    (image,) = evaluation["images"]
+    assert evaluation["step"] == 1000 and image["photo"] == "images/a.jpg"
+    assert 25 < image["psnr"] < 35  # 10/255 off in one channel

@@ -166,30 +166,36 @@ class Scene:
             yield  # the OS releases the lock when the file closes or the process dies
 
     @contextmanager
-    def step(self, name: str, **info: Any) -> Iterator[None]:
-        """Record a step in .gausser/history.jsonl and copy everything it prints to .gausser/logs/."""
+    def step(self, name: str, **info: Any) -> Iterator[dict[str, Any]]:
+        """Record a step in .gausser/history.jsonl and copy everything it prints to .gausser/logs/.
+
+        The caller may add what the step made (e.g. ``run``) to the yielded dict; it goes into the end record.
+        Every record also goes into the index of all scenes (`index_path()`), which `gausser monitor` lists.
+        """
         global _log
         self.logs.mkdir(parents=True, exist_ok=True)
         log_path = self.logs / f"{timestamp()}-{name}.log"
         record = {"step": name, "start": time.time(), "log": log_path.name}
+        outputs: dict[str, Any] = {}
         self._journal({**record, **info})
         stdout, stderr = sys.stdout, sys.stderr
         with log_path.open("ab") as log:
             sys.stdout, sys.stderr = cast(TextIO, _Tee(stdout, log)), cast(TextIO, _Tee(stderr, log))
             _log = log
             try:
-                yield
+                yield outputs
             except BaseException as exc:
                 error = "interrupted" if isinstance(exc, KeyboardInterrupt) else str(exc) or type(exc).__name__
-                self._journal({**record, "end": time.time(), "ok": False, "error": error})
+                self._journal({**record, **outputs, "end": time.time(), "ok": False, "error": error})
                 raise
             finally:
                 sys.stdout, sys.stderr, _log = stdout, stderr, None
-        self._journal({**record, "end": time.time(), "ok": True})
+        self._journal({**record, **outputs, "end": time.time(), "ok": True})
 
     def _journal(self, record: dict[str, Any]) -> None:
         with self.history.open("a") as history:
             history.write(json.dumps(record) + "\n")
+        index(self, record)
 
     def masks_done(self, images: list[Path]) -> bool:
         return all((self.masks / f"{image.stem}.png").is_file() for image in images)
@@ -234,6 +240,20 @@ class Scene:
             suffix += 1
             path = self.runs / kind / f"{timestamp()}-{suffix}"
         return path
+
+
+def index_path() -> Path:
+    """The index of every scene gausser has worked on or shown: one JSON record per line, with its scene folder."""
+    return Path(os.environ.get("GAUSSER_HOME", "~/.local/share/gausser")).expanduser() / "history.jsonl"
+
+
+def index(scene: Scene, record: dict[str, Any]) -> None:
+    """Add a record to the index of all scenes; the index is only a list, so failing to write it is not an error."""
+    path = index_path()
+    with suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as stream:
+            stream.write(json.dumps({"scene": str(scene.root), **record}) + "\n")
 
 
 def remove(*paths: Path) -> None:

@@ -1,6 +1,7 @@
-"""`gausser monitor`: a read-only web page of a scene, live while a command runs and a viewer afterwards.
+"""`gausser monitor`: a read-only web page of every scene, live while a command runs and a viewer afterwards.
 
-It reads the scene's files and never takes the scene lock. The page itself is a React app built
+One monitor (port 8737) serves all scenes in the index (`scene.index_path()`). It reads the
+scenes' files and never takes a scene lock. The page itself is a React app built
 from web/ into src/gausser/web/ (scripts/install-macos.sh builds it).
 """
 
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import mimetypes
 import os
 import re
@@ -22,13 +24,14 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from . import pano
-from .scene import GausserError, Scene, is_image, mtime, registered_images
+from .scene import GausserError, Scene, index, index_path, is_image, mtime, registered_images
 
 WEB = Path(__file__).with_name("web")
 WEB_HINT = "cd web && npm ci && npm run build (in the gausser repository), or rerun scripts/install-macos.sh"
+PORT = 8737  # one monitor serves every scene, so its address stays the same
 IDLE_SECONDS = 600  # a spawned monitor quits after this long without a page polling it and nothing running
 MAX_POINTS = 200_000
 # Parameter counts of COLMAP camera models by model id, and the index of fy (else fy = fx).
@@ -247,11 +250,11 @@ def read_model(model: Path, max_points: int = MAX_POINTS) -> dict[str, Any]:
     rgb = np.empty((count, 3), dtype=np.uint8)
     errors = np.empty(count)
     tracks = np.empty(count, dtype=np.int64)
-    for index in range(count):
+    for i in range(count):
         x, y, z, r_, g, b, error, track = struct.unpack_from("<dddBBBdQ", data, at + 8)
-        xyz[index] = x, y, z
-        rgb[index] = r_, g, b
-        errors[index], tracks[index] = error, track
+        xyz[i] = x, y, z
+        rgb[i] = r_, g, b
+        errors[i], tracks[i] = error, track
         at += 51 + track * 8
     keep = np.random.default_rng(0).choice(count, max_points, replace=False) if count > max_points else slice(None)
     lengths, counts = np.unique(np.minimum(tracks, 30), return_counts=True)
@@ -300,9 +303,76 @@ def thumbnail(path: Path, size: int) -> bytes:
     return out.getvalue()
 
 
+def psnr(render: Path, photo: Path) -> float:
+    """PSNR of a render against its photo, scaled to the render's size, over the whole image."""
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(render) as r:
+        a = np.asarray(r.convert("RGB"), dtype=np.float32) / 255
+    with Image.open(photo) as p:
+        p.draft("RGB", (a.shape[1], a.shape[0]))
+        b = np.asarray(p.convert("RGB").resize((a.shape[1], a.shape[0])), dtype=np.float32) / 255
+    mse = float(((a - b) ** 2).mean())
+    return round(10 * math.log10(1 / mse), 2) if mse > 0 else 99.0
+
+
+def known_scenes() -> dict[str, float]:
+    """Scene folders in the index, with the time of their last record."""
+    scenes: dict[str, float] = {}
+    try:
+        lines = index_path().read_text().splitlines()
+    except OSError:
+        return scenes
+    for line in lines:
+        try:
+            record = json.loads(line)
+            scenes[record["scene"]] = max(scenes.get(record["scene"], 0.0), record.get("end") or record.get("start") or record.get("opened", 0.0))
+        except (ValueError, KeyError, TypeError):
+            continue
+    return scenes
+
+
+def recent_runs(limit: int = 300) -> list[dict[str, Any]]:
+    """The newest finished or running steps of all scenes, newest first."""
+    steps: dict[tuple[str, str, float], dict[str, Any]] = {}
+    try:
+        lines = index_path().read_text().splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            record = json.loads(line)
+            if "step" in record:
+                steps.setdefault((record["scene"], record["step"], record["start"]), {}).update(record)
+        except (ValueError, KeyError, TypeError):
+            continue
+    return sorted(steps.values(), key=lambda r: r["start"], reverse=True)[:limit]
+
+
+def summary(root: str, last: float) -> dict[str, Any]:
+    """A scene for the list of all scenes: its state with only the newest record of each step."""
+    path = Path(root)
+    if not path.is_dir():
+        return {"root": root, "name": path.name, "last": last, "missing": True}
+    try:
+        info = state(Scene(path))
+    except GausserError as exc:
+        return {"root": root, "name": path.name, "last": last, "error": str(exc)}
+    newest: dict[str, dict[str, Any]] = {}
+    for record in info["history"]:
+        newest[record["step"]] = record
+    return {**info, "history": list(newest.values()), "last": last}
+
+
+def looks_like_scene(scene: Scene) -> bool:
+    return any(p.exists() for p in (scene.images, scene.panos, scene.root / ".gausser")) or bool(scene.loose_photos())
+
+
 class Monitor:
-    def __init__(self, scene: Scene) -> None:
-        self.scene = scene
+    """Serves every scene in the index; each request names its scene folder."""
+
+    def __init__(self) -> None:
         self.last_request = time.time()
         self.cache: dict[Any, Any] = {}
         self.pool = ThreadPoolExecutor(8)
@@ -312,15 +382,20 @@ class Monitor:
             self.cache[key] = make()
         return self.cache[key]
 
-    def model(self, rel: str) -> bytes:
-        path = self.path(rel)
+    def scene(self, root: str | None) -> Scene:
+        """Only scenes in the index are served."""
+        if not root or root not in known_scenes():
+            raise FileNotFoundError(root)
+        return Scene(root)
+
+    def model(self, scene: Scene, rel: str) -> bytes:
+        path = self.path(scene, rel)
         if not (path / "images.bin").is_file():
             raise FileNotFoundError(rel)
-        key = ("model", rel, mtime(path / "images.bin"), mtime(path / "points3D.bin"))
+        key = ("model", path, mtime(path / "images.bin"), mtime(path / "points3D.bin"))
         return self.cached(key, lambda: json.dumps(read_model(path)).encode())  # type: ignore[no-any-return]
 
-    def images(self) -> list[dict[str, Any]]:
-        scene = self.scene
+    def images(self, scene: Scene) -> list[dict[str, Any]]:
         files = scene.image_files()
         panos = {p.stem: _rel(scene, p) for p in scene.panos.iterdir() if is_image(p)} if scene.is_pano() else {}
 
@@ -338,16 +413,35 @@ class Monitor:
 
         return list(self.pool.map(one, files))
 
-    def path(self, rel: str) -> Path:
+    def evals(self, scene: Scene, rel: str) -> list[dict[str, Any]]:
+        """Brush's renders of the held-out images (`train --eval-split N`) in a run or staging folder, by step."""
+        run = self.path(scene, rel)
+        photos = {image.stem: image for image in scene.image_files()}
+        result = []
+        for folder in run.glob("exports/eval_*"):
+            step = folder.name.removeprefix("eval_")
+            renders = sorted(folder.glob("images/*.png"))
+            if not step.isdigit() or not renders:
+                continue
+
+            def one(render: Path) -> dict[str, Any]:
+                photo = photos.get(render.stem)
+                score = self.cached(("psnr", render, mtime(render)), lambda: psnr(render, photo)) if photo else None
+                return {"name": render.stem, "render": _rel(scene, render), "photo": photo and _rel(scene, photo), "psnr": score}
+
+            result.append({"step": int(step), "mtime": mtime(folder), "images": list(self.pool.map(one, renders))})
+        return sorted(result, key=lambda e: e["step"])
+
+    def path(self, scene: Scene, rel: str) -> Path:
         """A path inside the scene; nothing outside it is served."""
-        path = (self.scene.root / rel).resolve()
-        if not path.is_relative_to(self.scene.root):
+        path = (scene.root / rel).resolve()
+        if not path.is_relative_to(scene.root):
             raise PermissionError(rel)
         return path
 
-    def log(self, name: str, offset: int | None) -> dict[str, Any]:
+    def log(self, scene: Scene, name: str, offset: int | None) -> dict[str, Any]:
         """Whole lines of a step log from ``offset`` (default: the last 4 MB), cleaned, plus the unfinished last line."""
-        path = self.scene.logs / Path(name).name
+        path = scene.logs / Path(name).name
         with path.open("rb") as stream:
             size = os.fstat(stream.fileno()).st_size
             start = max(0, size - 4_000_000) if offset is None else min(offset, size)
@@ -384,26 +478,37 @@ def make_handler(app: Monitor) -> type[SimpleHTTPRequestHandler]:
                 pass
 
         def api(self, route: str, query: dict[str, str]) -> None:
+            if route == "scenes":
+                scenes = sorted(known_scenes().items(), key=lambda item: item[1], reverse=True)
+                body = {"scenes": list(app.pool.map(lambda item: summary(*item), scenes)), "runs": recent_runs(), "now": time.time()}
+                self.json(body)
+                return
+            scene = app.scene(query.get("scene"))
             if route == "state":
-                self.send(json.dumps(state(app.scene)).encode(), "application/json")
+                self.json(state(scene))
             elif route == "images":
-                self.send(json.dumps(app.images()).encode(), "application/json")
+                self.json(app.images(scene))
             elif route == "frames":  # Sharp Frames' record of the frames it chose
-                folder = app.scene.panos if app.scene.is_pano() else app.scene.images
-                self.send(json.dumps(_read_json(folder / "selected_metadata.json")).encode(), "application/json")
+                folder = scene.panos if scene.is_pano() else scene.images
+                self.json(_read_json(folder / "selected_metadata.json"))
             elif route == "model":
-                self.send(app.model(query.get("path", "sparse/0")), "application/json")
+                self.send(app.model(scene, query.get("path", "sparse/0")), "application/json")
+            elif route == "evals":
+                self.json(app.evals(scene, query["run"]))
             elif route == "log":
                 offset = int(query["offset"]) if "offset" in query else None
-                self.send(json.dumps(app.log(query["name"], offset)).encode(), "application/json")
+                self.json(app.log(scene, query["name"], offset))
             elif route == "thumb":
-                path, size = app.path(query["path"]), min(int(query.get("size", 256)), 1024)
+                path, size = app.path(scene, query["path"]), min(int(query.get("size", 256)), 1024)
                 data = app.cached(("thumb", path, mtime(path), size), lambda: thumbnail(path, size))
                 self.send(data, "image/jpeg", cache=True)
             elif route == "file":
-                self.file(app.path(query["path"]))
+                self.file(app.path(scene, query["path"]))
             else:
                 self.send_error(404)
+
+        def json(self, value: Any) -> None:
+            self.send(json.dumps(value).encode(), "application/json")
 
         def send(self, body: bytes, kind: str, cache: bool = False) -> None:
             self.send_response(200)
@@ -433,23 +538,60 @@ def make_handler(app: Monitor) -> type[SimpleHTTPRequestHandler]:
     return Handler
 
 
-def monitor(scene: Scene, *, port: int = 0, open_browser: bool = True, quit_when_idle: bool = False) -> None:
+def _info_path() -> Path:
+    return index_path().with_name("monitor.json")
+
+
+def running_monitor() -> str | None:
+    """The URL of the monitor that is running, if any."""
+    info = _read_json(_info_path())
+    if isinstance(info, dict) and isinstance(info.get("pid"), int) and _alive(info["pid"]):
+        return str(info["url"])
+    return None
+
+
+def scene_url(base: str, scene: Scene | None) -> str:
+    return base + (f"?scene={quote(str(scene.root))}" if scene else "")
+
+
+def register(scene: Scene | None) -> Scene | None:
+    """Add the scene to the index so the monitor serves it; a folder that is no scene opens the list of scenes."""
+    if scene is None or not looks_like_scene(scene):
+        return None
+    index(scene, {"opened": time.time()})
+    return scene
+
+
+def monitor(scene: Scene | None, *, port: int = PORT, open_browser: bool = True, quit_when_idle: bool = False) -> None:
+    """Show the scene (or, with None, every scene) in the monitor, starting the one monitor if it is not running."""
+    scene = register(scene)
+    url = running_monitor()
+    if url:
+        print(f"Monitor: {scene_url(url, scene)}", flush=True)
+        if open_browser:
+            webbrowser.open(scene_url(url, scene))
+        return
     if not (WEB / "index.html").is_file():
         raise GausserError(f"The monitor page is not built ({WEB} is missing). Build it: {WEB_HINT}")
-    app = Monitor(scene)
-    info = scene.root / ".gausser" / "monitor.json"
-    with ThreadingHTTPServer(("127.0.0.1", port), make_handler(app)) as server:
+    app = Monitor()
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(app))
+    except OSError:  # the port is taken by something else
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
+    info = _info_path()
+    with server:
         url = f"http://127.0.0.1:{server.server_address[1]}/"
         info.parent.mkdir(parents=True, exist_ok=True)
         info.write_text(json.dumps({"pid": os.getpid(), "url": url}))
-        print(f"Monitoring {scene.root}\n{url}\nCtrl+C to stop", flush=True)
+        print(f"Monitor: {scene_url(url, scene)}\nAll scenes: {url}\nCtrl+C to stop", flush=True)
         if open_browser:
-            webbrowser.open(url)
+            webbrowser.open(scene_url(url, scene))
 
         def watch_idle() -> None:
             while True:
                 time.sleep(30)
-                if time.time() - app.last_request > IDLE_SECONDS and holder(scene) is None:
+                busy = any(holder(Scene(root)) for root in known_scenes() if Path(root).is_dir())
+                if time.time() - app.last_request > IDLE_SECONDS and not busy:
                     server.shutdown()
                     return
 
@@ -465,25 +607,24 @@ def monitor(scene: Scene, *, port: int = 0, open_browser: bool = True, quit_when
 
 
 def spawn(scene: Scene) -> None:
-    """Start a background monitor for the scene (unless one runs) that quits once its page is closed."""
-    info_path = scene.root / ".gausser" / "monitor.json"
-    info = _read_json(info_path)
-    if isinstance(info, dict) and _alive(int(info.get("pid", 0))):
-        print(f"Monitor: {info['url']}", flush=True)
+    """Show the scene in the running monitor, or start one in the background that quits once its pages are closed."""
+    if running_monitor():
+        monitor(scene)
         return
     if not (WEB / "index.html").is_file():
         print(f"gausser: no monitor, the page is not built. Build it: {WEB_HINT}", file=sys.stderr)
         return
-    info_path.unlink(missing_ok=True)
-    with (scene.root / ".gausser" / "monitor.log").open("ab") as log:
+    log = index_path().with_name("monitor.log")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("ab") as stream:
         subprocess.Popen(
             [sys.executable, "-m", "gausser.cli", "monitor", "-s", str(scene.root), "--quit-when-idle"],
-            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+            stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT, start_new_session=True,
         )
     for _ in range(50):
-        info = _read_json(info_path)
-        if isinstance(info, dict):
-            print(f"Monitor: {info['url']}", flush=True)
+        url = running_monitor()
+        if url:
+            print(f"Monitor: {scene_url(url, scene)}", flush=True)
             return
         time.sleep(0.1)
-    print(f"gausser: the monitor did not start; see {scene.root / '.gausser' / 'monitor.log'}", file=sys.stderr)
+    print(f"gausser: the monitor did not start; see {log}", file=sys.stderr)

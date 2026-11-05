@@ -214,10 +214,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     monitor = commands.add_parser(
         "monitor", parents=[common], help="watch the scene in a web page: steps, logs, COLMAP cameras, splats",
-        description="Serve a read-only web monitor of the scene on 127.0.0.1. It shows the running command live "
-        "and works as a viewer afterwards. `--monitor` on run, frames, mask, solve, train and lod starts it in the background.",
+        description="Open the scene in the read-only web monitor on 127.0.0.1, starting the monitor unless it runs. "
+        "One monitor serves every scene gausser has worked on; it shows a running command live and works as a viewer "
+        "afterwards. `--monitor` on run, frames, mask, solve, train and lod starts it in the background.",
     )
-    monitor.add_argument("--port", type=int, default=0, help="port (default: any free port)")
+    monitor.add_argument("--all", action="store_true", help="open the list of all scenes")
+    monitor.add_argument("--port", type=int, default=8737, help="port of a new monitor (default 8737)")
     monitor.add_argument("--no-open", action="store_true", help="do not open a browser")
     monitor.add_argument("--quit-when-idle", action="store_true", help=argparse.SUPPRESS)
     return parser
@@ -237,7 +239,8 @@ def _mask(scene: Scene, prompt: str, args: argparse.Namespace, exclude: bool = F
     )
 
 
-def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None, extra: list[str] | None = None) -> None:
+def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None, extra: list[str] | None = None) -> Path:
+    """Train and return the run folder."""
     if args.trainer == "msplat":
         from . import msplat
 
@@ -246,16 +249,16 @@ def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None, ex
             checkpoint_every=args.checkpoint_every, resume=resume, no_masks=args.no_masks,
         )
         print(f"Export: {export}")
-    else:
-        steps.train_brush(
+        return export.parent.parent
+    return steps.train_brush(
             scene, iterations=args.iterations, export_every=args.export_every,
             max_splats=args.max_splats, max_resolution=args.max_resolution, eval_split=args.eval_split,
             extra=extra or [], no_masks=args.no_masks, exclude_masks=getattr(args, "exclude_masks", False),
         )
 
 
-def _lod(scene: Scene, source: Path | None, args: argparse.Namespace) -> None:
-    steps.lod(scene, source, chunk_count=args.chunk_count, chunk_extent=args.chunk_extent, percentages=_levels(args.levels))
+def _lod(scene: Scene, source: Path | None, args: argparse.Namespace) -> Path:
+    return steps.lod(scene, source, chunk_count=args.chunk_count, chunk_extent=args.chunk_extent, percentages=_levels(args.levels))
 
 
 def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
@@ -295,12 +298,12 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
             steps.solve(scene, args.matcher, args.no_masks)
         ran("solve")
     if due("train", scene.train_done()):
-        with scene.step("train", trainer=args.trainer, iterations=args.iterations):
-            _train(scene, args)
+        with scene.step("train", trainer=args.trainer, iterations=args.iterations) as made:
+            made["run"] = str(_train(scene, args).relative_to(scene.root))
         ran("train")
     if args.lod and due("lod", scene.lod_done()):
-        with scene.step("lod"):
-            _lod(scene, None, args)
+        with scene.step("lod") as made:
+            made["run"] = str(_lod(scene, None, args).relative_to(scene.root))
 
 
 def status(scene: Scene) -> None:
@@ -419,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "monitor":
             from .monitor import monitor
 
-            monitor(scene, port=args.port, open_browser=not args.no_open, quit_when_idle=args.quit_when_idle)
+            monitor(None if args.all else scene, port=args.port, open_browser=not args.no_open, quit_when_idle=args.quit_when_idle)
             return 0
         with scene.lock(argv):
             keep_awake()
@@ -497,11 +500,11 @@ def dispatch(scene: Scene, args: argparse.Namespace) -> None:
             raise GausserError("Arguments after -- go to Brush; Msplat takes none")
         if args.exclude_masks and (args.trainer != "brush" or args.no_masks):
             raise GausserError("--exclude-masks is for Brush and cannot be combined with --no-masks")
-        with scene.step("train", trainer=args.trainer, iterations=args.iterations):
-            _train(scene, args, args.resume, extra)
+        with scene.step("train", trainer=args.trainer, iterations=args.iterations) as made:
+            made["run"] = str(_train(scene, args, args.resume, extra).relative_to(scene.root))
     elif args.command == "lod":
-        with scene.step("lod"):
-            _lod(scene, args.source, args)
+        with scene.step("lod") as made:
+            made["run"] = str(_lod(scene, args.source, args).relative_to(scene.root))
 
 
 if __name__ == "__main__":

@@ -317,7 +317,8 @@ def train_brush(
     if max_resolution:
         command += ["--max-resolution", str(max_resolution)]
     if eval_split:
-        command += ["--eval-split-every", str(eval_split)]
+        # The renders of the held-out images land in exports/eval_<step>/images/; `gausser monitor` shows them.
+        command += ["--eval-split-every", str(eval_split), "--eval-save-to-disk"]
     command += extra or []
     # Brush logs eval PSNR/SSIM, refine steps and timing only at info level; without a
     # terminal (unattended runs) nothing else is printed.
