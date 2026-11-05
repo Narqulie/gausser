@@ -122,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--range", dest="ranges", action="append", type=_time_range, metavar="START-END",
         help="keep only this part of the video, in seconds or m:ss (repeatable), e.g. --range 1.5-32.5 --range 0:57-1:20",
     )
-    frames.add_argument("extra", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+    frames.add_argument("extra", nargs="*", help=argparse.SUPPRESS)  # after --, so --range may follow SOURCE
 
     mask = commands.add_parser("mask", parents=[working], help="mask the subject with SAM3")
     mask.add_argument("prompt", help='what to keep, e.g. "statue"')

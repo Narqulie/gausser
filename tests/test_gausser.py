@@ -242,6 +242,11 @@ def _qoocam_file(path: Path) -> None:
     path.write_bytes(struct.pack(">I4s", 16, b"ftyp") + b"qt  \0\0\0\0" + struct.pack(">I4s", 8 + len(kfix), b"kfix") + kfix)
 
 
+def test_frames_takes_ranges_after_the_source_and_sharp_frames_options_after_dashes():
+    args = cli.build_parser().parse_args(["frames", "clip.MOV", "--range", "1.5-32.5", "--range", "0:57-1:20", "--", "--fps", "10"])
+    assert args.ranges == [(1.5, 32.5), (57.0, 80.0)] and args.extra == ["--fps", "10"]
+
+
 def test_qoocam_video_becomes_per_lens_views_solved_as_a_calibrated_two_lens_rig(tmp_path, tools):
     scene = Scene(tmp_path)
     rig_config: list = []
