@@ -20,7 +20,9 @@ function lastMatch(lines: string[], pattern: RegExp, from = 0): RegExpMatchArray
 const num = (text: string) => Number(text.replace(/,/g, ""));
 
 /** Where a running step is, from its log so far. */
-export function progress(step: Step, lines: string[], partial: string, totals: { images: number; frames: number }): Progress {
+export function progress(
+  step: Step, lines: string[], partial: string, totals: { images: number; frames: number; iterations?: number },
+): Progress {
   const all = partial ? [...lines, partial] : lines;
   const commands = all.map((line, i) => [i, line] as const).filter(([, line]) => line.startsWith("$ "));
   const command = last(commands);
@@ -64,6 +66,9 @@ export function progress(step: Step, lines: string[], partial: string, totals: {
     if (brush) return { phase: "training", done: num(brush[1]), total: num(brush[2]) };
     const msplat = lastMatch(all, /^([\d,]+)\/([\d,]+)\s+[\d,]+ splats/);
     if (msplat) return { phase: "training", done: num(msplat[1]), total: num(msplat[2]) };
+    // Without a terminal Brush draws no progress bar; its refine and eval lines still count steps.
+    const step = lastMatch(all, /(?:Refine|Eval) iter (\d+)/);
+    if (step && totals.iterations) return { phase: "training", done: num(step[1]), total: totals.iterations };
     return { phase: "loading", done: null, total: null };
   }
   return { phase: tool.split(" ").pop() || "starting", done: null, total: null };

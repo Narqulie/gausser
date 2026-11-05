@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { duration, STEPS, useLog, useSceneState } from "./api";
+import { NotifyToggle, Toasts, useStepToasts } from "./Toasts";
 import type { HistoryRecord, State, Step } from "./api";
 import { progress } from "./parse";
 import type { Progress } from "./parse";
@@ -7,9 +8,10 @@ import { Viewer } from "./Viewer";
 import { Images } from "./Images";
 import { Stats } from "./Stats";
 import { Logs } from "./Logs";
+import { Renders } from "./Renders";
 
-type Tab = "3d" | "images" | "stats" | "logs";
-const TABS: [Tab, string][] = [["3d", "3D"], ["images", "Images"], ["stats", "Stats"], ["logs", "Logs"]];
+type Tab = "3d" | "images" | "renders" | "stats" | "logs";
+const TABS: [Tab, string][] = [["3d", "3D"], ["images", "Images"], ["renders", "Renders"], ["stats", "Stats"], ["logs", "Logs"]];
 
 export function App() {
   const { state, offline } = useSceneState();
@@ -18,19 +20,31 @@ export function App() {
   const [focus, setFocus] = useState<string | null>(null); // image name to highlight in 3D
   const current = state?.current ?? null;
   const live = useLog(current?.log ?? null, true);
+  const describe = useCallback((record: HistoryRecord) => (state ? stepMetric(record.step, state)[0] : ""), [state]);
+  const { toasts, dismiss } = useStepToasts(state, describe);
+  const totals = state
+    ? { images: state.images.count, frames: state.images.panos || state.images.count, iterations: Number(current?.iterations) || undefined }
+    : null;
+  const now = state && totals ? progressOf(state, live.lines, live.partial, totals) : null;
+
+  useEffect(() => {
+    if (!state) return;
+    const step = state.current?.step;
+    const done = now && now.done !== null && now.total ? ` ${Math.round((100 * now.done) / now.total)}%` : "";
+    document.title = step ? `${step}${done} · ${state.name}` : `${state.name} · gausser`;
+  }, [state, now]);
 
   if (!state) {
-    return <div className="empty">{offline ? "No monitor at this address. Start one with `gausser monitor`." : "Loading…"}</div>;
+    return <div className="empty">{offline ? "Cannot load this scene. Run `gausser monitor` in its folder." : "Loading…"}</div>;
   }
-  const totals = { images: state.images.count, frames: state.images.panos || state.images.count };
-  const now = progressOf(state, live.lines, live.partial, totals);
-
   return (
     <div className="app">
       <header className="header">
+        <a className="back" href="./" title="All scenes">scenes /</a>
         <h1 className="scene-name">{state.name}</h1>
         <span className="scene-root" title={state.root}>{state.root.replace(/^\/Users\/[^/]+/, "~")}</span>
         <RunLine state={state} offline={offline} />
+        <NotifyToggle />
       </header>
       <section className="rail">
         {STEPS.map((step) => (
@@ -53,14 +67,16 @@ export function App() {
         {tab === "images" && (
           <Images state={state} onShow={(name) => { setFocus(name); setTab("3d"); }} />
         )}
+        {tab === "renders" && <Renders state={state} />}
         {tab === "stats" && <Stats state={state} />}
         {tab === "logs" && <Logs state={state} pick={logPick} onPick={setLogPick} live={live} />}
       </main>
+      <Toasts toasts={toasts} dismiss={dismiss} />
     </div>
   );
 }
 
-function progressOf(state: State, lines: string[], partial: string, totals: { images: number; frames: number }): Progress | null {
+function progressOf(state: State, lines: string[], partial: string, totals: { images: number; frames: number; iterations?: number }): Progress | null {
   const current = state.current;
   if (!current) return null;
   if (!current.log) {
@@ -71,7 +87,7 @@ function progressOf(state: State, lines: string[], partial: string, totals: { im
   return progress(current.step, lines, partial, totals);
 }
 
-function lastRun(state: State, step: Step): HistoryRecord | undefined {
+export function lastRun(state: State, step: Step): HistoryRecord | undefined {
   return [...state.history].reverse().find((record) => record.step === step);
 }
 
@@ -115,7 +131,7 @@ function progressText(progress: Progress): string {
   return `${progress.done.toLocaleString()} / ${progress.total.toLocaleString()}`;
 }
 
-function stepStatus(step: Step, state: State, run: HistoryRecord | undefined, running: boolean): [string, string] {
+export function stepStatus(step: Step, state: State, run: HistoryRecord | undefined, running: boolean): [string, string] {
   if (running) return ["running", "running"];
   if (run && run.ok === false && run.end) {
     // a failure counts only until the step succeeds again
@@ -140,7 +156,7 @@ function stepStatus(step: Step, state: State, run: HistoryRecord | undefined, ru
   }
 }
 
-function stepMetric(step: Step, state: State): [string, string] {
+export function stepMetric(step: Step, state: State): [string, string] {
   const { images, masks, model, exports, lods } = state;
   const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
   switch (step) {

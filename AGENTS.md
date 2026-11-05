@@ -66,6 +66,13 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + rec
   `.gausser/tmp/brush-*/exports/*.ply` and the COLMAP mapper's `snapshots/` (~20 per solve,
   `--Mapper.snapshot_frames_freq`). Scenes run by a gausser without these files show the step only
   from its recently written staging folder (`monitor.legacy_step`).
+- One monitor (port 8737, `~/.local/share/gausser/monitor.json`) serves every scene in the index
+  `~/.local/share/gausser/history.jsonl` (`GAUSSER_HOME`; `scene.index_path()`): every `Scene.step()`
+  record is also appended there with its `scene`, and `gausser monitor` adds an `opened` record. API
+  requests name their scene (`?scene=`); folders not in the index are refused. Tests set `GAUSSER_HOME`
+  to a temporary folder (autouse fixture). The end record of `train`/`lod` carries `run` (the run folder).
+- `train --eval-split N` adds `--eval-save-to-disk`: Brush writes `exports/eval_<step>/images/<stem>.png`;
+  the monitor computes PSNR against `images/<stem>.*` itself (Brush logs only the mean).
 - Log parsing for progress and stats lives in `web/src/parse.ts` only; the CLI still passes tool output
   straight through.
 - `orbit` renders in a headed Chromium via `playwright-core` (installed under `~/.local/share/gausser/node`,
@@ -142,7 +149,7 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + rec
 (cd web && npm run build)   # type-checks and builds the monitor page into src/gausser/web/
 ```
 
-`cd web && npm run dev` serves the page with hot reload against `gausser monitor --port 8765`.
+`cd web && npm run dev` serves the page with hot reload; point its `/api` proxy (vite.config.ts) at the running monitor.
 
 Set up everything with `scripts/install-macos.sh`. It is safe to rerun, and it
 creates `.venv` with Homebrew Python 3.13, because msplat has only cp312/cp313

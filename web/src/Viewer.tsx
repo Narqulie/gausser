@@ -1,12 +1,32 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Canvas, useThree } from "@react-three/fiber";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import type { MutableRefObject } from "react";
+import { Canvas, useFrame, useLoader, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
-import { bytes, fileUrl, useFetched } from "./api";
+import { bytes, fileUrl, thumbUrl, useFetched } from "./api";
 import type { Camera, Export, Model, State } from "./api";
 
 const AUTO = "auto";
+const NONE = "none";
+
+type Layers = { cameras: boolean; points: boolean; splat: boolean; grid: boolean };
+type Splat = Export & { label: string };
+
+/** Camera pose shared by the two views of a comparison; the view last touched leads. */
+interface Sync {
+  leader: number;
+  position: THREE.Vector3;
+  target: THREE.Vector3;
+  fov: number;
+  set: boolean;
+}
+
+/** A request to put the viewer camera where a photo was taken; `n` makes repeated requests distinct. */
+interface LookRequest {
+  name: string;
+  n: number;
+}
 
 export function Viewer({ state, focus }: { state: State; focus: string | null }) {
   const live = state.current?.live;
@@ -18,7 +38,7 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
     return list;
   }, [live?.model, state.model]);
   const splats = useMemo(() => {
-    const list: (Export & { label: string })[] = [];
+    const list: Splat[] = [];
     for (const e of [...(live?.exports ?? [])].reverse()) list.push({ ...e, label: `training: step ${e.iteration ?? "?"}, ${bytes(e.size)}` });
     for (const e of [...state.exports].reverse()) {
       const run = e.run.split("/").slice(1).join("/");
@@ -29,15 +49,22 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
 
   const [modelPick, setModelPick] = useState(AUTO);
   const [splatPick, setSplatPick] = useState(AUTO);
-  const [show, setShow] = useState({ cameras: true, points: true, splat: true, grid: true });
+  const [comparePick, setComparePick] = useState(NONE);
+  const [show, setShow] = useState<Layers>({ cameras: true, points: true, splat: true, grid: true });
   const [pointSize, setPointSize] = useState(1);
-  const [splatStatus, setSplatStatus] = useState("");
+  const [selected, setSelected] = useState<string | null>(focus);
+  const [look, setLook] = useState<LookRequest | null>(null);
+  const sync = useRef<Sync>({ leader: 0, position: new THREE.Vector3(), target: new THREE.Vector3(), fov: 55, set: false });
+  useEffect(() => setSelected(focus), [focus]);
 
   const modelChoice = modelPick === AUTO ? models[0] : models.find((m) => m.path === modelPick) ?? models[0];
   const splatChoice = splatPick === AUTO ? splats[0] : splats.find((s) => s.path === splatPick) ?? splats[0];
+  const compareChoice = splats.find((s) => s.path === comparePick) ?? null;
   const model = useFetched<Model>(modelChoice ? "model" : null, { path: modelChoice?.path ?? "" }, modelChoice?.key);
   const frame = useMemo(() => (model ? sceneFrame(model) : null), [model]);
+  const camera = model?.cameras.find((c) => c.name === selected) ?? null;
 
+  const views = compareChoice ? [splatChoice, compareChoice] : [splatChoice];
   return (
     <div className="viewer">
       <aside className="side">
@@ -56,8 +83,15 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
           </select>
         </section>
         <section>
+          <span className="label">compare with</span>
+          <select value={comparePick} onChange={(e) => setComparePick(e.target.value)} disabled={splats.length < 2}>
+            <option value={NONE}>nothing</option>
+            {splats.map((s) => <option key={s.path} value={s.path}>{s.label}</option>)}
+          </select>
+        </section>
+        <section>
           <span className="label">layers</span>
-          {(Object.keys(show) as (keyof typeof show)[]).map((key) => (
+          {(Object.keys(show) as (keyof Layers)[]).map((key) => (
             <label key={key}>
               <input type="checkbox" checked={show[key]} onChange={() => setShow({ ...show, [key]: !show[key] })} />
               {key}
@@ -68,6 +102,24 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
             <input type="range" min={0.2} max={4} step={0.1} value={pointSize} onChange={(e) => setPointSize(Number(e.target.value))} />
           </label>
         </section>
+        {camera ? (
+          <section>
+            <span className="label">camera</span>
+            <img className="side-photo" src={thumbUrl(`images/${camera.name}`, 384, 0)} alt={camera.name} />
+            <dl className="kv">
+              <dt>photo</dt><dd title={camera.name}>{camera.name}</dd>
+              <dt>sees</dt><dd>{camera.points.toLocaleString()} points</dd>
+              <dt>size</dt><dd>{camera.width}×{camera.height}</dd>
+            </dl>
+            <div className="buttons">
+              <button className="button" onClick={() => setLook({ name: camera.name, n: (look?.n ?? 0) + 1 })}>Look through it</button>
+              <a className="button" href={fileUrl(`images/${camera.name}`)} target="_blank" rel="noreferrer">Open photo</a>
+              <button className="link-button" onClick={() => setSelected(null)}>clear</button>
+            </div>
+          </section>
+        ) : model && show.cameras ? (
+          <p className="label">Click a camera to see its photo.</p>
+        ) : null}
         {model && (
           <section>
             <span className="label">reconstruction</span>
@@ -81,30 +133,62 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
           </section>
         )}
       </aside>
-      <div className="canvas">
-        {!model && !splatChoice ? (
+      {!model && !splatChoice ? (
+        <div className="canvas">
           <div className="empty">Cameras appear here once COLMAP places them, and the splat once Brush exports one.</div>
-        ) : (
-          <Canvas gl={{ antialias: false }} camera={{ fov: 55, near: 0.01, far: 5000 }} dpr={[1, 2]}>
-            <color attach="background" args={["#171520"]} />
-            <SparkSetup />
-            {frame && <FitCamera frame={frame} />}
-            <group quaternion={frame?.rotation} position={frame?.offset}>
-              {model && show.points && <Points model={model} size={pointSize * (frame?.scale ?? 1) * 0.004} />}
-              {model && show.cameras && <Frustums cameras={model.cameras} depth={(frame?.scale ?? 1) * 0.06} focus={focus} />}
-              {show.splat && splatChoice && <Splat path={splatChoice.path} onStatus={setSplatStatus} />}
-            </group>
-            {show.grid && frame && (
-              <gridHelper args={[frame.scale * 8, 40, "#34294f", "#34294f"]} position={[0, frame.floor, 0]} />
-            )}
-            <OrbitControls makeDefault enableDamping dampingFactor={0.12} />
-          </Canvas>
-        )}
-        {(splatStatus || focus) && (
-          <div className="canvas-note">{[splatStatus, focus && `camera ${focus}`].filter(Boolean).join(" · ")}</div>
-        )}
-        <div className="canvas-hint">drag to orbit · right-drag to pan · scroll to zoom</div>
-      </div>
+        </div>
+      ) : (
+        <div className="canvases">
+          {views.map((splat, id) => (
+            <View
+              key={id} id={id} sync={compareChoice ? sync : null} model={model} frame={frame} show={show} pointSize={pointSize}
+              splat={splat ?? null} selected={selected} onPick={setSelected} look={look} label={compareChoice ? splat?.label : undefined}
+            />
+          ))}
+          <div className="canvas-hint">click a camera · drag to orbit · right-drag to pan · scroll to zoom</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function View({ id, sync, model, frame, show, pointSize, splat, selected, onPick, look, label }: {
+  id: number; sync: MutableRefObject<Sync> | null; model: Model | null; frame: Frame | null; show: Layers; pointSize: number;
+  splat: Splat | null; selected: string | null; onPick: (name: string) => void; look: LookRequest | null; label?: string;
+}) {
+  const [status, setStatus] = useState("");
+  const group = useRef<THREE.Group>(null);
+  const photo = model?.cameras.find((c) => c.name === selected);
+  // Looking through a camera hides its photo, so the splat shows from where the photo was taken; touching the view ends it.
+  const [looking, setLooking] = useState(false);
+  useEffect(() => setLooking(look !== null), [look]);
+  const lead = () => {
+    if (sync) sync.current.leader = id;
+  };
+  return (
+    <div className="canvas" onPointerDown={() => { lead(); setLooking(false); }} onWheel={lead}>
+      <Canvas gl={{ antialias: false }} camera={{ fov: 55, near: 0.01, far: 5000 }} dpr={[1, 2]}>
+        <color attach="background" args={["#171520"]} />
+        <SparkSetup />
+        {frame && <FitCamera frame={frame} />}
+        {sync && <SyncCamera id={id} sync={sync} />}
+        <group ref={group} quaternion={frame?.rotation} position={frame?.offset}>
+          {model && show.points && <Points model={model} size={pointSize * (frame?.scale ?? 1) * 0.004} />}
+          {model && show.cameras && <Frustums cameras={model.cameras} depth={(frame?.scale ?? 1) * 0.06} focus={selected} />}
+          {photo && show.cameras && !looking && (
+            <Suspense fallback={null}>
+              <Photo camera={photo} depth={(frame?.scale ?? 1) * 0.15} />
+            </Suspense>
+          )}
+          {show.splat && splat && <SplatView path={splat.path} onStatus={setStatus} />}
+        </group>
+        {model && show.cameras && <CameraPicker cameras={model.cameras} group={group} onPick={onPick} />}
+        {model && frame && <LookThrough request={look} cameras={model.cameras} group={group} scale={frame.scale} />}
+        {show.grid && frame && <gridHelper args={[frame.scale * 8, 40, "#34294f", "#34294f"]} position={[0, frame.floor, 0]} />}
+        <OrbitControls makeDefault enableDamping dampingFactor={0.12} />
+      </Canvas>
+      {label && <div className="canvas-label">{label}</div>}
+      {status && <div className="canvas-note">{status}</div>}
     </div>
   );
 }
@@ -141,10 +225,16 @@ function sceneFrame(model: Model): Frame {
   return { rotation, offset: centre.clone().negate(), scale, eye, floor };
 }
 
+type Controls = { target: THREE.Vector3; update: () => void };
+
+function useControls(): Controls | null {
+  // SAFETY: the only default controls are the <OrbitControls makeDefault> in View.
+  return useThree((s) => s.controls) as unknown as Controls | null;
+}
+
 function FitCamera({ frame }: { frame: Frame }) {
-  const camera = useThree((s) => s.camera);
-  // SAFETY: the only default controls are the <OrbitControls makeDefault> below.
-  const controls = useThree((s) => s.controls) as unknown as { target: THREE.Vector3; update: () => void } | null;
+  const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
+  const controls = useControls();
   const fitted = useRef<number | null>(null);
   useEffect(() => {
     // Fit once per scene scale, so a live model update does not yank the view.
@@ -157,6 +247,91 @@ function FitCamera({ frame }: { frame: Frame }) {
     controls?.target.set(0, 0, 0);
     controls?.update();
   }, [frame, camera, controls]);
+  return null;
+}
+
+/** Keep the two views of a comparison on the same camera. */
+function SyncCamera({ id, sync }: { id: number; sync: MutableRefObject<Sync> }) {
+  const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
+  const controls = useControls();
+  useFrame(() => {
+    if (!controls) return;
+    const shared = sync.current;
+    if (shared.leader === id || !shared.set) {
+      shared.position.copy(camera.position);
+      shared.target.copy(controls.target);
+      shared.fov = camera.fov;
+      shared.set = true;
+    } else if (!camera.position.equals(shared.position) || !controls.target.equals(shared.target) || camera.fov !== shared.fov) {
+      camera.position.copy(shared.position);
+      controls.target.copy(shared.target);
+      camera.fov = shared.fov;
+      camera.updateProjectionMatrix();
+      controls.update();
+    }
+  });
+  return null;
+}
+
+function cameraWorld(camera: Camera, group: THREE.Group, x: number, y: number, z: number): THREE.Vector3 {
+  const r = camera.rotation;
+  const local = new THREE.Vector3(
+    r[0] * x + r[1] * y + r[2] * z + camera.center[0],
+    r[3] * x + r[4] * y + r[5] * z + camera.center[1],
+    r[6] * x + r[7] * y + r[8] * z + camera.center[2],
+  );
+  return group.localToWorld(local);
+}
+
+/** A click (not a drag) picks the camera whose centre is nearest on screen, within 14 px. */
+function CameraPicker({ cameras, group, onPick }: { cameras: Camera[]; group: MutableRefObject<THREE.Group | null>; onPick: (name: string) => void }) {
+  const { camera, gl, size } = useThree();
+  useEffect(() => {
+    const element = gl.domElement;
+    let down: [number, number] | null = null;
+    const press = (e: PointerEvent) => (down = [e.clientX, e.clientY]);
+    const release = (e: PointerEvent) => {
+      if (!down || !group.current || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
+      const rect = element.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      group.current.updateWorldMatrix(true, false);
+      let best: [number, string] | null = null;
+      for (const c of cameras) {
+        const p = cameraWorld(c, group.current, 0, 0, 0).project(camera);
+        if (p.z > 1) continue; // behind the viewer
+        const d = Math.hypot(((p.x + 1) / 2) * size.width - x, ((1 - p.y) / 2) * size.height - y);
+        if (d < 14 && (!best || d < best[0])) best = [d, c.name];
+      }
+      if (best) onPick(best[1]);
+    };
+    element.addEventListener("pointerdown", press);
+    element.addEventListener("pointerup", release);
+    return () => {
+      element.removeEventListener("pointerdown", press);
+      element.removeEventListener("pointerup", release);
+    };
+  }, [cameras, camera, gl, size, group, onPick]);
+  return null;
+}
+
+/** Put the viewer where the photo was taken, looking where it looked, with its vertical field of view. */
+function LookThrough({ request, cameras, group, scale }: {
+  request: LookRequest | null; cameras: Camera[]; group: MutableRefObject<THREE.Group | null>; scale: number;
+}) {
+  const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
+  const controls = useControls();
+  useEffect(() => {
+    const c = cameras.find((c) => c.name === request?.name);
+    if (!c || !group.current || !controls) return;
+    group.current.updateWorldMatrix(true, false);
+    camera.position.copy(cameraWorld(c, group.current, 0, 0, 0));
+    controls.target.copy(cameraWorld(c, group.current, 0, 0, scale * 0.5));
+    camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(c.height / 2 / c.fy));
+    camera.updateProjectionMatrix();
+    controls.update();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request]);
   return null;
 }
 
@@ -224,8 +399,30 @@ function Frustums({ cameras, depth, focus }: { cameras: Camera[]; depth: number;
   );
 }
 
+/** The selected camera's photo, hung in its frustum at `depth`, as the camera saw it. */
+function Photo({ camera, depth }: { camera: Camera; depth: number }) {
+  const texture = useLoader(THREE.TextureLoader, thumbUrl(`images/${camera.name}`, 512, 0));
+  const matrix = useMemo(() => {
+    const r = camera.rotation;
+    const [cx, cy, cz] = camera.center;
+    return new THREE.Matrix4().set(r[0], r[1], r[2], cx, r[3], r[4], r[5], cy, r[6], r[7], r[8], cz, 0, 0, 0, 1);
+  }, [camera]);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const w = (camera.width / camera.fx) * depth;
+  const h = (camera.height / camera.fy) * depth;
+  return (
+    <group matrixAutoUpdate={false} matrix={matrix}>
+      {/* camera y points down, so the plane is flipped to show the photo upright */}
+      <mesh position={[0, 0, depth]} scale={[w, -h, 1]}>
+        <planeGeometry />
+        <meshBasicMaterial map={texture} side={THREE.DoubleSide} transparent opacity={0.92} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
 /** A trained splat; a new one replaces the shown one only once it has loaded. */
-function Splat({ path, onStatus }: { path: string; onStatus: (status: string) => void }) {
+function SplatView({ path, onStatus }: { path: string; onStatus: (status: string) => void }) {
   const [mesh, setMesh] = useState<SplatMesh | null>(null);
   useEffect(() => {
     let cancelled = false;

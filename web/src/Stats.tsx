@@ -1,10 +1,29 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis,
 } from "recharts";
-import { clock, duration, useFetched, useLog } from "./api";
+import { clock, duration, useFetched, useLog, useLogs } from "./api";
 import type { FramesMeta, HistoryRecord, ImageInfo, Model, State, Step } from "./api";
 import { maskScores, solveStats, trainStats } from "./parse";
+import type { TrainStats } from "./parse";
+
+const RUN_COLORS = ["#ff7edb", "#36f9f6", "#fede5d", "#72f1b8", "#ff8b39"];
+
+function runLabel(run: HistoryRecord): string {
+  return run.run ? String(run.run).split("/").slice(1).join("/") : `${run.step} ${clock(run.start)}`;
+}
+
+function runDetail(run: HistoryRecord, lines: string[] | undefined, live: boolean, now: number): string {
+  const stats: TrainStats | null = lines ? trainStats(lines) : null;
+  const parts = [String(run.trainer ?? "brush"), `${Number(run.iterations ?? 0).toLocaleString()} steps`];
+  parts.push(live ? "running" : run.ok ? duration((run.end ?? now) - run.start) : String(run.error ?? "unfinished"));
+  const splats = stats?.refine[stats.refine.length - 1]?.splats;
+  if (splats) parts.push(`${splats.toLocaleString()} splats`);
+  if (stats && rate(stats.refine)) parts.push(rate(stats.refine));
+  const psnr = stats?.evals[stats.evals.length - 1]?.psnr;
+  if (psnr) parts.push(`PSNR ${psnr.toFixed(2)}`);
+  return parts.join(", ");
+}
 
 const COLORS: Record<Step, string> = { frames: "#fede5d", mask: "#ff8b39", solve: "#36f9f6", train: "#ff7edb", lod: "#72f1b8" };
 const AXIS = { stroke: "#614d85", fontSize: 11, tickLine: false };
@@ -29,12 +48,18 @@ export function Stats({ state }: { state: State }) {
   const maskRun = lastOf(state, "mask");
   const solveRun = lastOf(state, "solve");
   const framesRun = lastOf(state, "frames");
-  const trainLog = useLog(trainRun?.log ?? null, following("train"));
+  const trainRuns = useMemo(() => [...state.history].reverse().filter((r) => r.step === "train" && r.log), [state.history]);
+  const [picks, setPicks] = useState<string[] | null>(null);
+  const picked = picks ?? trainRuns.slice(0, 1).map((r) => r.log);
+  const trained = useLogs(picked, following("train") ? trainRun?.log ?? null : null);
+  const series = picked.map((log, i) => {
+    const run = trainRuns.find((r) => r.log === log);
+    return { log, color: RUN_COLORS[i], label: run ? runLabel(run) : log, stats: trainStats(trained[log] ?? []) };
+  });
   const maskLog = useLog(maskRun?.log ?? null, following("mask"));
   const solveLog = useLog(solveRun?.log ?? null, following("solve"));
   const framesLog = useLog(framesRun?.log ?? null, false);
 
-  const train = useMemo(() => trainStats(trainLog.lines), [trainLog.lines]);
   const scores = useMemo(() => maskScores(maskLog.lines), [maskLog.lines]);
   const solve = useMemo(() => solveStats(solveLog.lines), [solveLog.lines]);
   const extracted = useMemo(() => {
@@ -196,39 +221,63 @@ export function Stats({ state }: { state: State }) {
         </section>
       )}
 
-      {train.refine.length > 0 && (
+      {trainRuns.length > 0 && (
+        <section className="chart wide">
+          <h2>Training runs</h2>
+          <p>Pick up to five runs to compare.</p>
+          <div className="run-picks">
+            {trainRuns.map((run, i) => {
+              const on = picked.includes(run.log);
+              const color = RUN_COLORS[picked.indexOf(run.log)] ?? "var(--dim)";
+              return (
+                <label key={run.log} className={on ? "on" : ""} style={{ "--run": color } as React.CSSProperties}>
+                  <input type="checkbox" checked={on} disabled={!on && picked.length >= RUN_COLORS.length}
+                    onChange={() => setPicks(on ? picked.filter((l) => l !== run.log) : [...picked, run.log])} />
+                  <span className="swatch" />
+                  {runLabel(run)}
+                  <span className="label">{runDetail(run, trained[run.log], i === 0 && following("train"), state.now)}</span>
+                </label>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {series.some((r) => r.stats.refine.length) && (
         <section className="chart">
           <h2>Splats during training</h2>
-          <p>
-            {String(trainRun?.trainer ?? "brush")}
-            {train.views ? `, ${train.views.train} training views${train.views.eval ? `, ${train.views.eval} held out` : ""}` : ""}
-            {rate(train.refine)}
-          </p>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={train.refine} margin={{ right: 20 }}>
+          <p>Splat count after each refinement (every 200 steps).</p>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart margin={{ right: 20 }}>
               {GRID}
-              <XAxis dataKey="iteration" type="number" {...AXIS} />
+              <XAxis dataKey="iteration" type="number" allowDuplicatedCategory={false} {...AXIS} domain={[0, "dataMax"]} />
               <YAxis {...AXIS} tickFormatter={(v) => (v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${Math.round(v / 1e3)}k` : String(v))} />
               <Tooltip {...TOOLTIP} formatter={(v) => Number(v).toLocaleString()} />
-              <Line dataKey="splats" stroke="#ff7edb" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              {series.map((r) => (
+                <Line key={r.log} data={r.stats.refine} dataKey="splats" name={r.label} stroke={r.color} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              ))}
             </LineChart>
           </ResponsiveContainer>
         </section>
       )}
 
-      {train.evals.length > 0 && (
+      {series.some((r) => r.stats.evals.length) && (
         <section className="chart">
-          <h2>PSNR and SSIM on held-out images</h2>
-          <p>From `gausser train --eval-split N`, every 1000 steps.</p>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={train.evals} margin={{ right: 20 }}>
+          <h2>PSNR on held-out images</h2>
+          <p>Brush's eval every 1000 steps (`gausser train --eval-split N`). Dashed: SSIM, right axis.</p>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart margin={{ right: 20 }}>
               {GRID}
-              <XAxis dataKey="iteration" type="number" {...AXIS} />
-              <YAxis yAxisId="psnr" {...AXIS} domain={["auto", "auto"]} />
+              <XAxis dataKey="iteration" type="number" allowDuplicatedCategory={false} {...AXIS} domain={[0, "dataMax"]} />
+              <YAxis yAxisId="psnr" {...AXIS} domain={["auto", "auto"]} unit=" dB" />
               <YAxis yAxisId="ssim" orientation="right" {...AXIS} domain={[0, 1]} />
               <Tooltip {...TOOLTIP} />
-              <Line yAxisId="psnr" dataKey="psnr" stroke="#36f9f6" strokeWidth={2} isAnimationActive={false} />
-              <Line yAxisId="ssim" dataKey="ssim" stroke="#fede5d" strokeWidth={2} isAnimationActive={false} />
+              {series.map((r) => (
+                <Line key={r.log} yAxisId="psnr" data={r.stats.evals} dataKey="psnr" name={`${r.label} PSNR`} stroke={r.color} strokeWidth={1.5} isAnimationActive={false} />
+              ))}
+              {series.map((r) => (
+                <Line key={`${r.log}-ssim`} yAxisId="ssim" data={r.stats.evals} dataKey="ssim" name={`${r.label} SSIM`} stroke={r.color} strokeDasharray="4 3" strokeWidth={1} dot={false} isAnimationActive={false} />
+              ))}
             </LineChart>
           </ResponsiveContainer>
         </section>
@@ -242,5 +291,5 @@ function rate(refine: { iteration: number; seconds: number }[]): string {
   if (timed.length < 2) return "";
   const a = timed[0];
   const b = timed[timed.length - 1];
-  return `, ${((b.iteration - a.iteration) / (b.seconds - a.seconds)).toFixed(1)} steps/s`;
+  return `${((b.iteration - a.iteration) / (b.seconds - a.seconds)).toFixed(1)} steps/s`;
 }

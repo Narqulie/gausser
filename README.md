@@ -27,11 +27,17 @@ gausser run --prompt "statue" --monitor  # mask → solve → train, watched in 
 gausser view                             # open the result in SuperSplat
 ```
 
-`--monitor` (on `run`, `frames`, `mask`, `solve`, `train` and `lod`) opens a web page of the scene:
-each step's progress, its live log, step timings, the COLMAP cameras and points as the mapper adds them,
-and the splat as Brush trains it (every `--export-every` steps, 5000 by default). It is read-only and
-stays up as a viewer after the run; it quits 10 minutes after its last browser tab closes.
-`gausser monitor` opens the same page for any scene.
+`--monitor` (on `run`, `frames`, `mask`, `solve`, `train` and `lod`) opens the scene in the web monitor at
+http://127.0.0.1:8737/: each step's progress and live log, the COLMAP cameras and points as the mapper adds
+them, and the splat as Brush trains it (every `--export-every` steps, 5000 by default). Click a camera to see
+its photo or look through it, compare two splats side by side, and compare training runs. With
+`train --eval-split N`, the Renders tab shows Brush's render of each held-out photo next to the photo, with PSNR.
+A toast (and, if you allow it, a desktop notification) tells you when a step ends.
+
+One monitor serves every scene gausser has worked on: http://127.0.0.1:8737/ lists them with every step
+that ran. The list lives in `~/.local/share/gausser/history.jsonl` (`GAUSSER_HOME` moves it). The monitor
+is read-only, stays up as a viewer after a run, and quits 10 minutes after its last tab closes.
+`gausser monitor` opens the current scene in it (`--all`: the list).
 
 A scene is a folder with its photos in `images/`. If the photos are in the
 folder itself, `gausser run --import` moves them into `images/`.
@@ -66,7 +72,7 @@ LOD set.
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [--background jutaka] [--target X Y Z --radius R --height H] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
 | `gausser status` | Shows what the scene has and which tools are installed | — |
-| `gausser monitor [--port N] [--no-open]` | Web page of the scene: steps, logs, timings and stats, images with masks, COLMAP cameras and points, splats | — |
+| `gausser monitor [--all] [--no-open]` | Opens the scene (or the list of all scenes) in the web monitor: steps, logs, stats, images, COLMAP cameras, splats, eval renders | — |
 
 Every command takes `-s/--scene DIR` (default: current folder) and `--help`.
 Only one command at a time can change a scene; a second one stops with an error

@@ -29,6 +29,26 @@ export interface Live {
   count?: number;
 }
 
+export interface Evaluation {
+  step: number;
+  mtime: number;
+  images: { name: string; render: string; photo: string | null; psnr: number | null }[];
+}
+
+export interface SceneSummary extends Partial<State> {
+  root: string;
+  name: string;
+  last: number;
+  missing?: boolean;
+  error?: string;
+}
+
+export interface Scenes {
+  scenes: SceneSummary[];
+  runs: (HistoryRecord & { scene: string })[];
+  now: number;
+}
+
 export interface State {
   name: string;
   root: string;
@@ -92,16 +112,22 @@ export interface LogChunk {
   truncated: boolean;
 }
 
+/** The scene folder this page shows (`?scene=`); without one the page lists every scene. */
+export const SCENE = new URLSearchParams(location.search).get("scene");
+export const sceneHref = (root: string) => `./?scene=${encodeURIComponent(root)}`;
+const sceneParam = SCENE ? `&scene=${encodeURIComponent(SCENE)}` : "";
+
 export async function get<T>(route: string, params: Record<string, string | number> = {}): Promise<T> {
   const query = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]));
+  if (SCENE) query.set("scene", SCENE);
   const response = await fetch(`api/${route}?${query}`);
   if (!response.ok) throw new Error(`${route}: ${response.status}`);
   return response.json() as Promise<T>;
 }
 
-export const fileUrl = (path: string) => `api/file?path=${encodeURIComponent(path)}`;
+export const fileUrl = (path: string) => `api/file?path=${encodeURIComponent(path)}${sceneParam}`;
 export const thumbUrl = (path: string, size: number, version: number) =>
-  `api/thumb?path=${encodeURIComponent(path)}&size=${size}&v=${Math.round(version)}`;
+  `api/thumb?path=${encodeURIComponent(path)}&size=${size}&v=${Math.round(version)}${sceneParam}`;
 
 /** Poll the scene state; `null` while the monitor is unreachable. */
 export function useSceneState(interval = 2000): { state: State | null; offline: boolean } {
@@ -184,6 +210,29 @@ export function useLog(name: string | null, follow: boolean): { lines: string[];
   return { lines, partial, truncated };
 }
 
+/** Whole step logs as lines, fetched once; `live` (one of `names`) is fetched again every 5 s. */
+export function useLogs(names: string[], live: string | null): Record<string, string[]> {
+  const [logs, setLogs] = useState<Record<string, string[]>>({});
+  const key = names.join("|");
+  useEffect(() => {
+    let stop = false;
+    const load = async () => {
+      const entries = await Promise.all(
+        names.map((name) => get<LogChunk>("log", { name, offset: 0 }).then((c) => [name, c.text.split("\n")] as const, () => null)),
+      );
+      if (stop) return;
+      setLogs(Object.fromEntries(entries.filter((e) => e !== null)));
+      if (live && names.includes(live)) setTimeout(load, 5000);
+    };
+    load();
+    return () => {
+      stop = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, live]);
+  return logs;
+}
+
 export function duration(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
   if (s < 60) return `${s}s`;
@@ -196,6 +245,13 @@ export function bytes(n: number): string {
   if (n < 1e6) return `${(n / 1e3).toFixed(0)} kB`;
   if (n < 1e9) return `${(n / 1e6).toFixed(1)} MB`;
   return `${(n / 1e9).toFixed(2)} GB`;
+}
+
+export function ago(seconds: number): string {
+  if (seconds < 90) return "just now";
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min ago`;
+  if (seconds < 129600) return `${Math.round(seconds / 3600)} h ago`;
+  return `${Math.round(seconds / 86400)} days ago`;
 }
 
 export function clock(epoch: number): string {
