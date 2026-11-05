@@ -19,7 +19,8 @@ src/gausser/
 ├── guide.py   scene-aware guided menu: summary, recommended next step, minimal questions
 ├── steps.py   frames (sharp-frames), mask, solve (COLMAP), subset (colmap image_deleter + filtered database), train_brush, lod (splat-transform)
 ├── sam.py     SAM3 predictor + mask writers; imported only by `mask` (needs torch)
-├── pano.py    360° frames: 14 pinhole views per equirect (pycolmap.panorama's 12 + zenith/nadir), feature partition masks, COLMAP rig
+├── pano.py    360° frames: 14 pinhole views per equirect (pycolmap.panorama's 12 + zenith/nadir) or per dual fisheye (7 per lens), partition masks, COLMAP rig
+├── qoocam.py  QooCam 8K raw .MOV: reads the kfix LENS calibration into panos/lenses.json form
 ├── msplat.py  experimental Msplat trainer with checkpoint resume; masks via black compositing
 ├── composite.py `gausser composite`: visual-hull filter of the statue splat, voxel carve of the context, PLY merge
 ├── align.py   `gausser align`: fits a similarity (multi-start trimmed ICP) of a splat onto a published one; splat-transform applies it
@@ -135,6 +136,10 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + rec
   shared SIMPLE_PINHOLE camera and `pano.split_cameras` copies it per view index before configuring. Feature
   masks = the view's partition (each pano pixel in one view, as pycolmap does) AND colmap/masks AND masks-exclude.
   `pano.py` uses einsum, not `@`: numpy 1.26's Accelerate matmul emits spurious divide-by-zero warnings on macOS.
+- QooCam 8K calibration (kfix `LENS`): x_cam = M·(R·X + t), M = diag(1,−1,1), because the stored frames are the
+  calibration images flipped vertically (cy → 3839 − cy); t is in cm. Verified by SIFT matches across the
+  lens overlap (0.2° residual); without M the lenses disagree by ~5°. Rig frame = lens 0's camera frame; the
+  grip is +x there. A fisheye rig keeps VIEWS = 14 (2 × 7) so view names and counts match equirect scenes.
 - Msplat requires exactly `msplat==1.1.4` and a binary model. It has no mask input.
   When every image has a mask, `msplat.train` writes composited copies (black
   background) into the run's `dataset/`, sets `bg_color` to black and records

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import struct
@@ -222,6 +223,68 @@ def test_360_frames_become_rig_views_that_colmap_solves_as_one_rig(tmp_path, too
     match = next(c for c in tools.commands if c[1:2] == ["exhaustive_matcher"])
     assert "--FeatureMatching.skip_image_pairs_in_same_frame" in match
     assert scene.model() is not None and not masks.exists()  # staging is cleaned up
+
+
+def _qoocam_file(path: Path) -> None:
+    """A .MOV with the QooCam 8K's kfix LENS calibration (values from a real camera) and no video."""
+    import struct
+
+    def line(prefix: str, f: float, cx: float, cy: float, rotation: list[float]) -> str:
+        values = [825.52, 3.05, 0, 0, 0, 0, f, cx, cy, 0.022634, 0.013984, -0.01102, 0.001205, *rotation, 0, 0, -1.476]
+        return prefix + struct.pack(f"<{len(values)}f", *values).hex()
+
+    lens = "\r\n".join([
+        line("=1", 1111.97, 1946.25, 1903.3, [0, 1, 0, -1, 0, 0, 0, 0, 1]),
+        line("2", 1110.64, 5794.61, 1890.57, [0.0183, -0.9998, 0.0019, -0.9998, -0.0184, -0.0012, 0.0013, -0.0019, -1]),
+    ]).encode() + b"\r\n"
+    entry = b"LENS".ljust(32, b"\0") + b"CHAR".ljust(8, b"\0") + struct.pack("<II", 512, 1) + lens.ljust(512, b"\0")
+    kfix = b"PRODUCT".ljust(32, b"\0") + b"CHAR".ljust(8, b"\0") + struct.pack("<II", 16, 1) + b"QooCam 8K".ljust(16, b"\0") + entry
+    path.write_bytes(struct.pack(">I4s", 16, b"ftyp") + b"qt  \0\0\0\0" + struct.pack(">I4s", 8 + len(kfix), b"kfix") + kfix)
+
+
+def test_qoocam_video_becomes_per_lens_views_solved_as_a_calibrated_two_lens_rig(tmp_path, tools):
+    scene = Scene(tmp_path)
+    rig_config: list = []
+
+    def fake_tools(command):
+        if command[0] == "ffmpeg":
+            Path(command[-1]).write_bytes(b"mp4")
+        elif command[0] == "sharp-frames":
+            Path(command[2]).mkdir(parents=True)
+            for name in ("a", "b"):  # two 64-pixel lens images side by side
+                Image.new("RGB", (128, 64), "white").save(Path(command[2]) / f"{name}.jpg")
+        elif command[1] == "feature_extractor":
+            with sqlite3.connect(command[command.index("--database_path") + 1]) as db:
+                db.execute("CREATE TABLE cameras (camera_id, model, width, height, params, prior_focal_length)")
+                db.execute("INSERT INTO cameras VALUES (1, 0, 32, 32, x'00', 1)")
+                db.execute("CREATE TABLE images (image_id, name, camera_id)")
+                db.executemany("INSERT INTO images VALUES (?, ?, 1)", enumerate(sorted(p.name for p in scene.image_files())))
+        elif command[1] == "rig_configurator":
+            rig_config.extend(json.loads(Path(command[command.index("--rig_config_path") + 1]).read_text())[0]["cameras"])
+        elif command[1] == "mapper":
+            write_model(Path(command[command.index("--output_path") + 1]) / "0", 28)
+
+    tools.on_run(fake_tools)
+    _qoocam_file(tmp_path / "Q360.MOV")
+    steps.frames(scene, tmp_path / "Q360.MOV", [], [(1.5, 32.5), (57.0, 80.0)])
+
+    cuts = [c for c in tools.commands if c[0] == "ffmpeg"]
+    assert [c[c.index("-ss") + 1 : c.index("-to") + 2] for c in cuts] == [["1.5", "-to", "32.5"], ["57", "-to", "80"]]
+    assert all("[0:0][0:1]hstack" in c for c in cuts)
+    rig = pano.lenses(scene.panos)
+    assert rig is not None and rig["camera"] == "QooCam 8K"
+    assert len(scene.image_files()) == 2 * pano.VIEWS
+    keep = sorted(scene.masks_exclude.glob("*.png"))
+    assert len(keep) == 2 * pano.VIEWS  # lens circle and grip, so Brush and COLMAP skip them
+    with Image.open(scene.masks_exclude / "c01_a.png") as mask:  # tilted toward the grip
+        black, _ = mask.convert("L").getextrema()
+        histogram = mask.convert("L").histogram()
+    assert black == 0 and 0 < histogram[0] < 32 * 32
+
+    steps.solve(scene)
+    lens1 = [camera for camera in rig_config if camera["image_prefix"] >= "c07_"]
+    assert len(rig_config) == pano.VIEWS and len(lens1) == 7
+    assert all(abs(sum(t * t for t in camera["cam_from_rig_translation"]) ** 0.5 - 0.02952) < 1e-4 for camera in lens1)
 
 
 def test_mask_keeps_whole_image_on_a_miss_but_fails_when_nothing_matches(tmp_path, monkeypatch):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fnmatch import fnmatchcase
+import json
 import os
 import shutil
 import sqlite3
@@ -13,7 +14,7 @@ from typing import Any
 
 from PIL import Image
 
-from . import pano
+from . import pano, qoocam
 from .scene import GausserError, Scene, is_image, registered_images, remove, replace, require_tool, run_tool
 
 BRUSH_HINT = "build Brush (cargo build --release) and put `brush` on PATH"
@@ -22,10 +23,12 @@ SHARP_FRAMES_HINT = "pip install sharp-frames && brew install ffmpeg"
 SPLAT_TRANSFORM_HINT = "npm install -g @playcanvas/splat-transform"
 
 
-def frames(scene: Scene, source: Path, extra: list[str]) -> int:
-    """Select sharp frames from a video (or image folder) into images/.
+def frames(scene: Scene, source: Path, extra: list[str], ranges: list[tuple[float, float]] | None = None) -> int:
+    """Select sharp frames from a video (or image folder) into images/; `ranges` keeps only those seconds.
 
-    360° (2:1 equirectangular) frames go to panos/ instead, and images/ gets their pinhole views.
+    360° frames go to panos/ instead, and images/ gets their pinhole views (pano.py): 2:1
+    equirectangular frames, or a QooCam 8K raw video's two fisheye images side by side, with
+    the camera's calibration in panos/lenses.json and the lens-circle masks in masks-exclude/.
     """
     tool = require_tool("sharp-frames", SHARP_FRAMES_HINT)
     source = source.expanduser().resolve()
@@ -33,25 +36,64 @@ def frames(scene: Scene, source: Path, extra: list[str]) -> int:
         raise GausserError(f"Source does not exist: {source}")
     staging = scene.staging("frames")
     staged = staging / "images"
+    rig = qoocam.calibration(source) if source.is_file() else None
+    if rig or ranges:
+        if not source.is_file():
+            raise GausserError("--range needs a video file")
+        source = _cut(source, staging / "videos", ranges or [], fisheyes=rig is not None)
     run_tool([tool, str(source), str(staged), "--force-overwrite", *extra], cwd=scene.root)
     count = sum(1 for path in staged.iterdir() if is_image(path)) if staged.is_dir() else 0
     if count == 0:
         raise GausserError("Sharp Frames selected no images")
     panos = sorted(path for path in staged.iterdir() if is_image(path))
-    if pano.is_pano(panos[0]):
+    keep = staging / "keep"
+    if rig or pano.is_pano(panos[0]):
         views = staging / "views"
         views.mkdir()
         print(f"{count} 360° frames: rendering {pano.VIEWS} views each", flush=True)
-        pano.render(panos, views)
+        size = pano.render(panos, views, rig)
+        if rig:
+            (staged / pano.LENSES).write_text(json.dumps(rig, indent=2))
+            keep.mkdir()
+            _write_keep_masks(views, keep, pano.keep_masks(rig, size) or [])
         replace(views, scene.images)
         replace(staged, scene.panos)
     else:
         replace(staged, scene.images)
         remove(scene.panos)
-    remove(staging)
     remove(scene.masks, scene.masks_exclude, scene.colmap_masks, scene.database, scene.sparse)  # built from the old images
+    if keep.is_dir():
+        replace(keep, scene.masks_exclude)
+    remove(staging)
     print(f"{count} frames in {scene.panos if scene.is_pano() else scene.images}")
     return count
+
+
+def _cut(source: Path, out: Path, ranges: list[tuple[float, float]], fisheyes: bool) -> Path:
+    """Re-encode `ranges` of `source` (all of it if none) as videos in `out`, the two lens streams side by side."""
+    ffmpeg = require_tool("ffmpeg", SHARP_FRAMES_HINT)
+    out.mkdir()
+    if sys.platform == "darwin":
+        encode = ["-c:v", "hevc_videotoolbox", "-q:v", "80", "-tag:v", "hvc1"]
+    else:
+        encode = ["-c:v", "libx264", "-crf", "16"]
+    for index, span in enumerate(ranges or [None], start=1):
+        command = [ffmpeg, "-hide_banner", "-y"]
+        if span:
+            command += ["-ss", f"{span[0]:g}", "-to", f"{span[1]:g}"]
+        command += ["-i", str(source)]
+        command += ["-filter_complex", "[0:0][0:1]hstack"] if fisheyes else ["-map", "0:v:0"]
+        run_tool([*command, "-an", *encode, str(out / f"part{index}.mp4")], cwd=out)
+    return out
+
+
+def _write_keep_masks(views: Path, out: Path, keep: list[Any]) -> None:
+    """Brush-layout masks out/<stem>.png of every view: white where the lens sees the scene."""
+    import numpy as np
+
+    images = [Image.fromarray(mask.astype(np.uint8) * 255, mode="L") for mask in keep]
+    for view in views.iterdir():
+        images[pano.view_index(view.name)].save(out / f"{view.stem}.png")
 
 
 NO_MASKS = "no-masks"  # marker in sparse/: the model was solved without masks, so new masks keep it
@@ -157,6 +199,8 @@ def _exclude(
     from PIL import Image
 
     hits, share = 0, 0.0
+    with Image.open(images[0]) as first:
+        keep = pano.keep_masks(pano.lenses(scene.panos), first.width) if scene.is_pano() else None
     for index, path in enumerate(images, start=1):
         with Image.open(path) as image:
             result = predictor.predict(image, prompt, threshold, True)
@@ -167,6 +211,8 @@ def _exclude(
                 with Image.open(subject) as m:
                     protect = np.asarray(m.convert("L").resize(image.size)) > 127
         white = exclude_mask(hit, protect, dilation)
+        if keep is not None:  # outside a fisheye's circle and around the grip
+            white &= keep[pano.view_index(path.name)]
         Image.fromarray(white.astype(np.uint8) * 255, mode="L").save(out / f"{path.stem}.png")
         excluded = 1 - white.mean()
         hits += result is not None
@@ -204,10 +250,11 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         "--FeatureExtraction.use_gpu", gpu,
     ]
     rig = scene.is_pano()
+    lenses = pano.lenses(scene.panos) if rig else None
     if rig:
         masks = staged / "masks"
         masks.mkdir()
-        pano.feature_masks(images, masks, [] if no_masks else [scene.colmap_masks, scene.masks_exclude])
+        pano.feature_masks(images, masks, [] if no_masks else [scene.colmap_masks, scene.masks_exclude], lenses)
         with Image.open(images[0]) as first:
             params = pano.camera_params(first.width)
         extract += [
@@ -221,12 +268,12 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     mapper = [colmap, "mapper", "--database_path", str(database), "--image_path", str(scene.images), "--output_path", str(sparse)]
     if rig:
         pano.split_cameras(database)
-        pano.write_rig(staged / "rig.json")
+        pano.write_rig(staged / "rig.json", lenses)
         run_tool(
             [colmap, "rig_configurator", "--database_path", str(database), "--rig_config_path", str(staged / "rig.json")],
             cwd=staged,
         )
-        # The views of one panorama share its centre and see disjoint pixels (feature_masks).
+        # The views of one frame see disjoint directions (feature_masks); the rig is calibrated.
         match += ["--FeatureMatching.rig_verification", "1", "--FeatureMatching.skip_image_pairs_in_same_frame", "1"]
         mapper += [
             "--Mapper.ba_refine_sensor_from_rig", "0", "--Mapper.ba_refine_focal_length", "0",
@@ -300,6 +347,8 @@ def train_brush(
     # Give it a folder that holds only the current inputs.
     dataset = staged / "dataset"
     dataset.mkdir()
+    if not no_masks and not scene.masks.is_dir() and pano.lenses(scene.panos):
+        exclude_masks = True  # fisheye views are black outside the lens circle; never train on that
     brush_masks = None if no_masks else scene.masks_exclude if exclude_masks else scene.masks
     for name, source in (("images", scene.images), ("sparse", scene.sparse), ("masks", brush_masks)):
         if source and source.is_dir():

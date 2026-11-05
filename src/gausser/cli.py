@@ -118,6 +118,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Select sharp frames into images/. Extra arguments after -- go to sharp-frames.",
     )
     frames.add_argument("source", type=Path, help="video file, or folder of videos or images")
+    frames.add_argument(
+        "--range", dest="ranges", action="append", type=_time_range, metavar="START-END",
+        help="keep only this part of the video, in seconds or m:ss (repeatable), e.g. --range 1.5-32.5 --range 0:57-1:20",
+    )
     frames.add_argument("extra", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
 
     mask = commands.add_parser("mask", parents=[working], help="mask the subject with SAM3")
@@ -315,7 +319,9 @@ def status(scene: Scene) -> None:
     print(f"images  {len(images)}")
     if scene.is_pano():
         panos = sum(1 for path in scene.panos.iterdir() if is_image(path))
-        print(f"        360°: {panos} frames in panos/, {pano.VIEWS} views each")
+        rig = pano.lenses(scene.panos)
+        kind = f"{rig['camera']} fisheyes" if rig else "equirectangular"
+        print(f"        360°: {panos} frames in panos/ ({kind}), {pano.VIEWS} views each")
     if not images:
         loose = scene.loose_photos()
         if loose:
@@ -479,13 +485,28 @@ def _guide(target: Path) -> list[str] | int:
         return 130
 
 
+def _time_range(text: str) -> tuple[float, float]:
+    def seconds(part: str) -> float:
+        minutes, _, rest = part.rpartition(":")
+        return float(minutes or 0) * 60 + float(rest)
+
+    start, sep, end = text.partition("-")
+    try:
+        span = (seconds(start), seconds(end))
+    except ValueError:
+        span = (0.0, 0.0)
+    if not sep or span[1] <= span[0]:
+        raise argparse.ArgumentTypeError(f"{text!r} is not START-END, e.g. 1.5-32.5 or 0:57-1:20")
+    return span
+
+
 def dispatch(scene: Scene, args: argparse.Namespace) -> None:
     if args.command == "run":
         run_pipeline(scene, args)
     elif args.command == "frames":
         extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
         with scene.step("frames", source=str(args.source)):
-            steps.frames(scene, args.source, extra)
+            steps.frames(scene, args.source, extra, args.ranges)
     elif args.command == "mask":
         with scene.step("mask", prompt=args.prompt, exclude=args.exclude):
             _mask(scene, args.prompt, args, args.exclude)

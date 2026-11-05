@@ -60,7 +60,7 @@ LOD set.
 
 | Command | Does | Writes |
 |---|---|---|
-| `gausser frames SOURCE [-- args]` | Sharp Frames picks sharp frames from a video; 360° frames become 14 views each | `images/` (and `panos/`) |
+| `gausser frames SOURCE [--range START-END] [-- args]` | Sharp Frames picks sharp frames from a video; 360° frames (equirect, or a QooCam 8K raw video) become 14 views each | `images/` (and `panos/`) |
 | `gausser mask PROMPT [--miss drop]` | SAM3 masks the subject | `masks/`, `colmap/masks/` |
 | `gausser mask PROMPT --exclude [--dilation N]` | SAM3 blacks out every instance of PROMPT (e.g. people), except inside `masks/` | `masks-exclude/` |
 | `gausser solve [--no-masks]` | COLMAP finds the camera poses | `database.db`, `sparse/0/` |
@@ -128,7 +128,7 @@ without them (the first two steps of the recipe, minus `--miss drop`).
 
 ## 360° video
 
-`gausser frames` recognises 360° frames by their 2:1 (equirectangular) shape. It keeps them in
+`gausser frames` recognises stitched 360° frames by their 2:1 (equirectangular) shape. It keeps them in
 `panos/` and writes 14 pinhole views of each into `images/` as `cNN_<frame>.jpg` (4 directions at
 -35°, 0° and 35° pitch plus straight up and straight down, 90° wide, so a 5760-pixel-wide frame gives
 1440×1440 views). This is COLMAP's own panorama workflow (`pycolmap.panorama`). From there every
@@ -145,14 +145,16 @@ gausser train --exclude-masks
 In a 360° scene `solve` also applies `masks-exclude/` to COLMAP: the operator stays in the same
 place in every frame and would otherwise match as a fixed object, so `mask --exclude` deletes the model.
 
-Cameras that record raw dual fisheye, like the QooCam 8K (two 3840×3840 streams), need stitching
-first. The camera vendor's app (Kandao Studio) stitches with calibration. A rough ffmpeg stitch for
-the QooCam 8K, with the lens field of view fitted by eye on the seam:
+A Kandao QooCam 8K raw `.MOV` needs no stitching. `frames` reads the camera's own lens calibration
+from the file, puts the two 3840×3840 fisheye streams side by side and selects frames from that. Each
+lens then gives 7 views (its axis and a ring of 6 at 55°), each a real pinhole camera at its lens's
+centre: there is no seam, and `solve` knows the 2.95 cm between the lenses, so the model comes out in
+metres. `frames` writes `masks-exclude/` too: black outside the lens circle and in a 35° cone around
+the grip (the hand or a stick); `mask --exclude` keeps those black, and `train` uses them even without
+`--exclude-masks`. `--range` keeps only the passes you want (seconds or m:ss, repeatable):
 
 ```bash
-ffmpeg -i raw.MOV -filter_complex \
-  "[0:0][0:1]hstack,v360=input=dfisheye:output=e:ih_fov=196:iv_fov=196:roll=90:w=5760:h=2880" \
-  -an -c:v hevc_videotoolbox -q:v 75 -tag:v hvc1 pano.mp4
+gausser frames Q360_….MOV --range 1.5-32.5 --range 0:57-1:20 -- --selection-method batched --batch-size 3 --batch-buffer 0
 ```
 
 ## Mixing captures
