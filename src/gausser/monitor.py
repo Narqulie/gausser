@@ -322,6 +322,7 @@ class Monitor:
     def images(self) -> list[dict[str, Any]]:
         scene = self.scene
         files = scene.image_files()
+        panos = {p.stem: _rel(scene, p) for p in scene.panos.iterdir() if is_image(p)} if scene.is_pano() else {}
 
         def one(image: Path) -> dict[str, Any]:
             masks = [scene.masks / f"{image.stem}.png", scene.masks_exclude / f"{image.stem}.png"]
@@ -330,7 +331,7 @@ class Monitor:
             view = pano.view_index(image.name) if scene.is_pano() else None
             frame = image.stem.split("_", 1)[1] if view is not None else image.stem
             return {
-                "name": image.name, "frame": frame, "view": view, "mtime": mtime(image),
+                "name": image.name, "frame": frame, "view": view, "pano": panos.get(frame), "mtime": mtime(image),
                 "mask": masks[0].is_file() and _rel(scene, masks[0]),
                 "exclude": masks[1].is_file() and _rel(scene, masks[1]), **stats,
             }

@@ -67,6 +67,7 @@ export interface ImageInfo {
   name: string;
   frame: string;
   view: number | null;
+  pano: string | null; // panos/<frame>.jpg of a 360° view
   mtime: number;
   mask: string | false;
   exclude: string | false;

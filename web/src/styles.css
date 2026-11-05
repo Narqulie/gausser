@@ -138,7 +138,8 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--pink); }
 .reg { color: var(--green); }
 .unreg { color: var(--red); }
 .frame-row { display: flex; gap: 8px; align-items: stretch; margin-bottom: 8px; }
-.frame-label { width: 110px; flex: none; color: var(--muted); font-size: 11px; padding-top: 4px; overflow: hidden; text-overflow: ellipsis; }
+.frame-label { flex: none; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frame-label img { display: block; width: 100%; aspect-ratio: 2; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); margin-bottom: 2px; }
 .frame-row .grid { flex: 1; }
 
 .lightbox {

@@ -43,7 +43,7 @@ export function Images({ state, onShow }: { state: State; onShow: (name: string)
           {maskPath && <img className="mask" loading="lazy" src={thumbUrl(maskPath, 256, image.mtime)} alt="" />}
         </div>
         <div className="tile-info">
-          <span className="name">{pano ? `view ${image.view}` : image.name}</span>
+          <span className="name">{pano ? image.view : image.name}</span>
           {model && (camera ? <span className="reg">{camera.points}</span> : <span className="unreg">✗</span>)}
         </div>
       </div>
@@ -84,8 +84,18 @@ export function Images({ state, onShow }: { state: State; onShow: (name: string)
       <div className="grid-scroll">
         {groups.map(([frame, list]) => (
           <div key={frame} className={pano ? "frame-row" : ""}>
-            {pano && <div className="frame-label" title={frame}>{frame}</div>}
-            <div className="grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${size}px, 1fr))` }}>{list.map(tile)}</div>
+            {pano && (
+              <div className="frame-label" title={frame} style={{ width: size * 2 }}>
+                {list[0]?.pano && <img loading="lazy" src={thumbUrl(list[0].pano, 512, list[0].mtime)} alt="" />}
+                {frame}
+              </div>
+            )}
+            <div
+              className="grid"
+              style={{ gridTemplateColumns: pano ? `repeat(${state.images.views}, minmax(0, 1fr))` : `repeat(auto-fill, minmax(${size}px, 1fr))` }}
+            >
+              {list.map(tile)}
+            </div>
           </div>
         ))}
       </div>
