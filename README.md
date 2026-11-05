@@ -157,6 +157,13 @@ the grip (the hand or a stick); `mask --exclude` keeps those black, and `train` 
 gausser frames Q360_….MOV --range 1.5-32.5 --range 0:57-1:20 -- --selection-method batched --batch-size 3 --batch-buffer 0
 ```
 
+A folder of QooCam 8K photos (3840×7680, lens 0 above lens 1, calibration in each JPEG) works the
+same way, without Sharp Frames: every photo is kept. Stand still for each shot, about 20 cm apart.
+
+```bash
+gausser frames /Volumes/QooCam\ 8K/PHOTO/Kitchen
+```
+
 ## Mixing captures
 
 Photos from several captures (say sunny drone frames `frame_*.jpg` and iPhone frames from another

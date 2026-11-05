@@ -255,18 +255,21 @@ def test_360_frames_become_rig_views_that_colmap_solves_as_one_rig(tmp_path, too
     assert scene.model() is not None and not masks.exists()  # staging is cleaned up
 
 
-def _qoocam_file(path: Path) -> None:
-    """A .MOV with the QooCam 8K's kfix LENS calibration (values from a real camera) and no video."""
-    import struct
-
+def _qoocam_lens() -> bytes:
+    """The QooCam 8K's LENS calibration text (values from a real camera)."""
     def line(prefix: str, f: float, cx: float, cy: float, rotation: list[float]) -> str:
         values = [825.52, 3.05, 0, 0, 0, 0, f, cx, cy, 0.022634, 0.013984, -0.01102, 0.001205, *rotation, 0, 0, -1.476]
         return prefix + struct.pack(f"<{len(values)}f", *values).hex()
 
-    lens = "\r\n".join([
+    return "\r\n".join([
         line("=1", 1111.97, 1946.25, 1903.3, [0, 1, 0, -1, 0, 0, 0, 0, 1]),
         line("2", 1110.64, 5794.61, 1890.57, [0.0183, -0.9998, 0.0019, -0.9998, -0.0184, -0.0012, 0.0013, -0.0019, -1]),
     ]).encode() + b"\r\n"
+
+
+def _qoocam_file(path: Path) -> None:
+    """A .MOV with the QooCam 8K's kfix LENS calibration and no video."""
+    lens = _qoocam_lens()
     entry = b"LENS".ljust(32, b"\0") + b"CHAR".ljust(8, b"\0") + struct.pack("<II", 512, 1) + lens.ljust(512, b"\0")
     kfix = b"PRODUCT".ljust(32, b"\0") + b"CHAR".ljust(8, b"\0") + struct.pack("<II", 16, 1) + b"QooCam 8K".ljust(16, b"\0") + entry
     path.write_bytes(struct.pack(">I4s", 16, b"ftyp") + b"qt  \0\0\0\0" + struct.pack(">I4s", 8 + len(kfix), b"kfix") + kfix)
@@ -275,6 +278,26 @@ def _qoocam_file(path: Path) -> None:
 def test_frames_takes_ranges_after_the_source_and_sharp_frames_options_after_dashes():
     args = cli.build_parser().parse_args(["frames", "clip.MOV", "--range", "1.5-32.5", "--range", "0:57-1:20", "--", "--fps", "10"])
     assert args.ranges == [(1.5, 32.5), (57.0, 80.0)] and args.extra == ["--fps", "10"]
+
+
+def test_qoocam_photos_are_used_whole_with_lens_0_above_lens_1(tmp_path, tools):
+    (tmp_path / "scene").mkdir()
+    scene = Scene(tmp_path / "scene")
+    photos = tmp_path / "Kitchen"
+    photos.mkdir()
+    for name in ("Q360_1", "Q360_2"):
+        image = Image.new("RGB", (64, 128), "red")
+        image.paste((0, 0, 255), (0, 64, 64, 128))  # lens 1 below
+        image.save(photos / f"{name}.JPG", exif=b"Exif\0\0" + b"PRODUCT=QOOCAM 8K LENS=" + _qoocam_lens())
+    steps.frames(scene, photos, [])
+
+    assert not tools.commands  # no Sharp Frames: every photo is kept
+    assert pano.lenses(scene.panos) == qoocam.calibration(photos / "Q360_1.JPG") is not None
+    with Image.open(scene.panos / "Q360_1.jpg") as frame:
+        left, right = frame.crop((0, 0, 64, 64)).resize((1, 1)), frame.crop((64, 0, 128, 64)).resize((1, 1))
+    assert frame.size == (128, 64)
+    assert left.tobytes()[0] > 200 and right.tobytes()[2] > 200  # lens 0 (red) left, lens 1 (blue) right
+    assert len(scene.image_files()) == 2 * pano.VIEWS
 
 
 def test_qoocam_video_becomes_per_lens_views_solved_as_a_calibrated_two_lens_rig(tmp_path, tools):

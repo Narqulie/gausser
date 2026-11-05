@@ -29,19 +29,28 @@ def frames(scene: Scene, source: Path, extra: list[str], ranges: list[tuple[floa
     360° frames go to panos/ instead, and images/ gets their pinhole views (pano.py): 2:1
     equirectangular frames, or a QooCam 8K raw video's two fisheye images side by side, with
     the camera's calibration in panos/lenses.json and the lens-circle masks in masks-exclude/.
+    A folder of QooCam 8K photos is used whole (every photo is a still): no Sharp Frames.
     """
-    tool = require_tool("sharp-frames", SHARP_FRAMES_HINT)
     source = source.expanduser().resolve()
     if not source.exists():
         raise GausserError(f"Source does not exist: {source}")
     staging = scene.staging("frames")
     staged = staging / "images"
-    rig = qoocam.calibration(source) if source.is_file() else None
-    if rig or ranges:
-        if not source.is_file():
+    photos = sorted(path for path in source.iterdir() if is_image(path)) if source.is_dir() else []
+    rig = qoocam.calibration(photos[0] if photos else source)
+    if photos and rig:
+        if ranges:
             raise GausserError("--range needs a video file")
-        source = _cut(source, staging / "videos", ranges or [], fisheyes=rig is not None)
-    run_tool([tool, str(source), str(staged), "--force-overwrite", *extra], cwd=scene.root)
+        staged.mkdir()
+        for photo in photos:
+            qoocam.side_by_side(photo, staged / f"{photo.stem}.jpg")
+    else:
+        tool = require_tool("sharp-frames", SHARP_FRAMES_HINT)
+        if rig or ranges:
+            if not source.is_file():
+                raise GausserError("--range needs a video file")
+            source = _cut(source, staging / "videos", ranges or [], fisheyes=rig is not None)
+        run_tool([tool, str(source), str(staged), "--force-overwrite", *extra], cwd=scene.root)
     count = sum(1 for path in staged.iterdir() if is_image(path)) if staged.is_dir() else 0
     if count == 0:
         raise GausserError("Sharp Frames selected no images")

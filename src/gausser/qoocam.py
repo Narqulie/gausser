@@ -10,9 +10,12 @@ SIFT matches between the two lenses where they overlap: the calibration then agr
 
 from __future__ import annotations
 
+import re
 import struct
 from pathlib import Path
 from typing import Any
+
+from .scene import GausserError
 
 SIDE = 3840  # pixels per lens image
 ENTRY = 48  # kfix/kvar entry header: 32-byte name, 8-byte type, u32 count, u32 size
@@ -56,17 +59,51 @@ def _lens_floats(line: str) -> list[float]:
     raise ValueError(f"unreadable LENS line {line[:20]!r}")
 
 
-def calibration(path: Path) -> dict[str, Any] | None:
-    """The lens rig of a QooCam raw video in `pano.lenses` form (rig = lens 0's frame), or None."""
-    import numpy as np
-
-    if path.suffix.lower() not in (".mov", ".mp4"):
+def _lens_text(path: Path) -> str | None:
+    """The LENS calibration text of a raw video (kfix box) or a photo (``LENS=`` in its JPEG header)."""
+    suffix = path.suffix.lower()
+    if suffix in (".jpg", ".jpeg"):
+        with path.open("rb") as f:
+            header = f.read(1 << 16)
+        match = re.search(rb"QOOCAM 8K.{0,200}?LENS=([0-9a-fA-F=\r\n]+)", header, re.S)
+        return match.group(1).decode() if match else None
+    if suffix not in (".mov", ".mp4"):
         return None
     kfix = _box(path, b"kfix")
     if kfix is None or (at := kfix.find(b"LENS\0")) < 0:
         return None
     count, length = struct.unpack("<II", kfix[at + 40 : at + ENTRY])
-    text = kfix[at + ENTRY : at + ENTRY + count * length].split(b"\0")[0].decode("ascii", "replace")
+    return kfix[at + ENTRY : at + ENTRY + count * length].split(b"\0")[0].decode("ascii", "replace")
+
+
+def side_by_side(photo: Path, out: Path) -> None:
+    """A QooCam 8K photo (lens 0 above lens 1, 3840×7680) as the video's side-by-side 7680×3840 frame.
+
+    The halves are the same lens images as the video streams: matching the two lenses where they
+    overlap fits best unturned, and the grip shows at lens 0's right edge as in video.
+    """
+    from PIL import Image
+
+    with Image.open(photo) as image:
+        side = image.width
+        if image.height != 2 * side:
+            raise GausserError(f"{photo.name} is {image.width}x{image.height}, not two lens images one above the other")
+        frame = Image.new("RGB", (2 * side, side))
+        frame.paste(image.crop((0, 0, side, side)), (0, 0))
+        frame.paste(image.crop((0, side, side, 2 * side)), (side, 0))
+    frame.save(out, quality=95)
+
+
+def calibration(path: Path) -> dict[str, Any] | None:
+    """The lens rig of a QooCam raw video or photo in `pano.lenses` form (rig = lens 0's frame), or None.
+
+    Photos carry the same LENS lines as videos, with lens 1's cx also in side-by-side pixels.
+    """
+    import numpy as np
+
+    text = _lens_text(path)
+    if text is None:
+        return None
     flip = np.diag([1.0, -1.0, 1.0])
     raw = []
     for index, line in enumerate(line for line in text.split("\r\n") if line.strip()):
