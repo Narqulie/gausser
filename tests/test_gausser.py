@@ -1173,6 +1173,11 @@ def test_brush_starts_from_the_dense_cloud_when_there_is_one(tmp_path, tools):
     run = steps.train_brush(scene, iterations=10, init="sparse")
     assert (run / "init-sparse").is_file() and seen["sparse"]
 
+    scene.masks.mkdir()  # the dense cloud ignores masks, so a masked run starts from COLMAP's points
+    seen.clear()
+    run = steps.train_brush(scene, iterations=10)
+    assert (run / "init-sparse").is_file() and seen["sparse"]
+
 
 def test_mesh_reconstructs_refines_decimates_and_textures_into_a_run(tmp_path, tools):
     scene = dense_scene(tmp_path)

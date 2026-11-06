@@ -403,7 +403,9 @@ def train_brush(
     dense = scene.dense_cloud()
     if init == "dense" and dense is None:
         raise GausserError("No dense point cloud; run `gausser dense` first")
-    init = "dense" if init == "dense" or (init == "auto" and dense) else "sparse"
+    # The dense cloud ignores masks: a masked run starting from it would keep background splats (see composite).
+    masked = brush_masks is not None and brush_masks.is_dir()
+    init = "dense" if init == "dense" or (init == "auto" and dense and not masked) else "sparse"
     for name, source in (("images", scene.images), ("sparse", scene.sparse), ("masks", brush_masks)):
         if name == "sparse" and init == "dense":
             continue
@@ -416,6 +418,7 @@ def train_brush(
         for path in scene.require_model().iterdir():
             if path.name != "points3D.bin":
                 (model / path.name).symlink_to(path)
+        print(f"Reading {dense.relative_to(scene.root)} ({ply_count(dense):,} points; about 1 s per 8 million)", flush=True)
         xyz, rgb = read_dense_cloud(dense, DENSE_INIT_POINTS)
         write_points3d(model / "points3D.bin", xyz, rgb)
         print(f"Starting from {len(xyz):,} points of the dense cloud ({dense.relative_to(scene.root)})")

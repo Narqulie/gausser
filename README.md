@@ -95,7 +95,9 @@ with the images that saw them. `--resolution-level 1` (default) works on half-si
 about the size of `images/` plus 2 GB.
 `gausser train` then gives Brush 500,000 random points of the cloud instead of COLMAP's sparse points (it writes them
 as `points3D.bin` into Brush's own folder; `sparse/` is untouched) and marks the run `init-dense` or `init-sparse`.
-`--init sparse` keeps COLMAP's points.
+`--init sparse` keeps COLMAP's points. `auto` (default) uses the dense cloud only for unmasked training: the cloud
+ignores masks, and a masked run would keep the background points it starts from. `run --dense` on a trained scene
+builds `dense/` and then trains again.
 
 `gausser mesh` runs `ReconstructMesh` (Delaunay tetrahedra, graph cut on what the cameras see through),
 `RefineMesh` (moves the surface until the photos agree; CPU only, the slow part, `--no-refine` skips it) and

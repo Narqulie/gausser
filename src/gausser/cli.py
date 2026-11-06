@@ -73,7 +73,7 @@ def _add_train_options(parser: argparse.ArgumentParser) -> None:
     )
     group.add_argument(
         "--init", choices=("auto", "dense", "sparse"), default="auto",
-        help="Brush: start from the dense cloud (dense/) or COLMAP's points; auto = dense when dense/ exists",
+        help="Brush: start from the dense cloud (dense/) or COLMAP's points; auto = dense when dense/ exists and Brush gets no masks",
     )
     group.add_argument("--downscale", type=float, default=4.0, help="Msplat: load images at 1/N size (default 4)")
     group.add_argument("--checkpoint-every", type=int, default=1000, help="Msplat: checkpoint every N steps")

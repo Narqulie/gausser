@@ -98,7 +98,8 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + rec
   `dense` passes `--remove-dmaps 1` (the depth maps were 7.5 GB for 350 frames). Its PLY ends each vertex in
   two variable-length lists (views, weights); `steps.read_dense_cloud` walks them. Brush takes initial points
   only from a COLMAP `points3D.bin`, so dense init writes one (empty tracks) into Brush's staging `sparse/0`,
-  next to links to the real cameras; the run gets an `init-dense`/`init-sparse` marker.
+  next to links to the real cameras; the run gets an `init-dense`/`init-sparse` marker. `--init auto` picks dense only
+  when Brush gets no masks (the cloud ignores masks; a masked run would keep its background points).
 
 ## Hard-won constraints
 
