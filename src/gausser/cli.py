@@ -83,14 +83,14 @@ def _add_lod_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_frames_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
+    group = parser.add_argument_group("frames")
+    group.add_argument(
         "--spacing", choices=list(keyframes.SPACINGS), default="medium",
         help="how far the camera moves between frames: low = fewer frames, high = more (default medium)",
     )
-    parser.add_argument("--min-frames", type=int, default=keyframes.MIN_FRAMES, help="use closer spacing if fewer frames result (default %(default)s)")
-    parser.add_argument("--max-frames", type=int, default=keyframes.MAX_FRAMES, help="use wider spacing if more frames result (default %(default)s)")
-    parser.add_argument("--every", type=int, metavar="N", help="instead of by motion: the sharpest of every N video frames")
-
+    group.add_argument("--min-frames", type=int, default=keyframes.MIN_FRAMES, help="use closer spacing if fewer frames result (default %(default)s)")
+    group.add_argument("--max-frames", type=int, default=keyframes.MAX_FRAMES, help="use wider spacing if more frames result (default %(default)s)")
+    group.add_argument("--every", type=int, metavar="N", help="instead of by motion: the sharpest of every N video frames")
 
 
 def build_parser() -> argparse.ArgumentParser:

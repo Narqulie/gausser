@@ -24,9 +24,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
-import cv2
-import numpy as np
-
 from .scene import GausserError, run_tool
 
 ANALYSIS_EDGE = 1280  # long edge of the images scored for focus
@@ -85,6 +82,9 @@ def probe(ffprobe: str, video: Path, span: tuple[float, float] | None = None) ->
 
 def sharpness(grey: Any) -> float:
     """Focus score of a grey image: 0.5·log1p(Laplacian variance) + 0.5·log1p(Tenengrad), back through expm1."""
+    import cv2
+    import numpy as np
+
     smooth = cv2.GaussianBlur(grey, (5, 5), 1.0)
     laplacian = cv2.Laplacian(smooth, cv2.CV_32F)
     dx, dy = cv2.Sobel(smooth, cv2.CV_32F, 1, 0), cv2.Sobel(smooth, cv2.CV_32F, 0, 1)
@@ -96,6 +96,8 @@ class Ladder:
     """Point trackers with one threshold each, all fed by the same flow; see the module docstring."""
 
     def __init__(self, width: int, height: int, thresholds: tuple[float, ...], max_gap: int) -> None:
+        import numpy as np
+
         self.edge = max(width, height)
         step = max(1.0, self.edge * GRID_STEP)
         margin = self.edge * GRID_MARGIN
@@ -114,6 +116,9 @@ class Ladder:
 
     def update(self, frame: int, flow: Any, sharp: float) -> None:
         """Move the grids by the flow from the previous frame to this one (None for the first frame)."""
+        import cv2
+        import numpy as np
+
         count = len(self.thresholds)
         if flow is None:
             progress = np.zeros(count)
@@ -188,6 +193,9 @@ def analyse(
     ffmpeg: str, video: Path, info: VideoInfo, span: tuple[float, float] | None, every: int | None,
 ) -> list[list[Pick]]:
     """The picks of each level of LEVELS (one level when `every` is set: the sharpest of each `every` frames)."""
+    import cv2
+    import numpy as np
+
     scale = min(1.0, ANALYSIS_EDGE / max(info.width, info.height))
     width, height = max(2, round(info.width * scale)), max(2, round(info.height * scale))
     flow_scale = min(1.0, FLOW_EDGE / max(width, height))
@@ -231,6 +239,8 @@ def analyse(
 
 def hdr_lut(transfer: str) -> str:
     """A .cube 3D LUT from HDR signal (HLG or PQ, BT.2020 primaries) to SDR sRGB: reference white scaled to 1, highlights clipped."""
+    import numpy as np
+
     size = 65
     axis = np.linspace(0, 1, size)
     signal = np.stack(np.meshgrid(axis, axis, axis, indexing="ij"), axis=-1).reshape(-1, 3)[:, ::-1]  # red varies fastest
