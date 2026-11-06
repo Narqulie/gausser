@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "Photos or video in, Gaussian splats out"
 readme = "README.md"
 requires-python = ">=3.12"  # msplat ships only cp312/cp313 wheels
-dependencies = ["numpy>=1.26,<2", "Pillow>=12.3,<13", "questionary>=2,<3", "scipy>=1.13,<2"]  # numpy, Pillow: orbit and composite; scipy: align
+dependencies = ["numpy>=1.26,<2", "opencv-python>=4.10,<4.12", "Pillow>=12.3,<13", "questionary>=2,<3", "scipy>=1.13,<2"]  # numpy, Pillow: orbit and composite; scipy: align; opencv: frames
 
 [project.optional-dependencies]
 # SAM3 itself is installed separately at a pinned commit and patched for macOS (see README).
@@ -26,7 +26,7 @@ sam = [
     "torchvision>=0.25,<0.26",
 ]
 msplat = ["msplat==1.1.4", "Pillow>=12.3,<13"]
-dev = ["pytest>=8.0", "ruff>=0.15,<0.16", "mypy>=1.19,<2", "numpy>=1.26,<2", "Pillow>=12.3,<13", "scipy>=1.13,<2"]
+dev = ["pytest>=8.0", "ruff>=0.15,<0.16", "mypy>=1.19,<2", "numpy>=1.26,<2", "opencv-python>=4.10,<4.12", "Pillow>=12.3,<13", "scipy>=1.13,<2"]
 
 [project.scripts]
 gausser = "gausser.cli:main"

@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import pano, steps
+from . import keyframes, pano, steps
 from .scene import GausserError, Scene, is_image, registered_images
 
 STEPS = ("frames", "mask", "solve", "train", "lod")
@@ -82,6 +82,17 @@ def _add_lod_options(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--levels", default="100,50,25", help="percent of splats kept per level")
 
 
+def _add_frames_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--spacing", choices=list(keyframes.SPACINGS), default="medium",
+        help="how far the camera moves between frames: low = fewer frames, high = more (default medium)",
+    )
+    parser.add_argument("--min-frames", type=int, default=keyframes.MIN_FRAMES, help="use closer spacing if fewer frames result (default %(default)s)")
+    parser.add_argument("--max-frames", type=int, default=keyframes.MAX_FRAMES, help="use wider spacing if more frames result (default %(default)s)")
+    parser.add_argument("--every", type=int, metavar="N", help="instead of by motion: the sharpest of every N video frames")
+
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("-s", "--scene", type=Path, default=Path("."), help="scene folder (default: current folder)")
@@ -109,20 +120,21 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--prompt", help="SAM3 subject prompt; without it nothing is masked")
     run.add_argument("--lod", action="store_true", help="also build a streamed LOD set")
     run.add_argument("--from", dest="from_step", choices=STEPS, help="redo this step and every step after it")
-    for add in (_add_mask_options, _add_solve_options, _add_train_options, _add_lod_options):
+    for add in (_add_frames_options, _add_mask_options, _add_solve_options, _add_train_options, _add_lod_options):
         add(run)
     _add_no_masks_option(run)
 
     frames = commands.add_parser(
         "frames", parents=[working], help="select sharp video frames into images/",
-        description="Select sharp frames into images/. Extra arguments after -- go to sharp-frames.",
+        description="Select sharp frames into images/: one is picked wherever the camera has moved on, "
+        "so a walk-around gives enough overlapping frames without tuning. A folder of photos is used whole.",
     )
     frames.add_argument("source", type=Path, help="video file, or folder of videos or images")
     frames.add_argument(
         "--range", dest="ranges", action="append", type=_time_range, metavar="START-END",
         help="keep only this part of the video, in seconds or m:ss (repeatable), e.g. --range 1.5-32.5 --range 0:57-1:20",
     )
-    frames.add_argument("extra", nargs="*", help=argparse.SUPPRESS)  # after --, so --range may follow SOURCE
+    _add_frames_options(frames)
 
     mask = commands.add_parser("mask", parents=[working], help="mask the subject with SAM3")
     mask.add_argument("prompt", help='what to keep, e.g. "statue"')
@@ -290,7 +302,7 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
         scene.import_loose_photos()
     if args.video and due("frames", bool(scene.image_files())):
         with scene.step("frames", source=str(args.video)):
-            steps.frames(scene, args.video, [])
+            _frames(scene, args.video, None, args)
         ran("frames")
     images = scene.require_images()
     if args.prompt and due("mask", scene.masks_done(images)):
@@ -347,8 +359,8 @@ def status(scene: Scene) -> None:
             print(f"tmp     {size / 1e9:.1f} GB of failed attempts in {scene.tmp} (delete when nothing is running)")
     print("\nTools")
     tools = {
-        "sharp-frames": steps.SHARP_FRAMES_HINT,
-        "ffmpeg": "brew install ffmpeg",
+        "ffmpeg": steps.FFMPEG_HINT,
+        "ffprobe": steps.FFMPEG_HINT,
         "colmap": steps.COLMAP_HINT,
         "brush": steps.BRUSH_HINT,
         "splat-transform": steps.SPLAT_TRANSFORM_HINT,
@@ -500,13 +512,18 @@ def _time_range(text: str) -> tuple[float, float]:
     return span
 
 
+def _frames(scene: Scene, source: Path, ranges: list[tuple[float, float]] | None, args: argparse.Namespace) -> None:
+    if args.min_frames > args.max_frames or (args.every is not None and args.every < 1):
+        raise GausserError("--min-frames must not exceed --max-frames, and --every must be at least 1")
+    steps.frames(scene, source, ranges, spacing=args.spacing, min_frames=args.min_frames, max_frames=args.max_frames, every=args.every)
+
+
 def dispatch(scene: Scene, args: argparse.Namespace) -> None:
     if args.command == "run":
         run_pipeline(scene, args)
     elif args.command == "frames":
-        extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
         with scene.step("frames", source=str(args.source)):
-            steps.frames(scene, args.source, extra, args.ranges)
+            _frames(scene, args.source, args.ranges, args)
     elif args.command == "mask":
         with scene.step("mask", prompt=args.prompt, exclude=args.exclude):
             _mask(scene, args.prompt, args, args.exclude)

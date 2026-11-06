@@ -30,12 +30,11 @@ export function progress(
   const tool = command ? command[1].split(" ").slice(1, 3).map((part) => part.split("/").pop()).join(" ") : "";
 
   if (step === "frames") {
-    const tqdm = lastMatch(all, /([A-Za-z][\w ()-]*?):\s+\d+%\|.*?\|\s*(\d+)\/(\d+)/, since);
     const pano = lastMatch(all, /^\[(\d+)\/(\d+)\] 360° frame/, since);
     if (pano) return { phase: "rendering 360° views", done: num(pano[1]), total: num(pano[2]) };
-    if (tqdm) return { phase: tqdm[1].toLowerCase(), done: num(tqdm[2]), total: num(tqdm[3]) };
-    const status = lastMatch(all, /^(Extracting|Calculating|Selecting|Saving)[^.]*/);
-    return { phase: status ? status[0].toLowerCase() : "starting", done: null, total: null };
+    const latest = lastMatch(all, /^(analysed (\d+)\/(\d+) frames|Extracting|Selecting)[^.]*/);
+    if (latest?.[2]) return { phase: "analysing", done: num(latest[2]), total: num(latest[3]) };
+    return { phase: latest ? latest[0].toLowerCase() : "starting", done: null, total: null };
   }
   if (step === "mask") {
     const match = lastMatch(all, /^\[(\d+)\/(\d+)\]/);

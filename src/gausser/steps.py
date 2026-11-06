@@ -14,46 +14,51 @@ from typing import Any
 
 from PIL import Image
 
-from . import pano, qoocam
-from .scene import GausserError, Scene, is_image, registered_images, remove, replace, require_tool, run_tool
+from . import keyframes, pano, qoocam
+from .scene import GausserError, Scene, is_image, is_video, registered_images, remove, replace, require_tool, run_tool
 
 BRUSH_HINT = "build Brush (cargo build --release) and put `brush` on PATH"
 COLMAP_HINT = "brew install colmap"
-SHARP_FRAMES_HINT = "pip install sharp-frames && brew install ffmpeg"
+FFMPEG_HINT = "brew install ffmpeg (version 7 or newer)"
 SPLAT_TRANSFORM_HINT = "npm install -g @playcanvas/splat-transform"
 
 
-def frames(scene: Scene, source: Path, extra: list[str], ranges: list[tuple[float, float]] | None = None) -> int:
-    """Select sharp frames from a video (or image folder) into images/; `ranges` keeps only those seconds.
+def frames(
+    scene: Scene, source: Path, ranges: list[tuple[float, float]] | None = None, *, spacing: str = "medium",
+    min_frames: int = keyframes.MIN_FRAMES, max_frames: int = keyframes.MAX_FRAMES, every: int | None = None,
+) -> int:
+    """Select frames from a video (or a folder of videos) into images/; `ranges` keeps only those seconds.
 
-    360° frames go to panos/ instead, and images/ gets their pinhole views (pano.py): 2:1
-    equirectangular frames, or a QooCam 8K raw video's two fisheye images side by side, with
-    the camera's calibration in panos/lenses.json and the lens-circle masks in masks-exclude/.
-    A folder of QooCam 8K photos is used whole (every photo is a still): no Sharp Frames.
+    keyframes.py picks sharp frames where the camera has moved: one pass analyses the video, one
+    extracts the picked frames. A folder of photos is used whole. 360° frames go to panos/ instead,
+    and images/ gets their pinhole views (pano.py): 2:1 equirectangular frames, or a QooCam 8K raw
+    video's two fisheye images side by side, with the camera's calibration in panos/lenses.json and
+    the lens-circle masks in masks-exclude/.
     """
     source = source.expanduser().resolve()
     if not source.exists():
         raise GausserError(f"Source does not exist: {source}")
     staging = scene.staging("frames")
     staged = staging / "images"
+    staged.mkdir()
     photos = sorted(path for path in source.iterdir() if is_image(path)) if source.is_dir() else []
-    rig = qoocam.calibration(photos[0] if photos else source)
-    if photos and rig:
-        if ranges:
-            raise GausserError("--range needs a video file")
-        staged.mkdir()
+    videos = sorted(path for path in source.iterdir() if is_video(path)) if source.is_dir() else [source]
+    if ranges and not source.is_file():
+        raise GausserError("--range needs a video file")
+    if photos and videos and source.is_dir():
+        raise GausserError(f"{source} has both photos and videos; use a folder of one kind")
+    rig = qoocam.calibration(photos[0] if photos else videos[0]) if photos or videos else None
+    if photos:
         for photo in photos:
-            qoocam.side_by_side(photo, staged / f"{photo.stem}.jpg")
-    else:
-        tool = require_tool("sharp-frames", SHARP_FRAMES_HINT)
-        if rig or ranges:
-            if not source.is_file():
-                raise GausserError("--range needs a video file")
-            source = _cut(source, staging / "videos", ranges or [], fisheyes=rig is not None)
-        run_tool([tool, str(source), str(staged), "--force-overwrite", *extra], cwd=scene.root)
-    count = sum(1 for path in staged.iterdir() if is_image(path)) if staged.is_dir() else 0
+            if rig:
+                qoocam.side_by_side(photo, staged / f"{photo.stem}.jpg")
+            else:
+                shutil.copy2(photo, staged / photo.name)
+    elif videos:
+        _select_frames(videos, ranges, staging, staged, rig, spacing, min_frames, max_frames, every)
+    count = sum(1 for path in staged.iterdir() if is_image(path))
     if count == 0:
-        raise GausserError("Sharp Frames selected no images")
+        raise GausserError(f"No photos or videos in {source}")
     panos = sorted(path for path in staged.iterdir() if is_image(path))
     keep = staging / "keep"
     if rig or pano.is_pano(panos[0]):
@@ -78,23 +83,42 @@ def frames(scene: Scene, source: Path, extra: list[str], ranges: list[tuple[floa
     return count
 
 
-def _cut(source: Path, out: Path, ranges: list[tuple[float, float]], fisheyes: bool) -> Path:
-    """Re-encode `ranges` of `source` (all of it if none) as videos in `out`, the two lens streams side by side."""
-    ffmpeg = require_tool("ffmpeg", SHARP_FRAMES_HINT)
-    out.mkdir()
-    if sys.platform == "darwin":
-        encode = ["-c:v", "hevc_videotoolbox", "-q:v", "80", "-tag:v", "hvc1"]
-    else:
-        encode = ["-c:v", "libx264", "-crf", "16"]
-    for index, span in enumerate(ranges or [None], start=1):
-        command = [ffmpeg, "-hide_banner", "-y"]
-        if span:
-            command += ["-ss", f"{span[0]:g}", "-to", f"{span[1]:g}"]
-        command += ["-i", str(source)]
-        # QooCam lens streams are stored mirrored (qoocam.py): vflip un-mirrors each one.
-        command += ["-filter_complex", "[0:0]vflip[a];[0:1]vflip[b];[a][b]hstack"] if fisheyes else ["-map", "0:v:0"]
-        run_tool([*command, "-an", *encode, str(out / f"part{index}.mp4")], cwd=out)
-    return out
+def _select_frames(
+    videos: list[Path], ranges: list[tuple[float, float]] | None, staging: Path, staged: Path, rig: dict[str, Any] | None,
+    spacing: str, min_frames: int, max_frames: int, every: int | None,
+) -> None:
+    """Analyse every part (video or range), choose one level for all of them, extract into `staged` with frames.json."""
+    ffmpeg, ffprobe = require_tool("ffmpeg", FFMPEG_HINT), require_tool("ffprobe", FFMPEG_HINT)
+    spans = ranges or [None]  # type: ignore[list-item]
+    parts = [(video, span) for video in videos for span in spans]
+    infos, analysed = [], []
+    for number, (video, span) in enumerate(parts, start=1):
+        print(f"== {video.name}" + (f" {span[0]:g}-{span[1]:g} s" if span else "") + f" ({number}/{len(parts)})", flush=True)
+        infos.append(keyframes.probe(ffprobe, video, span))
+        analysed.append(keyframes.analyse(ffmpeg, video, infos[-1], span, every))
+    counts = [sum(len(part[level]) for part in analysed) for level in range(len(analysed[0]))]
+    level = keyframes.choose(counts, keyframes.SPACINGS[spacing], min_frames, max_frames) if not every else 0
+    note = f"every {every} frames" if every else f"level {level} of {len(counts) - 1} (spacing {spacing}); frames per level {counts}"
+    print(f"Selecting {counts[level]} frames: {note}", flush=True)
+    if counts[level] < min_frames and not every:
+        print(f"warning: fewer than --min-frames {min_frames}; the video is short or hardly moves", flush=True)
+    items = []
+    for number, ((video, span), info, levels) in enumerate(zip(parts, infos, analysed, strict=True), start=1):
+        picks = levels[level]
+        if not picks:
+            continue
+        print(f"Extracting {len(picks)} frames from {video.name}", flush=True)
+        prefix = f"p{number:02d}_" if len(parts) > 1 else ""
+        paths = keyframes.extract(ffmpeg, video, info, span, [p.frame for p in picks], staging / f"extract{number}", rig is not None)
+        for path, pick in zip(paths, picks, strict=True):
+            name = f"{prefix}frame_{pick.frame:06d}.jpg"
+            path.rename(staged / name)
+            items.append({
+                "name": name, "source": video.name, "frame": pick.frame, "time": round((span[0] if span else 0) + pick.frame / info.fps, 3),
+                "motion": round(pick.motion, 4), "sharpness": round(pick.sharpness, 1),
+            })
+    record = {"method": f"every {every}" if every else "motion", "level": level, "per_level": counts, "analysed": sum(i.frames for i in infos), "total_selected": len(items), "items": items}
+    (staged / "frames.json").write_text(json.dumps(record, indent=1))
 
 
 def _write_keep_masks(views: Path, out: Path, keep: list[Any]) -> None:
@@ -333,7 +357,7 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         # Training on a fraction of the cameras wastes the run; stop `gausser run` here.
         raise GausserError(
             f"COLMAP placed only {registered} of {len(images)} images. Use more photos with more overlap "
-            "(from a video: `gausser frames VIDEO -- --fps 20 --min-buffer 1`), "
+            "(from a video: `gausser frames VIDEO --spacing high`), "
             "or run `gausser train` to train on these anyway"
         )
 

@@ -97,12 +97,12 @@ export interface ImageInfo {
 }
 
 export interface FramesMeta {
-  input_path: string;
+  method: string; // "motion" or "every N"
+  level: number;
+  per_level: number[];
+  analysed: number;
   total_selected: number;
-  selection_method: string;
-  num_frames_requested: number;
-  min_buffer: number;
-  selected_items: { output_filename: string; original_index: number; sharpness_score: number }[];
+  items: { name: string; source: string; frame: number; time: number; motion: number; sharpness: number }[];
 }
 
 export interface LogChunk {

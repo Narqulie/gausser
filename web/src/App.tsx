@@ -191,8 +191,8 @@ export function stepMetric(step: Step, state: State): [string, string] {
   switch (step) {
     case "frames":
       if (images.panos) return [plural(images.panos, "panorama"), `${images.count.toLocaleString()} views`];
-      if (!images.count) return [images.loose ? plural(images.loose, "loose photo") : "no images", "sharp-frames"];
-      return [plural(images.count, "image"), images.size ? `${images.size[0]}×${images.size[1]}` : "sharp-frames"];
+      if (!images.count) return [images.loose ? plural(images.loose, "loose photo") : "no images", "ffmpeg"];
+      return [plural(images.count, "image"), images.size ? `${images.size[0]}×${images.size[1]}` : "ffmpeg"];
     case "mask":
       if (masks.count) return [`${masks.count.toLocaleString()} / ${images.count.toLocaleString()}`, "sam3"];
       return [masks.exclude ? plural(masks.exclude, "exclusion mask") : "not masked", "sam3"];

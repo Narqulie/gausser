@@ -47,7 +47,6 @@ export function Stats({ state }: { state: State }) {
   const trainRun = lastOf(state, "train");
   const maskRun = lastOf(state, "mask");
   const solveRun = lastOf(state, "solve");
-  const framesRun = lastOf(state, "frames");
   const trainRuns = useMemo(() => [...state.history].reverse().filter((r) => r.step === "train" && r.log), [state.history]);
   const [picks, setPicks] = useState<string[] | null>(null);
   const picked = picks ?? trainRuns.slice(0, 1).map((r) => r.log);
@@ -58,17 +57,9 @@ export function Stats({ state }: { state: State }) {
   });
   const maskLog = useLog(maskRun?.log ?? null, following("mask"));
   const solveLog = useLog(solveRun?.log ?? null, following("solve"));
-  const framesLog = useLog(framesRun?.log ?? null, false);
 
   const scores = useMemo(() => maskScores(maskLog.lines), [maskLog.lines]);
   const solve = useMemo(() => solveStats(solveLog.lines), [solveLog.lines]);
-  const extracted = useMemo(() => {
-    for (const line of framesLog.lines) {
-      const match = line.match(/Extracted (\d+) frames/);
-      if (match) return Number(match[1]);
-    }
-    return null;
-  }, [framesLog.lines]);
   const cameras = useMemo(() => new Map(model?.cameras.map((c) => [c.name, c]) ?? []), [model]);
 
   const timings = state.history.filter((r) => r.end !== undefined || following(r.step)).slice(-40).map((r) => ({
@@ -113,17 +104,17 @@ export function Stats({ state }: { state: State }) {
 
       {frames && (
         <section className="chart">
-          <h2>Frames sharp-frames chose</h2>
+          <h2>Frames chosen from the video</h2>
           <p>
-            {frames.total_selected} of {extracted ?? "?"} extracted frames, {frames.selection_method}, at least {frames.min_buffer} apart. Sharpness by position in the video.
+            {frames.total_selected} of {frames.analysed} frames ({frames.method}{frames.per_level.length > 1 ? `, level ${frames.level} of ${frames.per_level.length - 1}` : ""}). Sharpness by time in the video.
           </p>
           <ResponsiveContainer width="100%" height={220}>
             <ScatterChart margin={{ right: 20 }}>
               {GRID}
-              <XAxis type="number" dataKey="original_index" name="source frame" {...AXIS} />
-              <YAxis type="number" dataKey="sharpness_score" name="sharpness" {...AXIS} />
+              <XAxis type="number" dataKey="time" name="seconds" {...AXIS} />
+              <YAxis type="number" dataKey="sharpness" name="sharpness" {...AXIS} />
               <Tooltip {...TOOLTIP} />
-              <Scatter data={frames.selected_items} fill="#fede5d" />
+              <Scatter data={frames.items} fill="#fede5d" />
             </ScatterChart>
           </ResponsiveContainer>
         </section>

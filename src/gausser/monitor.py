@@ -532,9 +532,9 @@ def make_handler(app: Monitor) -> type[SimpleHTTPRequestHandler]:
                 self.json(state(scene))
             elif route == "images":
                 self.json(app.images(scene))
-            elif route == "frames":  # Sharp Frames' record of the frames it chose
+            elif route == "frames":  # frames.json: the frames `gausser frames` chose
                 folder = scene.panos if scene.is_pano() else scene.images
-                self.json(_read_json(folder / "selected_metadata.json"))
+                self.json(_read_json(folder / "frames.json"))
             elif route == "model":
                 self.send(app.model(scene, query.get("path", "sparse/0")), "application/json")
             elif route == "evals":

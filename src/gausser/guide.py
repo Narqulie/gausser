@@ -8,9 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .scene import GausserError, Scene, registered_images
-
-VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm"})
+from .scene import VIDEO_EXTENSIONS, GausserError, Scene, registered_images
 
 
 def open_target(target: Path) -> tuple[Scene, Path | None, bool]:

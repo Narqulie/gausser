@@ -14,7 +14,7 @@ from PIL import Image
 
 import gausser.scene
 
-from gausser import cli, monitor, msplat, pano, qoocam, steps
+from gausser import cli, keyframes, monitor, msplat, pano, qoocam, steps
 from gausser.scene import GausserError, Scene, registered_images, run_tool
 
 
@@ -147,7 +147,7 @@ def test_solve_no_masks_ignores_existing_colmap_masks(tmp_path, tools):
 def test_solve_gives_colmap_only_the_real_images_not_appledouble_sidecars(tmp_path, tools):
     scene = make_scene(tmp_path)
     (scene.images / "._img0.jpg").write_bytes(b"junk")
-    (scene.images / "._selected_metadata.json").write_bytes(b"junk")
+    (scene.images / "._frames.json").write_bytes(b"junk")
     listed: list[str] = []
 
     def fake_colmap(command):
@@ -200,13 +200,10 @@ def test_new_frames_clear_everything_built_from_the_old_images(tmp_path, tools):
     scene.database.write_bytes(b"db")
     (scene.runs / "brush" / "old").mkdir(parents=True)
 
-    def fake_sharp_frames(command):
-        output = Path(command[2])
-        output.mkdir(parents=True)
-        Image.new("RGB", (40, 30)).save(output / "frame1.jpg")
-
-    tools.on_run(fake_sharp_frames)
-    steps.frames(scene, tmp_path / "images", [])
+    photos = tmp_path / "photos"
+    photos.mkdir()
+    Image.new("RGB", (40, 30)).save(photos / "frame1.jpg")
+    steps.frames(scene, photos)
 
     assert [path.name for path in scene.image_files()] == ["frame1.jpg"]
     assert not scene.masks.exists() and not scene.colmap_masks.exists()
@@ -220,11 +217,7 @@ def test_360_frames_become_rig_views_that_colmap_solves_as_one_rig(tmp_path, too
     rig_names: list[set[str]] = []
 
     def fake_tools(command):
-        if command[0] == "sharp-frames":
-            Path(command[2]).mkdir(parents=True)
-            for name in ("a", "b"):
-                Image.new("RGB", (64, 32)).save(Path(command[2]) / f"{name}.jpg")
-        elif command[1] == "feature_extractor":
+        if command[1] == "feature_extractor":
             with sqlite3.connect(command[command.index("--database_path") + 1]) as db:
                 db.execute("CREATE TABLE cameras (camera_id, model, width, height, params, prior_focal_length)")
                 db.execute("INSERT INTO cameras VALUES (1, 0, 16, 16, x'00', 1)")
@@ -241,8 +234,11 @@ def test_360_frames_become_rig_views_that_colmap_solves_as_one_rig(tmp_path, too
             copy_model(command)
 
     tools.on_run(fake_tools)
-    (tmp_path / "clip.mp4").write_bytes(b"mp4")
-    steps.frames(scene, tmp_path / "clip.mp4", [])
+    pano_photos = tmp_path / "panos-in"
+    pano_photos.mkdir()
+    for name in ("a", "b"):
+        Image.new("RGB", (64, 32)).save(pano_photos / f"{name}.jpg")
+    steps.frames(scene, pano_photos)
     assert sorted(p.name for p in scene.panos.iterdir()) == ["a.jpg", "b.jpg"]
     assert len(scene.image_files()) == 2 * pano.VIEWS and not scene.masks_exclude.exists()
     scene.masks_exclude.mkdir()
@@ -278,9 +274,9 @@ def _qoocam_file(path: Path) -> None:
     path.write_bytes(struct.pack(">I4s", 16, b"ftyp") + b"qt  \0\0\0\0" + struct.pack(">I4s", 8 + len(kfix), b"kfix") + kfix)
 
 
-def test_frames_takes_ranges_after_the_source_and_sharp_frames_options_after_dashes():
-    args = cli.build_parser().parse_args(["frames", "clip.MOV", "--range", "1.5-32.5", "--range", "0:57-1:20", "--", "--fps", "10"])
-    assert args.ranges == [(1.5, 32.5), (57.0, 80.0)] and args.extra == ["--fps", "10"]
+def test_frames_takes_ranges_and_spacing_options():
+    args = cli.build_parser().parse_args(["frames", "clip.MOV", "--range", "1.5-32.5", "--range", "0:57-1:20", "--spacing", "high", "--max-frames", "300"])
+    assert args.ranges == [(1.5, 32.5), (57.0, 80.0)] and args.spacing == "high" and args.max_frames == 300
 
 
 def test_qoocam_photos_are_used_whole_with_lens_0_above_lens_1(tmp_path, tools):
@@ -292,9 +288,9 @@ def test_qoocam_photos_are_used_whole_with_lens_0_above_lens_1(tmp_path, tools):
         image = Image.new("RGB", (64, 128), "red")
         image.paste((0, 0, 255), (0, 64, 64, 128))  # lens 1 below
         image.save(photos / f"{name}.JPG", exif=b"Exif\0\0" + b"PRODUCT=QOOCAM 8K LENS=" + _qoocam_lens())
-    steps.frames(scene, photos, [])
+    steps.frames(scene, photos)
 
-    assert not tools.commands  # no Sharp Frames: every photo is kept
+    assert not tools.commands  # every photo is kept
     assert pano.lenses(scene.panos) == qoocam.calibration(photos / "Q360_1.JPG") is not None
     with Image.open(scene.panos / "Q360_1.jpg") as frame:
         left, right = frame.crop((0, 0, 64, 64)).resize((1, 1)), frame.crop((64, 0, 128, 64)).resize((1, 1))
@@ -303,18 +299,22 @@ def test_qoocam_photos_are_used_whole_with_lens_0_above_lens_1(tmp_path, tools):
     assert len(scene.image_files()) == 2 * pano.VIEWS
 
 
-def test_qoocam_video_becomes_per_lens_views_solved_as_a_calibrated_two_lens_rig(tmp_path, tools):
+def test_qoocam_video_becomes_per_lens_views_solved_as_a_calibrated_two_lens_rig(tmp_path, tools, monkeypatch):
     scene = Scene(tmp_path)
     rig_config: list = []
+    ffmpeg_commands: list[list[str]] = []
+
+    def fake_ffmpeg(command, *, cwd):
+        ffmpeg_commands.append([*command, (cwd / "graph.txt").read_text()])
+        for index in range(2):  # two 64-pixel lens images side by side
+            Image.new("RGB", (128, 64), "white").save(cwd / f"{index:07d}.jpg")
+
+    monkeypatch.setattr(keyframes, "run_tool", fake_ffmpeg)
+    monkeypatch.setattr(keyframes, "probe", lambda ffprobe, video, span: keyframes.VideoInfo(3840, 3840, 30.0, 100, "bt709"))
+    monkeypatch.setattr(keyframes, "analyse", lambda *args: [[keyframes.Pick(5, 0.1, 9.0), keyframes.Pick(40, 0.1, 9.0)]] * len(keyframes.LEVELS))
 
     def fake_tools(command):
-        if command[0] == "ffmpeg":
-            Path(command[-1]).write_bytes(b"mp4")
-        elif command[0] == "sharp-frames":
-            Path(command[2]).mkdir(parents=True)
-            for name in ("a", "b"):  # two 64-pixel lens images side by side
-                Image.new("RGB", (128, 64), "white").save(Path(command[2]) / f"{name}.jpg")
-        elif command[1] == "feature_extractor":
+        if command[1] == "feature_extractor":
             with sqlite3.connect(command[command.index("--database_path") + 1]) as db:
                 db.execute("CREATE TABLE cameras (camera_id, model, width, height, params, prior_focal_length)")
                 db.execute("INSERT INTO cameras VALUES (1, 0, 32, 32, x'00', 1)")
@@ -331,17 +331,19 @@ def test_qoocam_video_becomes_per_lens_views_solved_as_a_calibrated_two_lens_rig
     tools.on_run(fake_tools)
     _qoocam_file(tmp_path / "Q360.MOV")
     rig = qoocam.calibration(tmp_path / "Q360.MOV")
-    steps.frames(scene, tmp_path / "Q360.MOV", [], [(1.5, 32.5), (57.0, 80.0)])
+    steps.frames(scene, tmp_path / "Q360.MOV", [(1.5, 32.5), (57.0, 80.0)])
 
-    cuts = [c for c in tools.commands if c[0] == "ffmpeg"]
+    cuts = ffmpeg_commands
     assert [c[c.index("-ss") + 1 : c.index("-to") + 2] for c in cuts] == [["1.5", "-to", "32.5"], ["57", "-to", "80"]]
-    assert all("[0:0]vflip[a];[0:1]vflip[b];[a][b]hstack" in c for c in cuts)  # stored lens images are mirrored
+    # stored lens images are mirrored; both lenses select the same frame numbers
+    assert all("[0:0]select='(eq(n,5)+eq(n,40))',vflip[a];[0:1]select='(eq(n,5)+eq(n,40))',vflip[b];[a][b]hstack[out]" in c[-1] for c in cuts)
+    assert sorted(p.name for p in scene.panos.glob("*.jpg")) == ["p01_frame_000005.jpg", "p01_frame_000040.jpg", "p02_frame_000005.jpg", "p02_frame_000040.jpg"]
     rig = pano.lenses(scene.panos)
     assert rig is not None and rig["camera"] == "QooCam 8K"
-    assert len(scene.image_files()) == 2 * pano.VIEWS
+    assert len(scene.image_files()) == 4 * pano.VIEWS  # 2 parts × 2 frames
     keep = sorted(scene.masks_exclude.glob("*.png"))
-    assert len(keep) == 2 * pano.VIEWS  # lens circle and grip, so Brush and COLMAP skip them
-    with Image.open(scene.masks_exclude / "c01_a.png") as mask:  # tilted toward the grip
+    assert len(keep) == 4 * pano.VIEWS  # lens circle and grip, so Brush and COLMAP skip them
+    with Image.open(scene.masks_exclude / "c01_p01_frame_000005.png") as mask:  # tilted toward the grip
         black, _ = mask.convert("L").getextrema()
         histogram = mask.convert("L").histogram()
     assert black == 0 and 0 < histogram[0] < 32 * 32

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, TextIO, cast
 
 IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"})
+VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm"})
 
 
 class GausserError(Exception):
@@ -35,6 +36,10 @@ class GausserError(Exception):
 def is_image(path: Path) -> bool:
     # "._name" files are macOS AppleDouble sidecars, not images.
     return path.is_file() and not path.name.startswith("._") and path.suffix.lower() in IMAGE_EXTENSIONS
+
+
+def is_video(path: Path) -> bool:
+    return path.is_file() and not path.name.startswith("._") and path.suffix.lower() in VIDEO_EXTENSIONS
 
 
 def timestamp() -> str:
