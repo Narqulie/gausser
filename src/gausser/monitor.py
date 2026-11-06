@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import webbrowser
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +35,7 @@ WEB_HINT = "cd web && npm ci && npm run build (in the gausser repository), or re
 PORT = 8737  # one monitor serves every scene, so its address stays the same
 IDLE_SECONDS = 600  # a spawned monitor quits after this long without a page polling it and nothing running
 MAX_POINTS = 200_000
+CACHE_BYTES = 512 << 20  # thumbnails and model JSON kept in memory; the oldest go when this is exceeded
 # Parameter counts of COLMAP camera models by model id, and the index of fy (else fy = fx).
 CAMERA_PARAMS = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 8, 6: 12, 7: 5, 8: 4, 9: 5, 10: 12, 11: 16}
 FY_INDEX = {1: 1, 4: 1, 5: 1, 6: 1, 10: 1, 11: 1}
@@ -66,12 +68,36 @@ def _read_json(path: Path) -> Any:
         return None
 
 
+_genuine: dict[tuple[int, float], bool] = {}
+
+
+def _running(info: Any) -> bool:
+    """``info`` names a live process (pid) that had started by ``info["start"]``.
+
+    After a reboot the pid in an old lock or monitor.json may belong to an unrelated process; that one
+    started after the record was written.
+    """
+    if not (isinstance(info, dict) and isinstance(info.get("pid"), int) and _alive(info["pid"])):
+        return False
+    pid, start = info["pid"], info.get("start")
+    if not isinstance(start, (int, float)):
+        return True  # written by an older gausser
+    if (pid, start) not in _genuine:
+        out = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"},
+        ).stdout.strip()
+        try:
+            began = time.mktime(time.strptime(out, "%a %b %d %H:%M:%S %Y"))
+        except ValueError:
+            began = start  # unreadable: trust the pid
+        _genuine[(pid, start)] = began <= start + 1  # ps shows whole seconds
+    return _genuine[(pid, start)]
+
+
 def holder(scene: Scene) -> dict[str, Any] | None:
     """The command holding the scene lock, if it is still running."""
     info = _read_json(scene.root / ".gausser" / "lock")
-    if isinstance(info, dict) and isinstance(info.get("pid"), int) and _alive(info["pid"]):
-        return info
-    return None
+    return info if _running(info) else None
 
 
 def legacy_step(scene: Scene) -> dict[str, Any] | None:
@@ -362,7 +388,8 @@ def summary(root: str, last: float) -> dict[str, Any]:
 
 
 def looks_like_scene(scene: Scene) -> bool:
-    return any(p.exists() for p in (scene.images, scene.panos, scene.root / ".gausser")) or bool(scene.loose_photos())
+    """A folder gausser has worked on, or laid out as a scene; not any folder that holds photos."""
+    return any(p.exists() for p in (scene.images, scene.panos, scene.root / ".gausser")) or str(scene.root) in known_scenes()
 
 
 class Monitor:
@@ -370,13 +397,26 @@ class Monitor:
 
     def __init__(self) -> None:
         self.last_request = time.time()
-        self.cache: dict[Any, Any] = {}
+        self.cache: OrderedDict[Any, Any] = OrderedDict()  # least recently used first
+        self.cache_bytes = 0
+        self.cache_lock = threading.Lock()
         self.pool = ThreadPoolExecutor(8)
 
     def cached(self, key: Any, make: Any) -> Any:
-        if key not in self.cache:
-            self.cache[key] = make()
-        return self.cache[key]
+        """``make()`` once per key; a monitor runs for days, so the cache is bounded by CACHE_BYTES."""
+        with self.cache_lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+                return self.cache[key]
+        value = make()
+        with self.cache_lock:
+            if key not in self.cache:
+                self.cache[key] = value
+                self.cache_bytes += _weight(value)
+            while self.cache_bytes > CACHE_BYTES and len(self.cache) > 1:
+                _, old = self.cache.popitem(last=False)
+                self.cache_bytes -= _weight(old)
+        return value
 
     def scene(self, root: str | None) -> Scene:
         """Only scenes in the index are served."""
@@ -452,6 +492,10 @@ class Monitor:
         }
 
 
+def _weight(value: Any) -> int:
+    return len(value) if isinstance(value, bytes) else 1024  # image stats and PSNR values are small dicts
+
+
 def make_handler(app: Monitor) -> type[SimpleHTTPRequestHandler]:
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -466,12 +510,16 @@ def make_handler(app: Monitor) -> type[SimpleHTTPRequestHandler]:
             query = {key: values[-1] for key, values in parse_qs(url.query).items()}
             try:
                 self.api(url.path[5:], query)
-            except (FileNotFoundError, NotADirectoryError):
-                self.send_error(404)
-            except PermissionError:
-                self.send_error(403)
             except ConnectionError:
                 pass
+            except PermissionError:
+                self.send_error(403)
+            except OSError:  # missing file, or a folder where a file was asked for
+                self.send_error(404)
+            except (KeyError, ValueError):  # a parameter is missing or malformed
+                self.send_error(400)
+            except GausserError as exc:  # e.g. two images share a stem
+                self.send_error(500, str(exc))
 
         def api(self, route: str, query: dict[str, str]) -> None:
             if route == "scenes":
@@ -541,9 +589,7 @@ def _info_path() -> Path:
 def running_monitor() -> str | None:
     """The URL of the monitor that is running, if any."""
     info = _read_json(_info_path())
-    if isinstance(info, dict) and isinstance(info.get("pid"), int) and _alive(info["pid"]):
-        return str(info["url"])
-    return None
+    return str(info["url"]) if _running(info) else None
 
 
 def scene_url(base: str, scene: Scene | None) -> str:
@@ -578,7 +624,7 @@ def monitor(scene: Scene | None, *, port: int = PORT, open_browser: bool = True,
     with server:
         url = f"http://127.0.0.1:{server.server_address[1]}/"
         info.parent.mkdir(parents=True, exist_ok=True)
-        info.write_text(json.dumps({"pid": os.getpid(), "url": url}))
+        info.write_text(json.dumps({"pid": os.getpid(), "url": url, "start": time.time()}))
         print(f"Monitor: {scene_url(url, scene)}\nAll scenes: {url}\nCtrl+C to stop", flush=True)
         if open_browser:
             webbrowser.open(scene_url(url, scene))
@@ -604,6 +650,7 @@ def monitor(scene: Scene | None, *, port: int = PORT, open_browser: bool = True,
 
 def spawn(scene: Scene) -> None:
     """Show the scene in the running monitor, or start one in the background that quits once its pages are closed."""
+    index(scene, {"opened": time.time()})  # a command is about to work on it, even if it only has loose photos yet
     if running_monitor():
         monitor(scene)
         return

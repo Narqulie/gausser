@@ -31,7 +31,7 @@ export function progress(
 
   if (step === "frames") {
     const tqdm = lastMatch(all, /([A-Za-z][\w ()-]*?):\s+\d+%\|.*?\|\s*(\d+)\/(\d+)/, since);
-    const pano = lastMatch(all, /^\[(\d+)\/(\d+)\] panorama/, since);
+    const pano = lastMatch(all, /^\[(\d+)\/(\d+)\] 360° frame/, since);
     if (pano) return { phase: "rendering 360° views", done: num(pano[1]), total: num(pano[2]) };
     if (tqdm) return { phase: tqdm[1].toLowerCase(), done: num(tqdm[2]), total: num(tqdm[3]) };
     const status = lastMatch(all, /^(Extracting|Calculating|Selecting|Saving)[^.]*/);

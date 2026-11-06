@@ -5,11 +5,14 @@ import os
 import sqlite3
 import struct
 import sys
+import time
 import types
 from pathlib import Path
 
 import pytest
 from PIL import Image
+
+import gausser.scene
 
 from gausser import cli, monitor, msplat, pano, qoocam, steps
 from gausser.scene import GausserError, Scene, registered_images, run_tool
@@ -974,6 +977,64 @@ def test_monitor_cleans_terminal_output_and_serves_only_the_scene(tmp_path):
         monitor.Monitor().path(scene, "../../etc/passwd")
     with pytest.raises(FileNotFoundError):  # only scenes in the index are served
         monitor.Monitor().scene("/etc")
+
+
+def test_monitor_api_answers_bad_requests_with_status_codes(tmp_path):
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.error import HTTPError
+    from urllib.parse import quote
+    from urllib.request import urlopen
+
+    scene = make_scene(tmp_path)
+    monitor.register(scene)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), monitor.make_handler(monitor.Monitor()))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}/api/"
+
+    def status(route: str) -> int:
+        try:
+            with urlopen(base + route) as response:
+                return int(response.status)
+        except HTTPError as error:
+            return error.code
+
+    try:
+        s = quote(str(scene.root))
+        assert status(f"state?scene={s}") == 200
+        assert status("state?scene=/nope") == 404
+        assert status(f"log?scene={s}&name=none.log") == 404
+        assert status(f"log?scene={s}&name=none.log&offset=abc") == 400  # malformed before missing
+        assert status(f"evals?scene={s}") == 400  # run= missing
+        assert status(f"thumb?scene={s}&path=../outside.jpg") == 403
+    finally:
+        server.shutdown()
+
+
+def test_monitor_ignores_a_lock_whose_pid_was_reused_after_a_reboot(tmp_path):
+    scene = Scene(tmp_path)
+    (scene.root / ".gausser").mkdir()
+    lock = scene.root / ".gausser" / "lock"
+    lock.write_text(json.dumps({"pid": os.getpid(), "argv": ["train"], "start": 1_000_000.0}))  # 1970: before this process
+    assert monitor.holder(scene) is None
+    lock.write_text(json.dumps({"pid": os.getpid(), "argv": ["train"], "start": time.time()}))
+    assert monitor.holder(scene)
+
+
+def test_monitor_does_not_index_a_folder_that_only_holds_photos(tmp_path):
+    Image.new("RGB", (8, 8)).save(tmp_path / "photo.jpg")
+    assert monitor.register(Scene(tmp_path)) is None and not monitor.known_scenes()
+    gausser.scene.index(Scene(tmp_path), {"opened": 1.0})  # what `--monitor` does before the command imports the photos
+    assert monitor.register(Scene(tmp_path))
+
+
+def test_monitor_cache_drops_the_oldest_entries_past_its_byte_budget(monkeypatch):
+    monkeypatch.setattr(monitor, "CACHE_BYTES", 10)
+    app = monitor.Monitor()
+    assert app.cached("a", lambda: b"12345678") == b"12345678"
+    app.cached("b", lambda: b"12345678")
+    assert list(app.cache) == ["b"] and app.cache_bytes == 8
+    assert app.cached("b", lambda: b"x") == b"12345678"  # a hit never calls make()
 
 
 def test_the_index_lists_every_scene_with_its_runs_and_eval_renders(tmp_path):
