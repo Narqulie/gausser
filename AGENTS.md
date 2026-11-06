@@ -17,7 +17,8 @@ commands were removed on 2026-10-19 (branch `simplify`); git history has them.
 src/gausser/
 ├── cli.py     argparse subcommands, `run` pipeline, `status`, `gausser [PATH]` routing
 ├── guide.py   scene-aware guided menu: summary, recommended next step, minimal questions
-├── steps.py   frames (sharp-frames), mask, solve (COLMAP), subset (colmap image_deleter + filtered database), train_brush, lod (splat-transform)
+├── keyframes.py frames: one ffmpeg analysis pass (focus + DIS optical flow, tracked grid, ladder of thresholds) picks frame numbers, one pass extracts them
+├── steps.py   frames (calls keyframes), mask, solve (COLMAP), subset (colmap image_deleter + filtered database), train_brush, lod (splat-transform)
 ├── sam.py     SAM3 predictor + mask writers; imported only by `mask` (needs torch)
 ├── pano.py    360° frames: 14 pinhole views per equirect (pycolmap.panorama's 12 + zenith/nadir) or per dual fisheye (7 per lens), partition masks, COLMAP rig
 ├── qoocam.py  QooCam 8K raw .MOV: reads the kfix LENS calibration into panos/lenses.json form
@@ -47,6 +48,10 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + rec
 - `--no-masks` (`run`, `solve`, `train`) ignores existing masks: no COLMAP `mask_path`, no `masks` link in
   Brush's staging folder, no Msplat compositing. `mask --miss drop` writes a black Brush mask and a white
   COLMAP mask for an image SAM3 misses (default `keep`: white in both).
+- `frames` (keyframes.py): the analysis and extraction ffmpeg passes use the same input options (`-ss/-to`, `-i`,
+  autorotate, `-fps_mode passthrough`), so the `select` frame numbers match; a test checks this against pixel
+  content. Frame names are `frame_<n>.jpg` (n relative to the range start; `pNN_` prefix with several parts).
+  The ffmpeg filter graph is read from a file (`-/filter_complex`, ffmpeg ≥ 7). No hwaccel: it gave no speedup.
 - Explicit step commands always run. Only `run` skips steps.
 - Entry: `gausser`, `gausser FOLDER` or `gausser VIDEO` (one argument that isn't a
   command and that exists or looks like a path) opens `guide.guided` in a terminal.

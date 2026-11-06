@@ -60,7 +60,7 @@ LOD set.
 
 | Command | Does | Writes |
 |---|---|---|
-| `gausser frames SOURCE [--range START-END] [-- args]` | Sharp Frames picks sharp frames from a video; 360° frames (equirect, or a QooCam 8K raw video) become 14 views each | `images/` (and `panos/`) |
+| `gausser frames SOURCE [--range START-END] [--spacing low\|medium\|high] [--min-frames N] [--max-frames N] [--every N]` | Picks sharp frames from a video wherever the camera has moved on; 360° frames (equirect, or a QooCam 8K raw video) become 14 views each | `images/` (and `panos/`, `frames.json`) |
 | `gausser mask PROMPT [--miss drop]` | SAM3 masks the subject | `masks/`, `colmap/masks/` |
 | `gausser mask PROMPT --exclude [--dilation N]` | SAM3 blacks out every instance of PROMPT (e.g. people), except inside `masks/` | `masks-exclude/` |
 | `gausser solve [--no-masks]` | COLMAP finds the camera poses | `database.db`, `sparse/0/` |
@@ -73,6 +73,15 @@ LOD set.
 | `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [--background jutaka] [--target X Y Z --radius R --height H] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
 | `gausser status` | Shows what the scene has and which tools are installed | — |
 | `gausser monitor [--all] [--no-open]` | Opens the scene (or the list of all scenes) in the web monitor: steps, logs, stats, images, COLMAP cameras, splats, eval renders | — |
+
+`gausser frames` needs no tuning for a walk-around video. One pass decodes the video (ffmpeg) and scores every
+frame for focus and camera motion (OpenCV optical flow); a frame is picked each time the view has moved on by a
+set share of the image, and the sharpest frame of that stretch is the one kept. Several spacings are tracked at
+once, so the result is moved to a finer or wider spacing if it would be under `--min-frames` (150) or over
+`--max-frames` (600); `--spacing low|medium|high` moves the starting point. A second pass writes only the picked
+frames, full size, as `images/frame_<number>.jpg`, with `frames.json` listing each one. Still stretches give a frame
+every 3 s. HDR (HLG/PQ) video is converted to SDR. `--every N` takes the sharpest of every N video frames instead.
+A folder of photos is copied whole; a folder of videos is processed video by video (`p01_`, `p02_` … prefixes).
 
 Every command takes `-s/--scene DIR` (default: current folder) and `--help`.
 Only one command at a time can change a scene; a second one stops with an error
@@ -154,11 +163,11 @@ the grip (the hand or a stick); `mask --exclude` keeps those black, and `train` 
 `--exclude-masks`. `--range` keeps only the passes you want (seconds or m:ss, repeatable):
 
 ```bash
-gausser frames Q360_….MOV --range 1.5-32.5 --range 0:57-1:20 -- --selection-method batched --batch-size 3 --batch-buffer 0
+gausser frames Q360_….MOV --range 1.5-32.5 --range 0:57-1:20
 ```
 
 A folder of QooCam 8K photos (3840×7680, lens 0 above lens 1, calibration in each JPEG) works the
-same way, without Sharp Frames: every photo is kept. Stand still for each shot, about 20 cm apart.
+same way: every photo is kept. Stand still for each shot, about 20 cm apart.
 
 ```bash
 gausser frames /Volumes/QooCam\ 8K/PHOTO/Kitchen
@@ -270,13 +279,13 @@ scripts/install-macos.sh
 
 The script is safe to rerun. It installs:
 
-- COLMAP, ffmpeg, Python 3.13, Node and Rust (Homebrew);
+- COLMAP, ffmpeg (7 or newer: `frames` reads its filter graph from a file), Python 3.13, Node and Rust (Homebrew);
 - splat-transform (npm);
-- a `.venv` with gausser, Sharp Frames, SAM3 (patched) and Msplat;
+- a `.venv` with gausser, SAM3 (patched) and Msplat;
 - Brush at a pinned commit (`cargo install`);
 - a SuperSplat build for `gausser view` and `gausser orbit`, and Playwright with Chromium for `orbit`;
 - the monitor page (`web/`, built into `src/gausser/web/`);
-- `gausser` and `sharp-frames` in `~/.local/bin`.
+- `gausser` in `~/.local/bin`.
 
 It ends with `gausser status`. After you reinstall SAM3 by hand, rerun the script:
 `status` reports an unpatched SAM3.

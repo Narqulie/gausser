@@ -20,7 +20,7 @@ step "Python environment ($ROOT/.venv)"
 if [ ! -x "$ROOT/.venv/bin/python" ]; then
   "$(brew --prefix python@3.13)/bin/python3.13" -m venv "$ROOT/.venv"
 fi
-"$ROOT/.venv/bin/pip" install -e "$ROOT[sam,msplat,dev]" sharp-frames \
+"$ROOT/.venv/bin/pip" install -e "$ROOT[sam,msplat,dev]" \
   "git+https://github.com/facebookresearch/sam3.git@$SAM3_REV"
 
 step "SAM3 macOS patch"
@@ -54,7 +54,6 @@ npm install --prefix "$NODE_DIR" playwright-core
 step "Commands in ~/.local/bin"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$ROOT/.venv/bin/gausser" "$HOME/.local/bin/gausser"
-ln -sf "$ROOT/.venv/bin/sharp-frames" "$HOME/.local/bin/sharp-frames"
 
 step "SAM3 checkpoint"
 if [ -f "$HOME/.cache/gausser/sam3.pt" ]; then
