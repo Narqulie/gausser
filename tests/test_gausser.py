@@ -567,7 +567,7 @@ def test_brush_only_sees_current_inputs(tmp_path, tools):
 
     assert seen == [{"images", "sparse", "masks"}]
     assert tools.commands[-1][-2:] == ["--alpha-mode", "transparent"]
-    assert sorted(path.name for path in run.iterdir()) == ["exports", "masked"]
+    assert sorted(path.name for path in run.iterdir()) == ["exports", "init-sparse", "masked"]
 
 
 def test_brush_no_masks_leaves_masks_out_of_its_folder(tmp_path, tools):
@@ -1057,3 +1057,150 @@ def test_the_index_lists_every_scene_with_its_runs_and_eval_renders(tmp_path):
     (image,) = evaluation["images"]
     assert evaluation["step"] == 1000 and image["photo"] == "images/a.jpg"
     assert 25 < image["psnr"] < 35  # 10/255 off in one channel
+
+
+# `gausser dense` and `gausser mesh` (OpenMVS), and Brush starting from the dense cloud.
+
+
+def write_dense_ply(path: Path, xyz: list[tuple[float, float, float]], views: list[int]) -> None:
+    """An OpenMVS dense cloud: xyz, rgb, normals, then the variable-length view and weight lists."""
+    header = (
+        "ply\nformat binary_little_endian 1.0\n"
+        f"element vertex {len(xyz)}\n"
+        "property float32 x\nproperty float32 y\nproperty float32 z\n"
+        "property uint8 red\nproperty uint8 green\nproperty uint8 blue\n"
+        "property float32 nx\nproperty float32 ny\nproperty float32 nz\n"
+        "property list uint8 uint32 view_indices\nproperty list uint8 float32 view_weights\n"
+        "end_header\n"
+    )
+    body = b"".join(
+        struct.pack("<3f3B3f", *point, index, 2 * index, 3 * index, 0, 0, 1)
+        + struct.pack(f"<B{n}I", n, *range(n)) + struct.pack(f"<B{n}f", n, *[1.0] * n)
+        for index, (point, n) in enumerate(zip(xyz, views, strict=True))
+    )
+    path.write_bytes(header.encode() + body)
+
+
+def dense_scene(root: Path, points: int = 4):
+    scene = solved_and_trained(root)
+    scene.dense.mkdir()
+    (scene.dense / "scene_dense.mvs").write_bytes(b"mvs")
+    write_dense_ply(scene.dense / "scene_dense.ply", [(i, i + 0.5, -i) for i in range(points)], [2, 0, 7, 3][:points])
+    return scene
+
+
+def test_dense_undistorts_imports_and_densifies_into_dense(tmp_path, tools):
+    scene = make_scene(tmp_path)
+    write_model(scene.sparse / "0", 3)
+
+    def fake(command):
+        if command[0] == "colmap":
+            cwd = Path(command[command.index("--output_path") + 1])
+            (cwd / "images").mkdir()
+            (cwd / "stereo").mkdir()
+            (cwd / "run-colmap-geometric.sh").write_text("")
+        elif command[0] == "DensifyPointCloud":
+            staged = next(scene.tmp.glob("dense-*"))
+            (staged / "scene_dense.mvs").write_bytes(b"mvs")
+            (staged / "DensifyPointCloud-1.log").write_text("")
+            write_dense_ply(staged / "scene_dense.ply", [(0, 0, 0)], [2])
+
+    tools.on_run(fake)
+    steps.dense(scene)
+
+    assert [command[0] for command in tools.commands] == ["colmap", "InterfaceCOLMAP", "DensifyPointCloud"]
+    assert tools.commands[0][1] == "image_undistorter"
+    assert tools.commands[2][1:] == ["scene.mvs", "--resolution-level", "1", "--remove-dmaps", "1"]
+    assert sorted(path.name for path in scene.dense.iterdir()) == ["images", "scene_dense.mvs", "scene_dense.ply"]
+    assert scene.dense_done()
+
+
+def test_a_new_model_removes_the_dense_cloud_built_from_the_old_one(tmp_path, tools):
+    scene = dense_scene(tmp_path)
+
+    def fake(command):
+        if command[1] == "feature_extractor":
+            Path(command[command.index("--database_path") + 1]).write_bytes(b"db")
+        if command[1] == "mapper":
+            write_model(Path(command[command.index("--output_path") + 1]) / "0", 3)
+
+    tools.on_run(fake)
+    steps.solve(scene)
+
+    assert scene.dense_cloud() is None
+
+
+def test_read_dense_cloud_walks_the_variable_length_view_lists(tmp_path):
+    path = tmp_path / "scene_dense.ply"
+    write_dense_ply(path, [(1, 2, 3), (4, 5, 6), (7, 8, 9)], [2, 0, 5])
+
+    xyz, rgb = steps.read_dense_cloud(path, limit=10)
+
+    assert xyz.tolist() == [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    assert rgb.tolist() == [[0, 0, 0], [1, 2, 3], [2, 4, 6]]
+    assert len(steps.read_dense_cloud(path, limit=2)[0]) == 2
+
+
+def test_brush_starts_from_the_dense_cloud_when_there_is_one(tmp_path, tools):
+    scene = dense_scene(tmp_path)
+    seen = {}
+
+    def fake_brush(command):
+        model = Path(command[1]) / "sparse" / "0"
+        data = (model / "points3D.bin").read_bytes()
+        seen["count"] = struct.unpack_from("<Q", data)[0]
+        seen["first"] = struct.unpack_from("<Q3d3B", data, 8)
+        seen["cameras"] = (model / "cameras.bin").resolve() == (scene.sparse / "0" / "cameras.bin").resolve()
+        seen["start"] = seen.get("start", 0) + 1
+        export = Path(command[command.index("--export-path") + 1]) / "export_10.ply"
+        export.parent.mkdir(parents=True)
+        export.write_bytes(b"ply")
+
+    tools.on_run(fake_brush)
+    run = steps.train_brush(scene, iterations=10)
+
+    assert seen == {"count": 4, "first": (1, 0.0, 0.5, 0.0, 0, 0, 0), "cameras": True, "start": 1}
+    assert (run / "init-dense").is_file()
+    assert (scene.sparse / "0" / "points3D.bin").read_bytes() == b""  # the scene's own model is untouched
+
+    def plain_brush(command):
+        seen["sparse"] = (Path(command[1]) / "sparse").resolve() == scene.sparse.resolve()
+        export = Path(command[command.index("--export-path") + 1]) / "export_10.ply"
+        export.parent.mkdir(parents=True)
+        export.write_bytes(b"ply")
+
+    tools.on_run(plain_brush)
+    run = steps.train_brush(scene, iterations=10, init="sparse")
+    assert (run / "init-sparse").is_file() and seen["sparse"]
+
+
+def test_mesh_reconstructs_refines_decimates_and_textures_into_a_run(tmp_path, tools):
+    scene = dense_scene(tmp_path)
+
+    def fake(command):
+        out = Path(command[command.index("-o") + 1])
+        if command[0] in ("ReconstructMesh", "RefineMesh"):
+            out.with_suffix(".ply").write_text("ply\nformat binary_little_endian 1.0\nelement face 1000000\nend_header\n")
+        if command[0] == "TextureMesh":
+            out.with_suffix(".glb").write_bytes(b"glb")
+            (out.parent / "mesh-textured_diffuse00.png").write_bytes(b"png")
+        out.write_bytes(b"mvs")
+
+    tools.on_run(fake)
+    run = steps.mesh(scene, faces=30000)
+
+    assert [command[0] for command in tools.commands] == ["ReconstructMesh", "RefineMesh", "TextureMesh"]
+    assert tools.commands[2][tools.commands[2].index("--decimate") + 1] == "0.030000"
+    assert sorted(path.name for path in run.iterdir()) == ["mesh-textured_diffuse00.png", "mesh.glb", "mesh.ply", "refined.ply"]
+    assert scene.mesh_done()
+
+
+def test_run_mesh_builds_the_dense_cloud_before_training_and_meshes_last(tmp_path, monkeypatch):
+    scene = solved_and_trained(tmp_path)
+    order = []
+    monkeypatch.setattr(steps, "dense", lambda scene, level: order.append("dense"))
+    monkeypatch.setattr(steps, "train_brush", lambda scene, **kw: order.append(f"train-{kw['init']}") or scene.runs / "brush" / "y")
+    monkeypatch.setattr(steps, "mesh", lambda scene, **kw: order.append("mesh") or scene.runs / "mesh" / "z")
+
+    assert cli.main(["run", "-s", str(scene.root), "--mesh"]) == 0
+    assert order == ["dense", "train-auto", "mesh"]

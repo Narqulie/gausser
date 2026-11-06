@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
 
-from . import orbit, pano
+from . import orbit, pano, steps as pipeline
 from .scene import GausserError, Scene, index, index_path, is_image, mtime, registered_images
 
 WEB = Path(__file__).with_name("web")
@@ -182,6 +182,7 @@ def _export(scene: Scene, path: Path) -> dict[str, Any]:
 def state(scene: Scene) -> dict[str, Any]:
     images = scene.image_files()
     model = scene.model()
+    cloud = scene.dense_cloud()
     running = holder(scene)
     steps = history(scene)
     current = next((s for s in reversed(steps) if "end" not in s), None) if running else None
@@ -221,6 +222,9 @@ def state(scene: Scene) -> dict[str, Any]:
         "trained": scene.train_done(),
         "lods": [{"path": _rel(scene, p), "mtime": mtime(p / "lod-meta.json")} for p in scene.lod_runs()],
         "lod_current": scene.lod_done(),
+        "dense": cloud and {"points": pipeline.ply_count(cloud), "current": scene.dense_done()},
+        "meshes": [{"path": _rel(scene, p / "mesh.glb"), "mtime": mtime(p / "mesh.glb")} for p in scene.mesh_runs()],
+        "mesh_current": scene.mesh_done(),
     }
 
 

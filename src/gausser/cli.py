@@ -14,7 +14,7 @@ from pathlib import Path
 from . import keyframes, pano, steps
 from .scene import GausserError, Scene, is_image, registered_images
 
-STEPS = ("frames", "mask", "solve", "train", "lod")
+STEPS = ("frames", "mask", "solve", "dense", "train", "lod", "mesh")
 COMMANDS = ("run", *STEPS, "subset", "composite", "align", "view", "orbit", "status", "monitor")
 QUICK_START = """\
 quick start:
@@ -71,6 +71,10 @@ def _add_train_options(parser: argparse.ArgumentParser) -> None:
         "--eval-split", type=int, metavar="N",
         help="Brush: hold out every Nth image and report PSNR/SSIM on it every 1000 steps",
     )
+    group.add_argument(
+        "--init", choices=("auto", "dense", "sparse"), default="auto",
+        help="Brush: start from the dense cloud (dense/) or COLMAP's points; auto = dense when dense/ exists",
+    )
     group.add_argument("--downscale", type=float, default=4.0, help="Msplat: load images at 1/N size (default 4)")
     group.add_argument("--checkpoint-every", type=int, default=1000, help="Msplat: checkpoint every N steps")
 
@@ -80,6 +84,21 @@ def _add_lod_options(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--chunk-count", type=int, default=512, help="splats per chunk, in thousands")
     group.add_argument("--chunk-extent", type=float, default=16.0, help="chunk size in metres")
     group.add_argument("--levels", default="100,50,25", help="percent of splats kept per level")
+
+
+def _add_dense_options(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("dense (OpenMVS)")
+    group.add_argument(
+        "--resolution-level", type=int, default=1,
+        help="halve the images N times before estimating depth (default 1; 0 = full size, about 4x slower)",
+    )
+
+
+def _add_mesh_options(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("mesh (OpenMVS)")
+    group.add_argument("--faces", type=int, help="decimate to about N triangles before texturing (default: keep all)")
+    group.add_argument("--no-refine", dest="refine", action="store_false", help="skip refining the surface against the photos (the slow, CPU-only stage)")
+    group.add_argument("--texture-size", type=int, default=8192, help="largest texture image side (default 8192)")
 
 
 def _add_frames_options(parser: argparse.ArgumentParser) -> None:
@@ -118,9 +137,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="first move photos lying in the scene folder into images/",
     )
     run.add_argument("--prompt", help="SAM3 subject prompt; without it nothing is masked")
+    run.add_argument("--dense", action="store_true", help="also build a dense point cloud before training; Brush then starts from it")
     run.add_argument("--lod", action="store_true", help="also build a streamed LOD set")
+    run.add_argument("--mesh", action="store_true", help="also build a textured mesh (implies --dense)")
     run.add_argument("--from", dest="from_step", choices=STEPS, help="redo this step and every step after it")
-    for add in (_add_frames_options, _add_mask_options, _add_solve_options, _add_train_options, _add_lod_options):
+    for add in (
+        _add_frames_options, _add_mask_options, _add_solve_options, _add_dense_options, _add_train_options,
+        _add_lod_options, _add_mesh_options,
+    ):
         add(run)
     _add_no_masks_option(run)
 
@@ -148,6 +172,19 @@ def build_parser() -> argparse.ArgumentParser:
     solve = commands.add_parser("solve", parents=[working], help="find camera poses with COLMAP")
     _add_solve_options(solve)
     _add_no_masks_option(solve)
+
+    dense = commands.add_parser(
+        "dense", parents=[working], help="build a dense point cloud with OpenMVS",
+        description="Estimate a depth map per image with OpenMVS (on the GPU) and fuse them into dense/scene_dense.ply. "
+        "`train` then starts Brush from it, and `mesh` builds a surface from it.",
+    )
+    _add_dense_options(dense)
+
+    mesh = commands.add_parser(
+        "mesh", parents=[working], help="build a textured mesh from the dense cloud with OpenMVS",
+        description="Reconstruct, refine and texture a mesh from dense/ into runs/mesh/<time>/mesh.glb.",
+    )
+    _add_mesh_options(mesh)
 
     train = commands.add_parser(
         "train", parents=[working], help="train splats with Brush or Msplat",
@@ -270,7 +307,12 @@ def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None, ex
             scene, iterations=args.iterations, export_every=args.export_every,
             max_splats=args.max_splats, max_resolution=args.max_resolution, eval_split=args.eval_split,
             extra=extra or [], no_masks=args.no_masks, exclude_masks=getattr(args, "exclude_masks", False),
+            init=args.init,
         )
+
+
+def _mesh(scene: Scene, args: argparse.Namespace) -> Path:
+    return steps.mesh(scene, faces=args.faces, refine=args.refine, texture_size=args.texture_size)
 
 
 def _lod(scene: Scene, source: Path | None, args: argparse.Namespace) -> Path:
@@ -283,8 +325,10 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
         raise GausserError("--from frames needs --video")
     if args.from_step == "mask" and not args.prompt:
         raise GausserError("--from mask needs --prompt")
-    if args.from_step == "lod":
-        args.lod = True
+    if args.from_step in ("dense", "lod", "mesh"):
+        setattr(args, args.from_step, True)
+    if args.mesh:
+        args.dense = True
     redo_from = STEPS.index(args.from_step) if args.from_step else len(STEPS)
 
     def due(step: str, done: bool) -> bool:
@@ -313,6 +357,10 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
         with scene.step("solve", matcher=args.matcher):
             steps.solve(scene, args.matcher, args.no_masks)
         ran("solve")
+    if args.dense and due("dense", scene.dense_done()):
+        with scene.step("dense"):
+            steps.dense(scene, args.resolution_level)
+        ran("dense")
     if due("train", scene.train_done()):
         with scene.step("train", trainer=args.trainer, iterations=args.iterations) as made:
             made["run"] = str(_train(scene, args).relative_to(scene.root))
@@ -320,6 +368,10 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
     if args.lod and due("lod", scene.lod_done()):
         with scene.step("lod") as made:
             made["run"] = str(_lod(scene, None, args).relative_to(scene.root))
+        ran("lod")
+    if args.mesh and due("mesh", scene.mesh_done()):
+        with scene.step("mesh") as made:
+            made["run"] = str(_mesh(scene, args).relative_to(scene.root))
 
 
 def status(scene: Scene) -> None:
@@ -346,6 +398,9 @@ def status(scene: Scene) -> None:
         print(f"model   {solved}{'' if scene.solve_done(images) else stale}")
     else:
         print("model   -")
+    cloud = scene.dense_cloud()
+    if cloud:
+        print(f"dense   {steps.ply_count(cloud):,} points{'' if scene.dense_done() else stale}")
     exports = scene.exports()
     for export in exports[-5:]:
         print(f"export  {export.relative_to(scene.root)}")
@@ -353,6 +408,8 @@ def status(scene: Scene) -> None:
         print(f"        newest export is older than the model{stale}")
     for run in scene.lod_runs()[-3:]:
         print(f"lod     {run.relative_to(scene.root)}")
+    for run in scene.mesh_runs()[-3:]:
+        print(f"mesh    {(run / 'mesh.glb').relative_to(scene.root)}")
     if scene.tmp.is_dir():
         size = sum(path.stat().st_size for path in scene.tmp.rglob("*") if path.is_file() and not path.is_symlink())
         if size:
@@ -364,6 +421,7 @@ def status(scene: Scene) -> None:
         "colmap": steps.COLMAP_HINT,
         "brush": steps.BRUSH_HINT,
         "splat-transform": steps.SPLAT_TRANSFORM_HINT,
+        "DensifyPointCloud": f"optional, for `dense` and `mesh`; {steps.OPENMVS_HINT}",
         "node": "brew install node",
     }
     for name, hint in tools.items():
@@ -540,6 +598,12 @@ def dispatch(scene: Scene, args: argparse.Namespace) -> None:
             raise GausserError("--exclude-masks is for Brush and cannot be combined with --no-masks")
         with scene.step("train", trainer=args.trainer, iterations=args.iterations) as made:
             made["run"] = str(_train(scene, args, args.resume, extra).relative_to(scene.root))
+    elif args.command == "dense":
+        with scene.step("dense"):
+            steps.dense(scene, args.resolution_level)
+    elif args.command == "mesh":
+        with scene.step("mesh") as made:
+            made["run"] = str(_mesh(scene, args).relative_to(scene.root))
     elif args.command == "lod":
         with scene.step("lod") as made:
             made["run"] = str(_lod(scene, args.source, args).relative_to(scene.root))

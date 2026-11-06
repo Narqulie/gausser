@@ -92,6 +92,7 @@ class Scene:
         self.colmap_masks = self.root / "colmap" / "masks"  # COLMAP: <name><ext>.png
         self.database = self.root / "database.db"
         self.sparse = self.root / "sparse"
+        self.dense = self.root / "dense"  # OpenMVS: undistorted images/, scene_dense.mvs and .ply
         self.runs = self.root / "runs"
         self.tmp = self.root / ".gausser" / "tmp"
         # Read only by `gausser monitor`; no step depends on them.
@@ -151,6 +152,11 @@ class Scene:
         if model is None:
             raise GausserError("No COLMAP model at sparse/0; run `gausser solve` first")
         return model
+
+    def dense_cloud(self) -> Path | None:
+        """The dense point cloud from `gausser dense`, if there is one."""
+        cloud = self.dense / "scene_dense.ply"
+        return cloud if cloud.is_file() and (self.dense / "scene_dense.mvs").is_file() else None
 
     @contextmanager
     def lock(self, argv: list[str] | None = None) -> Iterator[None]:
@@ -218,6 +224,18 @@ class Scene:
         model = self.model()
         exports = self.exports()
         return model is not None and bool(exports) and mtime(exports[-1]) > mtime(model / "images.bin")
+
+    def dense_done(self) -> bool:
+        """The dense cloud was built after the current model."""
+        model, cloud = self.model(), self.dense_cloud()
+        return model is not None and cloud is not None and mtime(cloud) > mtime(model / "images.bin")
+
+    def mesh_done(self) -> bool:
+        cloud, meshes = self.dense_cloud(), self.mesh_runs()
+        return cloud is not None and bool(meshes) and mtime(meshes[-1] / "mesh.glb") > mtime(cloud)
+
+    def mesh_runs(self) -> list[Path]:
+        return sorted((path.parent for path in self.runs.glob("mesh/*/mesh.glb")), key=lambda run: mtime(run / "mesh.glb"))
 
     def lod_done(self) -> bool:
         exports, lods = self.exports(), self.lod_runs()

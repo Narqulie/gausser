@@ -34,6 +34,9 @@ fi
 step "Brush @ ${BRUSH_REV:0:8} (first build takes a few minutes)"
 cargo install --locked --git https://github.com/ArthurBrussee/brush --rev "$BRUSH_REV" brush-app --bin brush
 
+step "OpenMVS (dense point clouds and meshes; first build takes about an hour)"
+"$ROOT/scripts/install-openmvs.sh"
+
 step "SuperSplat viewer ($SUPERSPLAT_DIR)"
 if [ ! -f "$SUPERSPLAT_DIR/dist/index.html" ]; then
   [ -d "$SUPERSPLAT_DIR/.git" ] || git clone https://github.com/playcanvas/supersplat "$SUPERSPLAT_DIR"

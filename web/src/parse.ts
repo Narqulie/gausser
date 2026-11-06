@@ -70,6 +70,14 @@ export function progress(
     if (step && totals.iterations) return { phase: "training", done: num(step[1]), total: totals.iterations };
     return { phase: "loading", done: null, total: null };
   }
+  if (step === "dense" || step === "mesh") {
+    // OpenMVS redraws one progress line, e.g. "Estimated depth-maps 12 (3.43%, 1s, ETA 50s)..."
+    const match = lastMatch(all, /([A-Z][a-z]+(?: [a-z-]+)+) (\d+) \((\d+(?:\.\d+)?)%/, since);
+    if (match) {
+      const done = num(match[2]);
+      return { phase: match[1].toLowerCase(), done, total: Math.round((done * 100) / Math.max(Number(match[3]), 0.01)) };
+    }
+  }
   return { phase: tool.split(" ").pop() || "starting", done: null, total: null };
 }
 

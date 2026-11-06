@@ -3,7 +3,7 @@
 ## What this is
 
 A single `gausser` CLI (`gausser.cli:main`) that turns photos or video into
-Gaussian splats: `frames → mask → solve → train → lod`. It is deliberately
+Gaussian splats: `frames → mask → solve → [dense] → train → lod`, plus `mesh`. It is deliberately
 small. Do not reintroduce manifests, scene locks, invalidation archives, a JSON
 engine, or a GUI without an explicit request from the Captain. The one GUI is
 `gausser monitor` (2026-11-05, requested): a read-only web page that never drives
@@ -18,7 +18,7 @@ src/gausser/
 ├── cli.py     argparse subcommands, `run` pipeline, `status`, `gausser [PATH]` routing
 ├── guide.py   scene-aware guided menu: summary, recommended next step, minimal questions
 ├── keyframes.py frames: one ffmpeg analysis pass (focus + DIS optical flow, tracked grid, ladder of thresholds) picks frame numbers, one pass extracts them
-├── steps.py   frames (calls keyframes), mask, solve (COLMAP), subset (colmap image_deleter + filtered database), train_brush, lod (splat-transform)
+├── steps.py   frames (calls keyframes), mask, solve (COLMAP), dense + mesh (OpenMVS), subset (colmap image_deleter + filtered database), train_brush, lod (splat-transform)
 ├── sam.py     SAM3 predictor + mask writers; imported only by `mask` (needs torch)
 ├── pano.py    360° frames: 14 pinhole views per equirect (pycolmap.panorama's 12 + zenith/nadir) or per dual fisheye (7 per lens), partition masks, COLMAP rig
 ├── qoocam.py  QooCam 8K raw .MOV: reads the kfix LENS calibration into panos/lenses.json form
@@ -42,8 +42,8 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + rec
   export mtime). Once any step runs, every later step runs too. Don't use folder
   mtimes, because Finder's `.DS_Store` writes change them.
 - Changing an input deletes what was built from it. New frames delete the masks,
-  `database.db` and `sparse/`; new masks delete `database.db` and `sparse/`
-  unless `sparse/no-masks` marks a `solve --no-masks` model.
+  `database.db`, `sparse/` and `dense/`; new masks delete `database.db`, `sparse/` and `dense/`
+  unless `sparse/no-masks` marks a `solve --no-masks` model; `solve` deletes `dense/`.
   Never delete `runs/`.
 - `--no-masks` (`run`, `solve`, `train`) ignores existing masks: no COLMAP `mask_path`, no `masks` link in
   Brush's staging folder, no Msplat compositing. `mask --miss drop` writes a black Brush mask and a white
@@ -92,6 +92,13 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + rec
 - External tools are found on PATH with `require_tool()` and run through
   `run_tool()`, with output passed straight through. Don't add output parsers or
   progress UIs to the CLI; the monitor page parses the step logs.
+
+- OpenMVS (`dense`, `mesh`; built by `scripts/install-openmvs.sh` at a pinned commit, tools linked into
+  `~/.local/bin`) runs with `cwd` = the folder of its `.mvs` project: image paths in it are relative.
+  `dense` passes `--remove-dmaps 1` (the depth maps were 7.5 GB for 350 frames). Its PLY ends each vertex in
+  two variable-length lists (views, weights); `steps.read_dense_cloud` walks them. Brush takes initial points
+  only from a COLMAP `points3D.bin`, so dense init writes one (empty tracks) into Brush's staging `sparse/0`,
+  next to links to the real cameras; the run gets an `init-dense`/`init-sparse` marker.
 
 ## Hard-won constraints
 

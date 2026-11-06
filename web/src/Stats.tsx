@@ -25,7 +25,7 @@ function runDetail(run: HistoryRecord, lines: string[] | undefined, live: boolea
   return parts.join(", ");
 }
 
-const COLORS: Record<Step, string> = { frames: "#fede5d", mask: "#ff8b39", solve: "#36f9f6", train: "#ff7edb", lod: "#72f1b8" };
+const COLORS: Record<Step, string> = { frames: "#fede5d", mask: "#ff8b39", solve: "#36f9f6", train: "#ff7edb", lod: "#72f1b8", dense: "#2de2e6", mesh: "#f97e72" };
 const AXIS = { stroke: "#614d85", fontSize: 11, tickLine: false };
 const TOOLTIP = {
   contentStyle: { background: "#171520", border: "1px solid #34294f", borderRadius: 3, fontFamily: "inherit" },

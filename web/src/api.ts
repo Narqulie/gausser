@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
-export type Step = "frames" | "mask" | "solve" | "train" | "lod";
-export const STEPS: Step[] = ["frames", "mask", "solve", "train", "lod"];
+export type Step = "frames" | "mask" | "solve" | "dense" | "train" | "lod" | "mesh";
+export const STEPS: Step[] = ["frames", "mask", "solve", "dense", "train", "lod", "mesh"];
 
 export interface HistoryRecord {
   step: Step;
@@ -63,6 +63,9 @@ export interface State {
   trained: boolean;
   lods: { path: string; mtime: number }[];
   lod_current: boolean;
+  dense: { points: number; current: boolean } | null;
+  meshes: { path: string; mtime: number }[];
+  mesh_current: boolean;
 }
 
 export interface Camera {

@@ -1,11 +1,13 @@
 # gausser
 
-Photos or video in, Gaussian splats out. One command wraps five steps:
+Photos or video in, Gaussian splats out. One command wraps the steps:
 
 ```
-frames → mask → solve → train → lod
-(video)  (SAM3)  (COLMAP) (Brush/Msplat) (splat-transform)
+frames → mask → solve → [dense] → train → lod   [mesh]
+(video)  (SAM3)  (COLMAP) (OpenMVS) (Brush/Msplat) (splat-transform) (OpenMVS)
 ```
+
+`dense` and `mesh` are optional (`run --dense`, `run --mesh`).
 
 ## Quick start
 
@@ -53,8 +55,8 @@ sleeping Mac pauses training. Closing a laptop's lid still puts it to sleep unle
 an external display is attached.
 
 Without `--prompt`, no new masks are made, but existing masks are still used. Add
-`--video clip.mp4` to extract frames first, and `--lod` to finish with a streamed
-LOD set.
+`--video clip.mp4` to extract frames first, `--dense` to start Brush from a dense point cloud,
+`--lod` to finish with a streamed LOD set and `--mesh` to also build a textured mesh.
 
 ## Commands
 
@@ -64,7 +66,9 @@ LOD set.
 | `gausser mask PROMPT [--miss drop]` | SAM3 masks the subject | `masks/`, `colmap/masks/` |
 | `gausser mask PROMPT --exclude [--dilation N]` | SAM3 blacks out every instance of PROMPT (e.g. people), except inside `masks/` | `masks-exclude/` |
 | `gausser solve [--no-masks]` | COLMAP finds the camera poses | `database.db`, `sparse/0/` |
-| `gausser train [--no-masks \| --exclude-masks] [-- args]` | Brush (default) or `--trainer msplat` trains splats; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
+| `gausser dense [--resolution-level N]` | OpenMVS estimates a depth map per image (on the GPU) and fuses them into a dense point cloud | `dense/` |
+| `gausser train [--no-masks \| --exclude-masks] [--init auto\|dense\|sparse] [-- args]` | Brush (default) or `--trainer msplat` trains splats; Brush starts from `dense/` when it exists; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
+| `gausser mesh [--faces N] [--no-refine] [--texture-size N]` | OpenMVS meshes, refines and textures the dense cloud | `runs/mesh/<time>/mesh.glb` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
 | `gausser subset PATTERN… -o NEW_SCENE` | Copies the images (and masks) whose file names match the globs into a new scene, with the COLMAP model filtered to them | `NEW_SCENE/{images,masks,colmap/masks,sparse/0,database.db}` |
 | `gausser composite [--statue PLY] [--context PLY] [--radius N] [--column R [--floor F]] [--cells N] [--slack N] [--grow N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` or `--exclude-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
@@ -82,6 +86,22 @@ once, so the result is moved to a finer or wider spacing if it would be under `-
 frames, full size, as `images/frame_<number>.jpg`, with `frames.json` listing each one. Still stretches give a frame
 every 3 s. HDR (HLG/PQ) video is converted to SDR. `--every N` takes the sharpest of every N video frames instead.
 A folder of photos is copied whole; a folder of videos is processed video by video (`p01_`, `p02_` … prefixes).
+
+`gausser dense` undistorts the images (`colmap image_undistorter`) into `dense/images/`, then OpenMVS
+(`InterfaceCOLMAP`, `DensifyPointCloud`) estimates a depth map per image by patch-match stereo (Metal on Apple
+Silicon) and keeps the points that at least two images agree on: `dense/scene_dense.ply`, tens of millions of points
+with the images that saw them. `--resolution-level 1` (default) works on half-size images. IMG_8779 (350 iPhone
+4K frames): 47 s of depth maps, 4 min in all, 32M points. Depth maps are deleted after fusion; `dense/` still takes
+about the size of `images/` plus 2 GB.
+`gausser train` then gives Brush 500,000 random points of the cloud instead of COLMAP's sparse points (it writes them
+as `points3D.bin` into Brush's own folder; `sparse/` is untouched) and marks the run `init-dense` or `init-sparse`.
+`--init sparse` keeps COLMAP's points.
+
+`gausser mesh` runs `ReconstructMesh` (Delaunay tetrahedra, graph cut on what the cameras see through),
+`RefineMesh` (moves the surface until the photos agree; CPU only, the slow part, `--no-refine` skips it) and
+`TextureMesh` (a photo per triangle, seams levelled) into `runs/mesh/<time>/mesh.glb` with its textures beside it.
+`--faces 30000` decimates before texturing. IMG_8779: 45 min with refinement; at 30k faces the mesh was 10 MB and
+scored 21.0 dB PSNR against the photos, better than meshes made from the splat.
 
 Every command takes `-s/--scene DIR` (default: current folder) and `--help`.
 Only one command at a time can change a scene; a second one stops with an error
@@ -224,12 +244,14 @@ The files are the state. There is no database or manifest.
   - masks: every image has a mask;
   - solve: the COLMAP database lists exactly the current images;
   - train: the newest export is newer than the model;
-  - lod: the newest LOD set is newer than the newest export.
+  - dense: `dense/scene_dense.ply` is newer than the model;
+  - lod: the newest LOD set is newer than the newest export;
+  - mesh: the newest mesh is newer than the dense cloud.
 
   `gausser status` marks anything out of date.
-- New frames delete the masks and the COLMAP model, and new masks delete the
-  COLMAP model, because both were built from what changed. A `solve --no-masks`
-  model (marked `sparse/no-masks`) never read the masks, so new masks keep it. Training runs in
+- New frames delete the masks, the COLMAP model and `dense/`, new masks delete the
+  COLMAP model and `dense/`, and a new model deletes `dense/`, because each was built from what changed. A `solve --no-masks`
+  model (marked `sparse/no-masks`) never read the masks, so new masks keep it. Training and mesh runs in
   `runs/` are never deleted.
 - `.gausser/tmp/` keeps failed attempts for inspection. `gausser status` shows their
   size; delete the folder whenever nothing is running.
@@ -283,6 +305,8 @@ The script is safe to rerun. It installs:
 - splat-transform (npm);
 - a `.venv` with gausser, SAM3 (patched) and Msplat;
 - Brush at a pinned commit (`cargo install`);
+- OpenMVS at a pinned commit (`scripts/install-openmvs.sh`: vcpkg builds its dependencies, about an hour the first
+  time; the tools are linked into `~/.local/bin`) for `dense` and `mesh`;
 - a SuperSplat build for `gausser view` and `gausser orbit`, and Playwright with Chromium for `orbit`;
 - the monitor page (`web/`, built into `src/gausser/web/`);
 - `gausser` in `~/.local/bin`.

@@ -21,6 +21,8 @@ BRUSH_HINT = "build Brush (cargo build --release) and put `brush` on PATH"
 COLMAP_HINT = "brew install colmap"
 FFMPEG_HINT = "brew install ffmpeg (version 7 or newer)"
 SPLAT_TRANSFORM_HINT = "npm install -g @playcanvas/splat-transform"
+OPENMVS_HINT = "build OpenMVS with scripts/install-openmvs.sh"
+DENSE_INIT_POINTS = 500_000  # Brush's starting splats from dense/; it grows to --max-splats from there
 
 
 def frames(
@@ -75,7 +77,7 @@ def frames(
     else:
         replace(staged, scene.images)
         remove(scene.panos)
-    remove(scene.masks, scene.masks_exclude, scene.colmap_masks, scene.database, scene.sparse)  # built from the old images
+    remove(scene.masks, scene.masks_exclude, scene.colmap_masks, scene.database, scene.sparse, scene.dense)  # built from the old images
     if keep.is_dir():
         replace(keep, scene.masks_exclude)
     remove(staging)
@@ -180,7 +182,7 @@ def mask(
         shutil.rmtree(staged, ignore_errors=True)
         if scene.is_pano() and not (scene.sparse / NO_MASKS).is_file():
             # The operator moves with a 360° camera; `solve` masks its features out.
-            remove(scene.database, scene.sparse)
+            remove(scene.database, scene.sparse, scene.dense)
         return
     colmap_dir.mkdir()
     misses: list[str] = []
@@ -206,7 +208,7 @@ def mask(
     replace(brush_dir, scene.masks)
     replace(colmap_dir, scene.colmap_masks)
     if not (scene.sparse / NO_MASKS).is_file():  # a `solve --no-masks` model never read the masks
-        remove(scene.database, scene.sparse)  # COLMAP features depend on the masks
+        remove(scene.database, scene.sparse, scene.dense)  # COLMAP features depend on the masks
     shutil.rmtree(staged, ignore_errors=True)
     print(f"Masked {len(images) - len(misses)}/{len(images)} images")
     if misses:
@@ -350,6 +352,7 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         (final / NO_MASKS).touch()
     replace(database, scene.database)
     replace(final, scene.sparse)
+    remove(scene.dense)  # built from the old model
     shutil.rmtree(staged, ignore_errors=True)
     registered = registered_images(scene.sparse / "0")
     print(f"Model: {registered}/{len(images)} images registered ({matcher} matching)")
@@ -373,11 +376,14 @@ def train_brush(
     extra: list[str] | None = None,
     no_masks: bool = False,
     exclude_masks: bool = False,
+    init: str = "auto",
 ) -> Path:
     """Train with Brush into a new runs/brush/<time>/ folder; `extra` goes to Brush last.
 
     `no_masks` leaves masks/ out of Brush's folder, so it trains on whole images.
     `exclude_masks` gives Brush masks-exclude/ as its masks (a context run without transient objects).
+    `init` picks Brush's starting points: dense = thinned dense/ cloud, sparse = COLMAP's points,
+    auto = dense when dense/ exists.
     """
     brush = require_tool("brush", BRUSH_HINT)
     scene.require_model()
@@ -394,9 +400,25 @@ def train_brush(
     if not no_masks and not scene.masks.is_dir() and pano.lenses(scene.panos):
         exclude_masks = True  # fisheye views are black outside the lens circle; never train on that
     brush_masks = None if no_masks else scene.masks_exclude if exclude_masks else scene.masks
+    dense = scene.dense_cloud()
+    if init == "dense" and dense is None:
+        raise GausserError("No dense point cloud; run `gausser dense` first")
+    init = "dense" if init == "dense" or (init == "auto" and dense) else "sparse"
     for name, source in (("images", scene.images), ("sparse", scene.sparse), ("masks", brush_masks)):
+        if name == "sparse" and init == "dense":
+            continue
         if source and source.is_dir():
             (dataset / name).symlink_to(source)
+    if init == "dense" and dense:
+        # Brush starts from a COLMAP model's points3D.bin, so give it the cameras with dense points.
+        model = dataset / "sparse" / "0"
+        model.mkdir(parents=True)
+        for path in scene.require_model().iterdir():
+            if path.name != "points3D.bin":
+                (model / path.name).symlink_to(path)
+        xyz, rgb = read_dense_cloud(dense, DENSE_INIT_POINTS)
+        write_points3d(model / "points3D.bin", xyz, rgb)
+        print(f"Starting from {len(xyz):,} points of the dense cloud ({dense.relative_to(scene.root)})")
     command = [
         brush, str(dataset),
         "--total-train-iters", str(iterations),
@@ -422,10 +444,144 @@ def train_brush(
     # `gausser composite` finds the statue (masked) and context (unmasked, excluded) runs by this marker.
     marker = "excluded" if exclude_masks else "unmasked" if no_masks or not scene.masks.is_dir() else "masked"
     (staged / marker).touch()
+    (staged / f"init-{init}").touch()
     run = scene.new_run("brush")
     replace(staged, run)
     print(f"Exports in {run / 'exports'}")
     return run
+
+
+def dense(scene: Scene, resolution_level: int = 1) -> None:
+    """Make dense/: undistorted images and an OpenMVS dense point cloud of the COLMAP model.
+
+    OpenMVS estimates a depth map per image (patch match, on Metal on a Mac) and fuses the ones that agree.
+    `resolution_level` halves the images that many times first; 1 is about 4x faster than 0.
+    """
+    colmap = require_tool("colmap", COLMAP_HINT)
+    interface = require_tool("InterfaceCOLMAP", OPENMVS_HINT)
+    densify = require_tool("DensifyPointCloud", OPENMVS_HINT)
+    model = scene.require_model()
+    staged = scene.staging("dense")
+    # OpenMVS needs ideal pinhole cameras; this writes images/ and sparse/ without lens distortion.
+    run_tool(
+        [colmap, "image_undistorter", "--image_path", str(scene.images), "--input_path", str(model),
+         "--output_path", str(staged), "--output_type", "COLMAP"],
+        cwd=staged,
+    )
+    run_tool([interface, "-i", ".", "-o", "scene.mvs", "--image-folder", "images/"], cwd=staged)
+    run_tool(
+        [densify, "scene.mvs", "--resolution-level", str(resolution_level), "--remove-dmaps", "1"],
+        cwd=staged,
+    )
+    if not (staged / "scene_dense.ply").is_file():
+        raise GausserError(f"DensifyPointCloud wrote no scene_dense.ply; output kept in {staged}")
+    for path in [*staged.glob("*.log"), *staged.glob("*.sh"), staged / "stereo"]:
+        remove(path)
+    replace(staged, scene.dense)
+    print(f"Dense point cloud: {ply_count(scene.dense / 'scene_dense.ply'):,} points in {scene.dense}")
+
+
+def mesh(scene: Scene, *, faces: int | None = None, refine: bool = True, texture_size: int = 8192) -> Path:
+    """Mesh and texture dense/ with OpenMVS into a new runs/mesh/<time>/mesh.glb.
+
+    ReconstructMesh carves the surface out of the space the cameras see through, RefineMesh moves it
+    until the photos agree, and TextureMesh picks a photo per triangle. `faces` decimates the mesh
+    before texturing; `refine=False` skips the slowest stage (CPU only).
+    """
+    reconstruct = require_tool("ReconstructMesh", OPENMVS_HINT)
+    refiner = require_tool("RefineMesh", OPENMVS_HINT)
+    texture = require_tool("TextureMesh", OPENMVS_HINT)
+    if scene.dense_cloud() is None:
+        raise GausserError("No dense point cloud; run `gausser dense` first")
+    staged = scene.staging("mesh")
+    project = str(scene.dense / "scene_dense.mvs")
+    # OpenMVS finds the images relative to the project, so it runs in dense/ and writes into staging.
+    run_tool([reconstruct, project, "-p", "scene_dense.ply", "-o", str(staged / "mesh.mvs")], cwd=scene.dense)
+    surface = staged / "mesh.ply"
+    if refine:
+        run_tool(
+            [refiner, project, "-m", str(surface), "-o", str(staged / "refined.mvs"), "--resolution-level", "1"],
+            cwd=scene.dense,
+        )
+        surface = staged / "refined.ply"
+    command = [
+        texture, project, "-m", str(surface), "-o", str(staged / "mesh-textured.mvs"),
+        "--export-type", "glb", "--max-texture-size", str(texture_size),
+    ]
+    count = ply_count(surface, "face")
+    if faces and faces < count:
+        command += ["--decimate", f"{faces / count:.6f}"]
+    run_tool(command, cwd=scene.dense)
+    textured = staged / "mesh-textured.glb"
+    if not textured.is_file():
+        raise GausserError(f"TextureMesh wrote no mesh; output kept in {staged}")
+    textured.rename(staged / "mesh.glb")  # its textures stay mesh-textured_diffuse*.png, as the .glb names them
+    for path in [*staged.glob("*.mvs"), *staged.glob("*.log"), *scene.dense.glob("*.log")]:  # OpenMVS logs into its cwd
+        remove(path)
+    run = scene.new_run("mesh")
+    replace(staged, run)
+    print(f"Mesh in {run / 'mesh.glb'}")
+    return run
+
+
+def ply_count(path: Path, element: str = "vertex") -> int:
+    """The number of `element`s a PLY file declares."""
+    with path.open("rb") as stream:
+        for line in stream:
+            if line.startswith(f"element {element} ".encode()):
+                return int(line.split()[2])
+            if line.strip() == b"end_header":
+                break
+    raise GausserError(f"{path.name} declares no {element} count")
+
+
+def read_dense_cloud(path: Path, limit: int) -> tuple[Any, Any]:
+    """Positions and colours of at most `limit` randomly chosen points of an OpenMVS dense cloud.
+
+    Its vertices end in variable-length lists (the views that saw them), so the records are walked
+    once to find where each starts.
+    """
+    import mmap
+    from array import array
+
+    import numpy as np
+
+    with path.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        header = data[: data.find(b"end_header") + 11].decode()
+        fields = [line.split()[-1] for line in header.splitlines() if line.startswith("property")]
+        if fields[:6] != ["x", "y", "z", "red", "green", "blue"] or "binary_little_endian" not in header:
+            raise GausserError(f"{path.name} is not an OpenMVS dense cloud")
+        count = ply_count(path)
+        fixed = 15 + 12 * (fields[6:9] == ["nx", "ny", "nz"])  # xyz, rgb, optional normals
+        lists = fields[9:] if fixed == 27 else fields[6:]
+        starts = array("q", bytes(8 * count))
+        offset = len(header)
+        for index in range(count):
+            starts[index] = offset
+            offset += fixed
+            for _ in lists:  # each list: a uint8 length and that many 4-byte values
+                offset += 1 + 4 * data[offset]
+        chosen = np.asarray(starts)
+        if count > limit:
+            chosen = np.sort(np.random.default_rng(0).choice(chosen, limit, replace=False))
+        raw = np.frombuffer(data, dtype=np.uint8)[chosen[:, None] + np.arange(15)]
+        xyz = raw[:, :12].copy().view(np.float32).astype(np.float64)
+        rgb = raw[:, 12:15].copy()
+        del raw
+    return xyz, rgb
+
+
+def write_points3d(path: Path, xyz: Any, rgb: Any) -> None:
+    """Write a COLMAP points3D.bin with empty tracks (Brush reads only position and colour)."""
+    import numpy as np
+
+    record = np.dtype([("id", "<u8"), ("xyz", "<f8", 3), ("rgb", "u1", 3), ("error", "<f8"), ("track", "<u8")])
+    points = np.zeros(len(xyz), dtype=record)
+    points["id"] = np.arange(1, len(xyz) + 1)
+    points["xyz"], points["rgb"] = xyz, rgb
+    with path.open("wb") as stream:
+        stream.write(np.uint64(len(xyz)).tobytes())
+        stream.write(points.tobytes())
 
 
 def lod(

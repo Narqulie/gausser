@@ -166,7 +166,7 @@ export function stepStatus(step: Step, state: State, run: HistoryRecord | undefi
     // a failure counts only until the step succeeds again
     return ["failed", run.error === "interrupted" ? "interrupted" : "failed"];
   }
-  const { images, masks, model, exports, trained, lods, lod_current } = state;
+  const { images, masks, model, exports, trained, lods, lod_current, dense, meshes, mesh_current } = state;
   switch (step) {
     case "frames":
       return images.count ? ["done", "done"] : ["idle", "no images"];
@@ -182,11 +182,17 @@ export function stepStatus(step: Step, state: State, run: HistoryRecord | undefi
     case "lod":
       if (!lods.length) return ["idle", "none"];
       return lod_current ? ["done", "done"] : ["stale", "out of date"];
+    case "dense":
+      if (!dense) return ["idle", "none"];
+      return dense.current ? ["done", "done"] : ["stale", "out of date"];
+    case "mesh":
+      if (!meshes.length) return ["idle", "none"];
+      return mesh_current ? ["done", "done"] : ["stale", "out of date"];
   }
 }
 
 export function stepMetric(step: Step, state: State): [string, string] {
-  const { images, masks, model, exports, lods } = state;
+  const { images, masks, model, exports, lods, dense, meshes } = state;
   const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
   switch (step) {
     case "frames":
@@ -205,5 +211,9 @@ export function stepMetric(step: Step, state: State): [string, string] {
     }
     case "lod":
       return [lods.length ? plural(lods.length, "set") : "none", "splat-transform"];
+    case "dense":
+      return [dense ? plural(dense.points, "point") : "none", "openmvs"];
+    case "mesh":
+      return [meshes.length ? plural(meshes.length, "mesh") : "none", "openmvs"];
   }
 }
