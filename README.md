@@ -32,7 +32,8 @@ gausser view                             # open the result in SuperSplat
 `--monitor` (on `run`, `frames`, `mask`, `solve`, `train` and `lod`) opens the scene in the web monitor at
 http://127.0.0.1:8737/: each step's progress and live log, the COLMAP cameras and points as the mapper adds
 them, and the splat as Brush trains it (every `--export-every` steps, 5000 by default). Click a camera to see
-its photo or look through it, compare two splats side by side, and compare training runs. With
+its photo or look through it, compare two splats side by side, show a `gausser mesh` result in the same
+frame (alone or over the splat), and compare training runs. With
 `train --eval-split N`, the Renders tab shows Brush's render of each held-out photo next to the photo, with PSNR.
 A toast (and, if you allow it, a desktop notification) tells you when a step ends.
 
@@ -77,7 +78,7 @@ Without `--prompt`, no new masks are made, but existing masks are still used. Ad
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [--background jutaka] [--target X Y Z --radius R --height H] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
 | `gausser status` | Shows what the scene has and which tools are installed | — |
-| `gausser monitor [--all] [--no-open]` | Opens the scene (or the list of all scenes) in the web monitor: steps, logs, stats, images, COLMAP cameras, splats, eval renders | — |
+| `gausser monitor [--all] [--no-open]` | Opens the scene (or the list of all scenes) in the web monitor: steps, logs, stats, images, COLMAP cameras, splats, meshes, eval renders | — |
 
 `gausser frames` needs no tuning for a walk-around video. One pass decodes the video (ffmpeg) and scores every
 frame for focus and camera motion (OpenCV optical flow); a frame is picked each time the view has moved on by a

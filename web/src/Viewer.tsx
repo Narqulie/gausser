@@ -3,6 +3,7 @@ import type { MutableRefObject } from "react";
 import { Canvas, useFrame, useLoader, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 import { bytes, fileUrl, thumbUrl, useFetched } from "./api";
 import type { Camera, Export, Model, State } from "./api";
@@ -10,7 +11,7 @@ import type { Camera, Export, Model, State } from "./api";
 const AUTO = "auto";
 const NONE = "none";
 
-type Layers = { cameras: boolean; points: boolean; splat: boolean; grid: boolean };
+type Layers = { cameras: boolean; points: boolean; splat: boolean; mesh: boolean; grid: boolean };
 type Splat = Export & { label: string };
 
 /** Camera pose shared by the two views of a comparison; the view last touched leads. */
@@ -50,7 +51,8 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
   const [modelPick, setModelPick] = useState(AUTO);
   const [splatPick, setSplatPick] = useState(AUTO);
   const [comparePick, setComparePick] = useState(NONE);
-  const [show, setShow] = useState<Layers>({ cameras: true, points: true, splat: true, grid: true });
+  const [meshPick, setMeshPick] = useState(NONE);
+  const [show, setShow] = useState<Layers>({ cameras: true, points: true, splat: true, mesh: true, grid: true });
   const [pointSize, setPointSize] = useState(1);
   const [selected, setSelected] = useState<string | null>(focus);
   const [look, setLook] = useState<LookRequest | null>(null);
@@ -60,6 +62,7 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
   const modelChoice = modelPick === AUTO ? models[0] : models.find((m) => m.path === modelPick) ?? models[0];
   const splatChoice = splatPick === AUTO ? splats[0] : splats.find((s) => s.path === splatPick) ?? splats[0];
   const compareChoice = splats.find((s) => s.path === comparePick) ?? null;
+  const meshChoice = state.meshes.find((m) => m.path === meshPick) ?? null;
   const model = useFetched<Model>(modelChoice ? "model" : null, { path: modelChoice?.path ?? "" }, modelChoice?.key);
   const frame = useMemo(() => (model ? sceneFrame(model) : null), [model]);
   const camera = model?.cameras.find((c) => c.name === selected) ?? null;
@@ -87,6 +90,13 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
           <select value={comparePick} onChange={(e) => setComparePick(e.target.value)} disabled={splats.length < 2}>
             <option value={NONE}>nothing</option>
             {splats.map((s) => <option key={s.path} value={s.path}>{s.label}</option>)}
+          </select>
+        </section>
+        <section>
+          <span className="label">mesh</span>
+          <select value={meshPick} onChange={(e) => setMeshPick(e.target.value)} disabled={!state.meshes.length}>
+            <option value={NONE}>{state.meshes.length ? "none" : "none built yet"}</option>
+            {[...state.meshes].reverse().map((m) => <option key={m.path} value={m.path}>{m.path.split("/").slice(1, -1).join("/")}</option>)}
           </select>
         </section>
         <section>
@@ -133,7 +143,7 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
           </section>
         )}
       </aside>
-      {!model && !splatChoice ? (
+      {!model && !splatChoice && !meshChoice ? (
         <div className="canvas">
           <div className="empty">Cameras appear here once COLMAP places them, and the splat once Brush exports one.</div>
         </div>
@@ -142,7 +152,7 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
           {views.map((splat, id) => (
             <View
               key={id} id={id} sync={compareChoice ? sync : null} model={model} frame={frame} show={show} pointSize={pointSize}
-              splat={splat ?? null} selected={selected} onPick={setSelected} look={look} label={compareChoice ? splat?.label : undefined}
+              splat={splat ?? null} mesh={meshChoice?.path ?? null} selected={selected} onPick={setSelected} look={look} label={compareChoice ? splat?.label : undefined}
             />
           ))}
           <div className="canvas-hint">click a camera · drag to orbit · right-drag to pan · scroll to zoom</div>
@@ -152,11 +162,12 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
   );
 }
 
-function View({ id, sync, model, frame, show, pointSize, splat, selected, onPick, look, label }: {
+function View({ id, sync, model, frame, show, pointSize, splat, mesh, selected, onPick, look, label }: {
   id: number; sync: MutableRefObject<Sync> | null; model: Model | null; frame: Frame | null; show: Layers; pointSize: number;
-  splat: Splat | null; selected: string | null; onPick: (name: string) => void; look: LookRequest | null; label?: string;
+  splat: Splat | null; mesh: string | null; selected: string | null; onPick: (name: string) => void; look: LookRequest | null; label?: string;
 }) {
   const [status, setStatus] = useState("");
+  const [meshStatus, setMeshStatus] = useState("");
   const [hover, setHover] = useState<{ name: string; x: number; y: number } | null>(null);
   const depth = (frame?.scale ?? 1) * 0.06;
   const group = useRef<THREE.Group>(null);
@@ -183,6 +194,7 @@ function View({ id, sync, model, frame, show, pointSize, splat, selected, onPick
             </Suspense>
           )}
           {show.splat && splat && <SplatView path={splat.path} onStatus={setStatus} />}
+          {show.mesh && mesh && <MeshView path={mesh} onStatus={setMeshStatus} />}
         </group>
         {model && show.cameras && <CameraPicker cameras={model.cameras} depth={depth} group={group} onPick={onPick} onHover={setHover} />}
         {model && frame && <LookThrough request={look} cameras={model.cameras} group={group} scale={frame.scale} />}
@@ -191,7 +203,7 @@ function View({ id, sync, model, frame, show, pointSize, splat, selected, onPick
       </Canvas>
       {label && <div className="canvas-label">{label}</div>}
       {hover && <div className="canvas-tip" style={{ left: hover.x + 14, top: hover.y + 10 }}>{hover.name}</div>}
-      {status && <div className="canvas-note">{status}</div>}
+      {(status || (mesh && meshStatus)) && <div className="canvas-note">{[status, mesh && meshStatus].filter(Boolean).join(" · ")}</div>}
     </div>
   );
 }
@@ -505,6 +517,55 @@ function Photo({ camera, depth }: { camera: Camera; depth: number }) {
       </mesh>
     </group>
   );
+}
+
+/**
+ * An OpenMVS mesh (runs/mesh/<time>/mesh.glb). Its vertices are in COLMAP coordinates and its root node turns
+ * them Y-up, so the node transforms are dropped: the scene group already turns COLMAP into the viewer frame.
+ * The textures are PNGs beside the GLB, fetched through the file API like the GLB itself.
+ */
+function MeshView({ path, onStatus }: { path: string; onStatus: (status: string) => void }) {
+  const [object, setObject] = useState<THREE.Object3D | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const folder = path.split("/").slice(0, -1).join("/");
+    const manager = new THREE.LoadingManager();
+    manager.setURLModifier((url) => (url.startsWith("blob:") || url.startsWith("data:") || url.includes("api/file?") ? url : fileUrl(`${folder}/${url.split("/").pop()}`)));
+    onStatus("loading mesh");
+    new GLTFLoader(manager).load(
+      fileUrl(path),
+      (gltf) => {
+        if (cancelled) return;
+        let faces = 0;
+        gltf.scene.traverse((node) => {
+          node.position.set(0, 0, 0);
+          node.quaternion.identity();
+          node.scale.set(1, 1, 1);
+          if (node instanceof THREE.Mesh) faces += (node.geometry.index?.count ?? 0) / 3;
+        });
+        setObject(gltf.scene);
+        onStatus(`mesh, ${faces.toLocaleString()} faces`);
+      },
+      (event) => !cancelled && event.total && onStatus(`loading mesh ${Math.round((100 * event.loaded) / event.total)}%`),
+      (error) => !cancelled && onStatus(`could not load ${path}: ${String(error)}`),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [path, onStatus]);
+  useEffect(
+    () => () =>
+      object?.traverse((node) => {
+        if (!(node instanceof THREE.Mesh)) return;
+        node.geometry.dispose();
+        for (const material of [node.material].flat()) {
+          (material as THREE.MeshBasicMaterial).map?.dispose();
+          material.dispose();
+        }
+      }),
+    [object],
+  );
+  return object ? <primitive object={object} /> : null;
 }
 
 /** A trained splat; a new one replaces the shown one only once it has loaded. */

@@ -33,7 +33,7 @@ src/gausser/
 ├── orbit.py   `gausser orbit`: camera path and up from sparse/0 (cameras' level right axes); runs orbit.mjs with node
 ├── orbit.mjs  Playwright driver: sets camera keys in SuperSplat and saves its `render.video` download
 ├── monitor.py `gausser monitor` / `--monitor`: read-only HTTP JSON API + the built page in web/ (gitignored)
-web/           the monitor page: Vite + React + three/R3F + Spark (splats) + recharts; `npm run build` → src/gausser/web/
+web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLTFLoader (OpenMVS meshes: COLMAP-coordinate vertices, the GLB's Y-up node matrix is dropped; textures fetched through `api/file`) + recharts; `npm run build` → src/gausser/web/
 └── scene.py   Scene paths, image listing, replace()/remove(), run_tool()
 ```
 
