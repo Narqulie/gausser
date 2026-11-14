@@ -66,6 +66,7 @@ export interface State {
   dense: { points: number; current: boolean } | null;
   meshes: { path: string; mtime: number }[];
   mesh_current: boolean;
+  crop: { up: number[]; min: [number, number, number]; max: [number, number, number] } | null;
 }
 
 export interface Camera {

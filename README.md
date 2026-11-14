@@ -68,7 +68,8 @@ Without `--prompt`, no new masks are made, but existing masks are still used. Ad
 | `gausser mask PROMPT --exclude [--dilation N]` | SAM3 blacks out every instance of PROMPT (e.g. people), except inside `masks/` | `masks-exclude/` |
 | `gausser solve [--no-masks]` | COLMAP finds the camera poses; images with GPS put the model in a map projection | `database.db`, `sparse/0/` (and `sparse/geo.json`) |
 | `gausser dense [--resolution-level N]` | OpenMVS estimates a depth map per image (on the GPU) and fuses them into a dense point cloud | `dense/` |
-| `gausser train [--no-masks \| --exclude-masks] [--init auto\|dense\|sparse] [-- args]` | Brush (default) or `--trainer msplat` trains splats; Brush starts from `dense/` when it exists; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
+| `gausser crop [--box=x,y,z,X,Y,Z --up=x,y,z \| --clear]` | Sets the box `train` and `mesh` keep to; draw it in the monitor (3D tab, crop), which shows this command | `sparse/crop.json` |
+| `gausser train [--no-masks \| --exclude-masks] [--init auto\|dense\|sparse] [--adaptive [--max-iterations N]] [-- args]` | Brush (default) or `--trainer msplat` trains splats; Brush starts from `dense/` when it exists; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
 | `gausser mesh [--faces N] [--no-refine] [--texture-size N]` | OpenMVS meshes, refines and textures the dense cloud | `runs/mesh/<time>/mesh.glb` |
 | `gausser map [PLY] [--resolution M]` | Renders the splat straight down into an orthophoto and a surface model (DSM) in the scene's CRS, and a web map with the orthophoto over it | `runs/map/<time>/{ortho.tif,dsm.tif,map.html}` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
@@ -297,10 +298,10 @@ The files are the state. There is no database or manifest.
 - A step counts as up to date when its output matches its input:
   - masks: every image has a mask;
   - solve: the COLMAP database lists exactly the current images;
-  - train: the newest export is newer than the model;
+  - train: the newest export is newer than the model and the crop;
   - dense: `dense/scene_dense.ply` is newer than the model;
   - lod: the newest LOD set is newer than the newest export;
-  - mesh: the newest mesh is newer than the dense cloud.
+  - mesh: the newest mesh is newer than the dense cloud and the crop.
 
   `gausser status` marks anything out of date.
 - New frames delete the masks, the COLMAP model and `dense/`, new masks delete the
@@ -341,6 +342,18 @@ The files are the state. There is no database or manifest.
 - **Quality.** `gausser train --eval-split 8` holds out every 8th image and
   prints `Eval iter N: PSNR …, ssim …` every 1000 steps and at the end. Compare
   runs with the same split.
+- **Adaptive steps.** `train --adaptive` trains `--iterations` (30000) first, then 5000 more steps at a time
+  while the held-out PSNR gains at least 0.1 dB, up to `--max-iterations` (60000). It holds out every 20th
+  image unless `--eval-split` says otherwise. Brush has no checkpoints: each continuation starts from the last
+  export (an `init.ply` in Brush's folder) with `--start-iter`, so splat growth stays off, and its mean learning
+  rate restarts at 2e-7, where the first run's schedule ended. A continuation that lowers the PSNR leaves no export.
+- **Crop.** `gausser crop` keeps work to a box around the subject. Brush starts only from the points inside it
+  (the dense cloud is cropped before it is thinned to 500k), the run's exports keep only the splats whose
+  centres are inside (Brush still trains on whole images, so the background is fitted and then cut off), and
+  `mesh` cuts the surface to the box before refining, so RefineMesh and TextureMesh only work on the subject.
+  The box is axis-aligned in the model's level frame (the shortest turn of the cameras' up onto +y, as the
+  monitor shows it). A new crop makes `train` and `mesh` out of date; a new solve removes it with `sparse/`.
+  Write negative numbers with `=` (`--box=-1,0,-1,1,2,1`).
 - **Msplat** is experimental. It has no mask input, so with masks gausser
   composites each image onto black and trains against a black background. The
   masked-out areas become empty space (so `--miss drop` images become all black

@@ -1,0 +1,1065 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gausser: crop box and adaptive training steps (2026-11-14)</title>
+<style>
+  /* Tokens from gausser's monitor (web/src/styles.css). */
+  :root {
+    --bg: #241b2f; --deep: #171520; --raise: #2a2139; --line: #34294f;
+    --text: #f0eff1; --muted: #848bbd; --dim: #614d85;
+    --frames: #fede5d; --mask: #ff8b39; --solve: #36f9f6; --train: #ff7edb; --lod: #72f1b8; --red: #fe4450;
+    --font: mononoki, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var(--font); }
+  main { max-width: 1200px; margin: 0 auto; padding: 28px 24px 80px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; color: var(--solve); margin: 36px 0 10px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  h3 { font-size: 14px; color: var(--train); margin: 20px 0 6px; }
+  p, li { max-width: 100ch; }
+  .muted { color: var(--muted); }
+  code { color: var(--frames); }
+  a { color: var(--solve); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: normal; }
+  img.full { width: 100%; border: 1px solid var(--line); border-radius: 6px; }
+  .cap { display: grid; grid-template-columns: 1fr 1fr; color: var(--muted); font-size: 12px; margin: 2px 0 14px; }
+  pre { background: var(--deep); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow: auto; font-size: 12px; max-height: 640px; }
+  details { margin: 6px 0; } summary { cursor: pointer; color: var(--muted); }
+  .chart { width: 100%; background: var(--deep); border: 1px solid var(--line); border-radius: 6px; }
+  .chart text { fill: var(--muted); font: 12px var(--font); }
+  .chart .g { stroke: var(--line); } .chart .l { fill: none; stroke: var(--train); stroke-width: 2; }
+  .chart .d { fill: var(--frames); } .chart .ext { fill: var(--lod); opacity: .12; } .chart .extl { fill: var(--lod); }
+  .good { color: var(--lod); } .warn { color: var(--mask); }
+</style>
+</head>
+<body>
+<main>
+<h1>Gausser: crop box and adaptive training steps</h1>
+<p class="muted">2026-11-14 · the Captain's two improvement notes from the IMG_8826 bark-hut run · tested on scene <code>~/Downloads/IMG_8826</code> (559 frames of a 72 s iPhone 4K video)</p>
+
+<h2>Changelog</h2>
+<ul>
+  <li><b>gausser crop</b>: a box around the subject in <code>sparse/crop.json</code>. <code>train</code> starts Brush only from points inside it and cuts its exports to it; <code>mesh</code> cuts the surface to it before refining and texturing. A new crop makes train and mesh out of date; a new solve drops it.</li>
+  <li><b>Monitor crop editor</b>: the 3D tab draws the stored box and has a gizmo (move arrows, plane squares, per-axis scale dots) to draw a new one. It shows the <code>gausser crop --box=… --up=…</code> command with a Copy button; the monitor still never writes to a scene.</li>
+  <li><b>train --adaptive</b>: after <code>--iterations</code> (30000), Brush continues 5000 steps at a time from its last export while the held-out PSNR gains at least 0.1 dB, up to <code>--max-iterations</code> (60000). A continuation that lowers PSNR leaves no export.</li>
+  <li><b>Small</b>: <code>psnr</code> moved from <code>monitor.py</code> to <code>steps.py</code> (used by both); status says "older than the model or the crop".</li>
+  <li><b>Pushed earlier today</b>: <code>e5a0f29</code>, mesh layer in the monitor's 3D view.</li>
+</ul>
+
+<h2>Results on IMG_8826</h2>
+<table>
+<tr><th>run</th><th>train</th><th>held-out PSNR</th><th>splats kept by crop</th><th>mesh</th></tr>
+<tr><td>before (no crop, 30k)</td><td>39m 22s</td><td>not measured (no eval split)</td><td>-</td><td>2,226,555 faces, 29m 27s</td></tr>
+<tr><td>after (<code>run --mesh --adaptive</code>, crop)</td><td>1h 04m (30k + 5k + crop)</td><td>20.87 dB at 30k → 20.95 dB at 35k, stopped (+0.07 &lt; 0.1)</td><td>1,494,754 of 1,500,000</td><td>2,088,885 faces, 39m 55s</td></tr>
+</table>
+<p>Observed:</p>
+<ul>
+  <li>The crop removed only 5,246 splats (0.35%), but those are the large hazy background splats: the wide view below loses the blur that filled the frame.</li>
+  <li>Elongated splats whose centres are inside the box but which reach far out are kept; they show as thin streaks around the cut edge (right images). Filtering by extent, not only centre, would remove them; not done.</li>
+  <li>The dense cloud lies mostly inside the box (21.7M of 22.4M points kept), so cropping the start points changed little here. It matters more for scenes whose dense cloud reaches far beyond the subject.</li>
+  <li>The mesh crop kept 10.77M of 11.20M raw faces before refining, so it saved no time on this scene. The second mesh took 10 minutes longer. RefineMesh ran the same passes (45, 5-6, 22, 3 iterations); its 22-iteration pass took 12m 0s against 6m 29s before on a similar face count. The crop does not explain that; it may be load on the Mac, and I did not investigate further.</li>
+  <li>The 5k continuation gained +0.07 dB, below the 0.1 dB bar, so training stopped at 35k. The curve was already flat from about 21k.</li>
+</ul>
+
+<h2>Crop: editor in the monitor</h2>
+<p>WHAT: section <b>crop</b> in the 3D tab: "Draw a crop box" starts from a box around the scene centre; dragging the gizmo updates the size and the command; "Copy command" puts it on the clipboard. WHY: the Captain asked for cropping in the viewer before training; the monitor stays read-only (AGENTS.md rule), so the CLI writes the crop. WHERE: <a href="../../web/src/Viewer.tsx">web/src/Viewer.tsx</a> (<code>CropSection</code>, <code>CropBox</code>, <code>cropCommand</code>), <a href="../../src/gausser/monitor.py">monitor.py</a> (<code>state()["crop"]</code>).</p>
+<img class="full" src="2026-11-14-crop-adaptive/crop-editor.jpg" alt="Monitor 3D tab with the crop gizmo and the copy command">
+<p class="muted">Playwright drag test: the y arrow moved the box up by 1.17 units and the copied command matched the shown one.</p>
+<img class="full" src="2026-11-14-crop-adaptive/crop-stored.jpg" alt="Stored crop box drawn over the splat, top view">
+<p class="muted">The stored crop (yellow box) over the old splat, before training.</p>
+
+<h2>Crop: splat before and after</h2>
+<p>WHAT: exports keep only splats whose centres are in the box; Brush starts only from points in it. WHERE: <a href="../../src/gausser/crop.py">src/gausser/crop.py</a> (<code>level_rotation</code>, <code>Crop.inside</code>, <code>crop_splats</code>), <a href="../../src/gausser/steps.py">steps.py</a> (<code>start_points</code>, the crop loop at the end of <code>train_brush</code>). The box is in the level frame: model coordinates turned by the shortest rotation of the cameras' up onto +y, the same turn the monitor makes, so the box drawn there is the box applied.</p>
+<img class="full" src="2026-11-14-crop-adaptive/splat-wide-ab.jpg" alt="Wide view: old splat with background haze, new cropped splat">
+<div class="cap"><span>before: export_30000, uncropped</span><span>after: export_35000, cropped</span></div>
+<img class="full" src="2026-11-14-crop-adaptive/splat-near-ab.jpg" alt="Near view of the hut, before and after">
+<div class="cap"><span>before</span><span>after</span></div>
+<p class="muted">Rendered with <code>splat-transform</code> from the same cameras, both in the published 3D-share frame.</p>
+
+<h2>Crop: mesh before and after</h2>
+<p>WHAT: <code>mesh</code> cuts ReconstructMesh's surface to the box (faces with all three corners inside) before RefineMesh and TextureMesh. WHERE: <code>crop_mesh</code> in crop.py, called from <code>steps.mesh</code>.</p>
+<img class="full" src="2026-11-14-crop-adaptive/mesh-ab.jpg" alt="Old mesh with ragged edges, new mesh cut to the box">
+<div class="cap"><span>before: mesh/20261114-150233</span><span>after: mesh/20261114-193816, cut to the box</span></div>
+
+<h2>Adaptive steps: held-out PSNR</h2>
+<p>WHAT: <code>train --adaptive</code>. WHY: the Captain's note: check at each checkpoint and run +5k while there is room to improve. HOW: Brush 1.0 has no resume, but it loads a file named <code>init.ply</code> in its input folder as the full starting splats (positions, scales, rotations, colours, opacity). Each continuation links the last export there and passes <code>--start-iter N</code>, which keeps growth off (it stops at 15000) and keeps step numbers in export and eval names. Brush's mean learning rate restarts its schedule from step 0 in a new process, so gausser sets <code>--lr-mean 2e-7 --lr-mean-end 1e-7</code>, where the first run ended. Adam's moments do restart. The decision uses <code>steps.eval_psnr</code> over Brush's saved held-out renders (every 20th image held out by default), not Brush's log. WHERE: <a href="../../src/gausser/steps.py">steps.py</a> <code>extend</code>, <code>eval_psnr</code>; <a href="../../src/gausser/cli.py">cli.py</a> <code>--adaptive</code>, <code>--max-iterations</code>.</p>
+<svg viewBox="0 0 900 300" class="chart"><line x1="44" x2="856" y1="256.0" y2="256.0" class="g"/><text x="38" y="260.0" text-anchor="end">18</text><line x1="44" x2="856" y1="189.8" y2="189.8" class="g"/><text x="38" y="193.8" text-anchor="end">19</text><line x1="44" x2="856" y1="123.5" y2="123.5" class="g"/><text x="38" y="127.5" text-anchor="end">20</text><line x1="44" x2="856" y1="57.2" y2="57.2" class="g"/><text x="38" y="61.2" text-anchor="end">21</text><text x="44.0" y="274" text-anchor="middle">0k</text><text x="160.0" y="274" text-anchor="middle">5k</text><text x="276.0" y="274" text-anchor="middle">10k</text><text x="392.0" y="274" text-anchor="middle">15k</text><text x="508.0" y="274" text-anchor="middle">20k</text><text x="624.0" y="274" text-anchor="middle">25k</text><text x="740.0" y="274" text-anchor="middle">30k</text><text x="856.0" y="274" text-anchor="middle">35k</text>
+<rect x="740.0" y="44" width="116.0" height="212" class="ext"/>
+<text x="798.0" y="36" text-anchor="middle" class="extl">+5k continuation</text>
+<polyline points="67.2,251.5 90.4,166.4 113.6,133.8 136.8,105.9 160.0,100.6 183.2,98.0 206.4,92.3 229.6,87.7 252.8,86.8 276.0,84.7 299.2,80.0 322.4,78.6 345.6,79.0 368.8,74.2 392.0,71.0 415.2,76.3 438.4,76.9 461.6,70.4 484.8,69.2 508.0,71.6 531.2,65.9 554.4,66.5 577.6,67.7 600.8,64.3 624.0,67.1 647.2,67.5 670.4,63.1 693.6,68.1 716.8,68.1 740.0,65.6 763.2,65.3 786.4,65.3 809.6,66.8 832.8,60.5 856.0,60.6" class="l"/>
+<circle cx="740.0" cy="65.6" r="4" class="d"/><circle cx="856.0" cy="60.6" r="4" class="d"/>
+<text x="732.0" y="85.6" text-anchor="end">20.87 dB</text>
+<text x="856.0" y="50.6" text-anchor="end">20.95 dB</text>
+</svg>
+<p class="muted">Mean PSNR of the 28 held-out photos per 1000 steps (gausser's own measure, whole image). Brush's log reported 20.73 → 20.81 dB for the same steps.</p>
+
+<h2>Verification</h2>
+<ul>
+  <li><code>pytest</code>: 120 passed (6 new in <a href="../../tests/test_crop.py">tests/test_crop.py</a>: level rotation equals three.js, crop CLI and staleness, Brush start points and export crop, mesh crop, adaptive continue/stop including a worse continuation).</li>
+  <li><code>ruff check src tests</code>, <code>mypy src</code>: clean. <code>web: npm run build</code> (tsc + vite): clean.</li>
+  <li>Real run: <code>gausser run --mesh --adaptive</code> on IMG_8826 with the crop, end to end, outputs as above.</li>
+  <li>Not run: the Docker Python 3.10 and package-build gates (no release).</li>
+</ul>
+
+<h2>Diff</h2>
+<pre> AGENTS.md              |   9 ++++
+ README.md              |  19 ++++++--
+ src/gausser/cli.py     |  56 ++++++++++++++++++++--
+ src/gausser/crop.py    | 114 ++++++++++++++++++++++++++++++++++++++++++++
+ src/gausser/monitor.py |  18 +------
+ src/gausser/scene.py   |  10 ++--
+ src/gausser/steps.py   | 125 ++++++++++++++++++++++++++++++++++++++++++++----
+ tests/test_crop.py     | 127 +++++++++++++++++++++++++++++++++++++++++++++++++
+ web/src/Viewer.tsx     | 105 ++++++++++++++++++++++++++++++++++++++--
+ web/src/api.ts         |   1 +
+ web/src/styles.css     |   1 +
+ 11 files changed, 545 insertions(+), 40 deletions(-)
+</pre>
+<details><summary>full diff (941 lines)</summary><pre>diff --git a/AGENTS.md b/AGENTS.md
+index 7f9ee97..a63ac55 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -25,6 +25,7 @@ src/gausser/
+ ├── arkit.py   iPhone LiDAR scans (Stray Scanner folder): arkit/ poses, depth maps and LiDAR points; solve&#x27;s snap to metres
+ ├── geo.py     GPS: DJI .SRT subtitle tracks → EXIF GPS in frames; solve&#x27;s georeference (similarity onto GPS in EPSG:3067/UTM)
+ ├── mapping.py `gausser map`: orthographic top-down splat render → ortho.tif, dsm.tif (COG, rasterio), map.html (Leaflet)
++├── crop.py    `gausser crop`: box in the level frame (sparse/crop.json); crops Brush&#x27;s start points, exports and the OpenMVS mesh
+ ├── colmap_model.py the one reader of binary COLMAP models (cameras.bin, images.bin, points3D.bin)
+ ├── msplat.py  experimental Msplat trainer with checkpoint resume; masks via black compositing
+ ├── composite.py `gausser composite`: visual-hull filter of the statue splat, voxel carve of the context, PLY merge
+@@ -81,6 +82,14 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLT
+   record is also appended there with its `scene`, and `gausser monitor` adds an `opened` record. API
+   requests name their scene (`?scene=`); folders not in the index are refused. Tests set `GAUSSER_HOME`
+   to a temporary folder (autouse fixture). The end record of `train`/`lod` carries `run` (the run folder).
++- `crop` (sparse/crop.json, `{up, min, max}`): the box is axis-aligned in the level frame = model coordinates turned by the
++  shortest rotation of `up` (orbit.camera_up) onto +y, exactly the monitor&#x27;s `sceneFrame` turn (three.js setFromUnitVectors);
++  `crop.level_rotation` must stay equal to it. The monitor draws/edits the box but only shows a `gausser crop --box=… --up=…`
++  command to copy; it never writes. Crop mtime counts as an input of train and mesh (`Scene._crop_time`).
++- `train --adaptive` (steps.extend): continuations put `init.ply` → the last export into Brush&#x27;s dataset folder (Brush loads
++  a file named init.ply over any points3D.bin), add `--start-iter N` (keeps growth off and step numbers) and
++  `--lr-mean 2e-7 --lr-mean-end 1e-7` (Brush&#x27;s mean LR schedule restarts from step_count 0). Judged by `steps.eval_psnr`
++  from the saved eval renders, not by parsing Brush&#x27;s log. Crop is applied to exports only after the last continuation.
+ - `train --eval-split N` adds `--eval-save-to-disk`: Brush writes `exports/eval_&lt;step&gt;/images/&lt;stem&gt;.png`;
+   the monitor computes PSNR against `images/&lt;stem&gt;.*` itself (Brush logs only the mean).
+ - Log parsing for progress and stats lives in `web/src/parse.ts` only; the CLI still passes tool output
+diff --git a/README.md b/README.md
+index 3ffcfd8..5101e34 100644
+--- a/README.md
++++ b/README.md
+@@ -68,7 +68,8 @@ Without `--prompt`, no new masks are made, but existing masks are still used. Ad
+ | `gausser mask PROMPT --exclude [--dilation N]` | SAM3 blacks out every instance of PROMPT (e.g. people), except inside `masks/` | `masks-exclude/` |
+ | `gausser solve [--no-masks]` | COLMAP finds the camera poses; images with GPS put the model in a map projection | `database.db`, `sparse/0/` (and `sparse/geo.json`) |
+ | `gausser dense [--resolution-level N]` | OpenMVS estimates a depth map per image (on the GPU) and fuses them into a dense point cloud | `dense/` |
+-| `gausser train [--no-masks \| --exclude-masks] [--init auto\|dense\|sparse] [-- args]` | Brush (default) or `--trainer msplat` trains splats; Brush starts from `dense/` when it exists; args after `--` go to Brush | `runs/brush/&lt;time&gt;/exports/*.ply` |
++| `gausser crop [--box=x,y,z,X,Y,Z --up=x,y,z \| --clear]` | Sets the box `train` and `mesh` keep to; draw it in the monitor (3D tab, crop), which shows this command | `sparse/crop.json` |
++| `gausser train [--no-masks \| --exclude-masks] [--init auto\|dense\|sparse] [--adaptive [--max-iterations N]] [-- args]` | Brush (default) or `--trainer msplat` trains splats; Brush starts from `dense/` when it exists; args after `--` go to Brush | `runs/brush/&lt;time&gt;/exports/*.ply` |
+ | `gausser mesh [--faces N] [--no-refine] [--texture-size N]` | OpenMVS meshes, refines and textures the dense cloud | `runs/mesh/&lt;time&gt;/mesh.glb` |
+ | `gausser map [PLY] [--resolution M]` | Renders the splat straight down into an orthophoto and a surface model (DSM) in the scene&#x27;s CRS, and a web map with the orthophoto over it | `runs/map/&lt;time&gt;/{ortho.tif,dsm.tif,map.html}` |
+ | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/&lt;time&gt;/` |
+@@ -297,10 +298,10 @@ The files are the state. There is no database or manifest.
+ - A step counts as up to date when its output matches its input:
+   - masks: every image has a mask;
+   - solve: the COLMAP database lists exactly the current images;
+-  - train: the newest export is newer than the model;
++  - train: the newest export is newer than the model and the crop;
+   - dense: `dense/scene_dense.ply` is newer than the model;
+   - lod: the newest LOD set is newer than the newest export;
+-  - mesh: the newest mesh is newer than the dense cloud.
++  - mesh: the newest mesh is newer than the dense cloud and the crop.
+ 
+   `gausser status` marks anything out of date.
+ - New frames delete the masks, the COLMAP model and `dense/`, new masks delete the
+@@ -341,6 +342,18 @@ The files are the state. There is no database or manifest.
+ - **Quality.** `gausser train --eval-split 8` holds out every 8th image and
+   prints `Eval iter N: PSNR …, ssim …` every 1000 steps and at the end. Compare
+   runs with the same split.
++- **Adaptive steps.** `train --adaptive` trains `--iterations` (30000) first, then 5000 more steps at a time
++  while the held-out PSNR gains at least 0.1 dB, up to `--max-iterations` (60000). It holds out every 20th
++  image unless `--eval-split` says otherwise. Brush has no checkpoints: each continuation starts from the last
++  export (an `init.ply` in Brush&#x27;s folder) with `--start-iter`, so splat growth stays off, and its mean learning
++  rate restarts at 2e-7, where the first run&#x27;s schedule ended. A continuation that lowers the PSNR leaves no export.
++- **Crop.** `gausser crop` keeps work to a box around the subject. Brush starts only from the points inside it
++  (the dense cloud is cropped before it is thinned to 500k), the run&#x27;s exports keep only the splats whose
++  centres are inside (Brush still trains on whole images, so the background is fitted and then cut off), and
++  `mesh` cuts the surface to the box before refining, so RefineMesh and TextureMesh only work on the subject.
++  The box is axis-aligned in the model&#x27;s level frame (the shortest turn of the cameras&#x27; up onto +y, as the
++  monitor shows it). A new crop makes `train` and `mesh` out of date; a new solve removes it with `sparse/`.
++  Write negative numbers with `=` (`--box=-1,0,-1,1,2,1`).
+ - **Msplat** is experimental. It has no mask input, so with masks gausser
+   composites each image onto black and trains against a black background. The
+   masked-out areas become empty space (so `--miss drop` images become all black
+diff --git a/src/gausser/cli.py b/src/gausser/cli.py
+index eaa9a06..3f7fd52 100644
+--- a/src/gausser/cli.py
++++ b/src/gausser/cli.py
+@@ -9,13 +9,14 @@ import shlex
+ import shutil
+ import subprocess
+ import sys
++from collections.abc import Callable
+ from pathlib import Path
+ 
+ from . import keyframes, mapping, pano, steps
+ from .scene import GausserError, Scene, is_image, registered_images
+ 
+ STEPS = (&quot;frames&quot;, &quot;mask&quot;, &quot;solve&quot;, &quot;dense&quot;, &quot;train&quot;, &quot;lod&quot;, &quot;mesh&quot;, &quot;map&quot;)
+-COMMANDS = (&quot;run&quot;, *STEPS, &quot;subset&quot;, &quot;composite&quot;, &quot;align&quot;, &quot;view&quot;, &quot;orbit&quot;, &quot;status&quot;, &quot;monitor&quot;)
++COMMANDS = (&quot;run&quot;, *STEPS, &quot;crop&quot;, &quot;subset&quot;, &quot;composite&quot;, &quot;align&quot;, &quot;view&quot;, &quot;orbit&quot;, &quot;status&quot;, &quot;monitor&quot;)
+ QUICK_START = &quot;&quot;&quot;\
+ quick start:
+   gausser clip.mp4              guided: makes clip/ next to the video and walks you through
+@@ -72,6 +73,12 @@ def _add_train_options(parser: argparse.ArgumentParser) -&gt; None:
+         &quot;--eval-split&quot;, type=int, metavar=&quot;N&quot;,
+         help=&quot;Brush: hold out every Nth image and report PSNR/SSIM on it every 1000 steps&quot;,
+     )
++    group.add_argument(
++        &quot;--adaptive&quot;, action=&quot;store_true&quot;,
++        help=f&quot;Brush: after --iterations, train {steps.EXTEND_STEPS} more steps at a time while held-out PSNR gains &quot;
++        f&quot;{steps.MIN_GAIN_DB} dB (holds out every {steps.ADAPTIVE_EVAL_SPLIT}th image unless --eval-split is given)&quot;,
++    )
++    group.add_argument(&quot;--max-iterations&quot;, type=int, default=60000, help=&quot;Brush: --adaptive stops here (default 60000)&quot;)
+     group.add_argument(
+         &quot;--init&quot;, choices=(&quot;auto&quot;, &quot;dense&quot;, &quot;lidar&quot;, &quot;sparse&quot;), default=&quot;auto&quot;,
+         help=&quot;Brush: start from the dense cloud (dense/), an iPhone scan&#x27;s LiDAR points (arkit/) or COLMAP&#x27;s points; &quot;
+@@ -285,6 +292,18 @@ def build_parser() -&gt; argparse.ArgumentParser:
+     subset.add_argument(&quot;patterns&quot;, nargs=&quot;+&quot;, metavar=&quot;PATTERN&quot;, help=&quot;glob on image file names, e.g. &#x27;frame_*&#x27;&quot;)
+     subset.add_argument(&quot;-o&quot;, &quot;--output&quot;, type=Path, required=True, help=&quot;new scene folder (must not have images/)&quot;)
+ 
++    crop = commands.add_parser(
++        &quot;crop&quot;, parents=[common], help=&quot;keep training and meshing to a box around the subject&quot;,
++        description=&quot;Set the box `train` and `mesh` keep to (sparse/crop.json): Brush starts only from points in it, &quot;
++        &quot;its exports keep only splats in it, and the mesh is cut to it before refining. The box is in the model&#x27;s &quot;
++        &quot;level frame (up = +y); draw it in `gausser monitor` (3D tab, crop) and paste the command it shows. &quot;
++        &quot;Write negative numbers as --box=-1,0,-1,1,2,1. &quot;
++        &quot;A new crop makes train and mesh out of date; a new solve drops it. Without options: show the crop.&quot;,
++    )
++    crop.add_argument(&quot;--box&quot;, type=_floats(6), metavar=&quot;x,y,z,X,Y,Z&quot;, help=&quot;minimum and maximum corner, level frame&quot;)
++    crop.add_argument(&quot;--up&quot;, type=_floats(3), metavar=&quot;x,y,z&quot;, help=&quot;the model&#x27;s up the box was drawn with (default: computed)&quot;)
++    crop.add_argument(&quot;--clear&quot;, action=&quot;store_true&quot;, help=&quot;remove the crop&quot;)
++
+     commands.add_parser(&quot;status&quot;, parents=[common], help=&quot;show scene progress and installed tools&quot;)
+ 
+     monitor = commands.add_parser(
+@@ -300,6 +319,16 @@ def build_parser() -&gt; argparse.ArgumentParser:
+     return parser
+ 
+ 
++def _floats(count: int) -&gt; Callable[[str], list[float]]:
++    def parse(text: str) -&gt; list[float]:
++        values = [float(v) for v in text.split(&quot;,&quot;)]
++        if len(values) != count:
++            raise argparse.ArgumentTypeError(f&quot;expected {count} comma-separated numbers&quot;)
++        return values
++
++    return parse
++
++
+ def _levels(raw: str) -&gt; tuple[int, ...]:
+     try:
+         return tuple(int(value) for value in raw.split(&quot;,&quot;))
+@@ -319,6 +348,9 @@ def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None, ex
+     if args.trainer == &quot;msplat&quot;:
+         from . import msplat
+ 
++        if args.adaptive:
++            raise GausserError(&quot;--adaptive is for Brush&quot;)
++
+         export = msplat.train(
+             scene, iterations=args.iterations, downscale_factor=args.downscale,
+             checkpoint_every=args.checkpoint_every, resume=resume, no_masks=args.no_masks,
+@@ -329,7 +361,7 @@ def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None, ex
+             scene, iterations=args.iterations, export_every=args.export_every,
+             max_splats=args.max_splats, max_resolution=args.max_resolution, eval_split=args.eval_split,
+             extra=extra or [], no_masks=args.no_masks, exclude_masks=getattr(args, &quot;exclude_masks&quot;, False),
+-            init=args.init,
++            init=args.init, adaptive=args.adaptive, max_iterations=args.max_iterations,
+         )
+ 
+ 
+@@ -437,7 +469,7 @@ def status(scene: Scene) -&gt; None:
+     for export in exports[-5:]:
+         print(f&quot;export  {export.relative_to(scene.root)}&quot;)
+     if exports and model and not scene.train_done():
+-        print(f&quot;        newest export is older than the model{stale}&quot;)
++        print(f&quot;        newest export is older than the model or the crop{stale}&quot;)
+     for run in scene.lod_runs()[-3:]:
+         print(f&quot;lod     {run.relative_to(scene.root)}&quot;)
+     for run in scene.mesh_runs()[-3:]:
+@@ -536,7 +568,7 @@ def main(argv: list[str] | None = None) -&gt; int:
+             return 0
+         with scene.lock(argv):
+             keep_awake()
+-            if args.monitor:
++            if getattr(args, &quot;monitor&quot;, False):  # crop has no --monitor
+                 from .monitor import spawn
+ 
+                 spawn(scene)
+@@ -617,6 +649,20 @@ def _frames(scene: Scene, source: Path, ranges: list[tuple[float, float]] | None
+     )
+ 
+ 
++def _crop(scene: Scene, args: argparse.Namespace) -&gt; None:
++    from . import crop
++
++    if args.clear:
++        scene.crop.unlink(missing_ok=True)
++        print(&quot;No crop&quot;)
++    elif args.box:
++        made = crop.save(scene, args.box, args.up)
++        print(f&quot;Crop set: {made.min} to {made.max} (level frame); train and mesh are now out of date&quot;)
++    else:
++        current = crop.load(scene)
++        print(f&quot;Crop: {current.min} to {current.max} (level frame, up {current.up})&quot; if current else &quot;No crop&quot;)
++
++
+ def dispatch(scene: Scene, args: argparse.Namespace) -&gt; None:
+     if args.command == &quot;run&quot;:
+         run_pipeline(scene, args)
+@@ -639,6 +685,8 @@ def dispatch(scene: Scene, args: argparse.Namespace) -&gt; None:
+             raise GausserError(&quot;--exclude-masks is for Brush and cannot be combined with --no-masks&quot;)
+         with scene.step(&quot;train&quot;, trainer=args.trainer, iterations=args.iterations) as made:
+             made[&quot;run&quot;] = str(_train(scene, args, args.resume, extra).relative_to(scene.root))
++    elif args.command == &quot;crop&quot;:
++        _crop(scene, args)
+     elif args.command == &quot;dense&quot;:
+         with scene.step(&quot;dense&quot;):
+             steps.dense(scene, args.resolution_level)
+diff --git a/src/gausser/crop.py b/src/gausser/crop.py
+new file mode 100644
+index 0000000..dd8fc79
+--- /dev/null
++++ b/src/gausser/crop.py
+@@ -0,0 +1,114 @@
++&quot;&quot;&quot;`gausser crop`: a box around the subject that training and meshing keep to.
++
++The box is axis-aligned in the model&#x27;s level frame: COLMAP coordinates turned by the shortest rotation
++that takes the model&#x27;s up (`orbit.camera_up`) onto +y, the same turn the monitor&#x27;s 3D view makes
++(three.js `Quaternion.setFromUnitVectors`). It is stored with the model in sparse/crop.json, so a new
++solve, which replaces sparse/, drops it.
++&quot;&quot;&quot;
++
++from __future__ import annotations
++
++import json
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any
++
++from .scene import GausserError, Scene, read_json
++
++
++def level_rotation(up: Any) -&gt; Any:
++    &quot;&quot;&quot;3×3 rotation taking the unit vector `up` onto +y by the shortest arc.&quot;&quot;&quot;
++    import numpy as np
++
++    u = np.asarray(up, dtype=float)
++    u = u / np.linalg.norm(u)
++    y = np.array([0.0, 1.0, 0.0])
++    c = float(u @ y)
++    if c &lt; -1 + 1e-9:  # upside down: half a turn about x
++        return np.diag([1.0, -1.0, -1.0])
++    v = np.cross(u, y)
++    k = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
++    return np.eye(3) + k + k @ k / (1 + c)
++
++
++@dataclass
++class Crop:
++    up: list[float]
++    min: list[float]
++    max: list[float]
++
++    def inside(self, points: Any) -&gt; Any:
++        &quot;&quot;&quot;Which of the N×3 model-coordinate `points` lie in the box.&quot;&quot;&quot;
++        import numpy as np
++
++        level = np.asarray(points, dtype=float) @ level_rotation(self.up).T
++        return ((level &gt;= self.min) &amp; (level &lt;= self.max)).all(axis=1)
++
++
++def load(scene: Scene) -&gt; Crop | None:
++    data = read_json(scene.crop)
++    return Crop(data[&quot;up&quot;], data[&quot;min&quot;], data[&quot;max&quot;]) if data else None
++
++
++def save(scene: Scene, box: list[float], up: list[float] | None = None) -&gt; Crop:
++    &quot;&quot;&quot;Store the box x,y,z,X,Y,Z (level frame); `up` defaults to the model&#x27;s own.&quot;&quot;&quot;
++    from .orbit import camera_up
++
++    model = scene.require_model()
++    if len(box) != 6 or any(low &gt;= high for low, high in zip(box[:3], box[3:])):
++        raise GausserError(&quot;--box needs x,y,z,X,Y,Z with each minimum below its maximum&quot;)
++    crop = Crop([float(v) for v in (up if up is not None else camera_up(model / &quot;images.bin&quot;))], box[:3], box[3:])
++    scene.crop.write_text(json.dumps({&quot;up&quot;: crop.up, &quot;min&quot;: crop.min, &quot;max&quot;: crop.max}) + &quot;\n&quot;)
++    return crop
++
++
++def crop_splats(path: Path, crop: Crop) -&gt; tuple[int, int]:
++    &quot;&quot;&quot;Keep only the splats of a PLY export whose centres lie in the box; returns (kept, total).&quot;&quot;&quot;
++    from .composite import read_ply, write_ply, xyz
++
++    header, data = read_ply(path)
++    keep = crop.inside(xyz(data))
++    write_ply(path, header, data[keep])
++    return int(keep.sum()), len(data)
++
++
++def crop_mesh(path: Path, crop: Crop) -&gt; tuple[int, int]:
++    &quot;&quot;&quot;Keep the faces of an OpenMVS mesh PLY (float x,y,z; uchar/uint face lists) whose corners all lie in the box.&quot;&quot;&quot;
++    import numpy as np
++
++    with path.open(&quot;rb&quot;) as f:
++        header = b&quot;&quot;
++        while not header.endswith(b&quot;end_header\n&quot;):
++            line = f.readline()
++            if not line:
++                raise GausserError(f&quot;{path.name} is not a PLY file&quot;)
++            header += line
++        text = header.decode()
++        lines = text.splitlines()
++        vertex_props = [line.split()[-1] for line in lines if line.startswith(&quot;property float&quot;)]
++        if (
++            &quot;format binary_little_endian 1.0&quot; not in text or vertex_props != [&quot;x&quot;, &quot;y&quot;, &quot;z&quot;]
++            or &quot;property list uint8 uint32 vertex_indices&quot; not in text.replace(&quot;uchar&quot;, &quot;uint8&quot;).replace(&quot; uint &quot;, &quot; uint32 &quot;)
++        ):
++            raise GausserError(f&quot;{path.name}: expected an OpenMVS mesh (float x y z, uchar/uint face lists)&quot;)
++        vertex_count = int(text.split(&quot;element vertex &quot;)[1].split()[0])
++        face_count = int(text.split(&quot;element face &quot;)[1].split()[0])
++        vertices = np.fromfile(f, dtype=&quot;&lt;f4&quot;, count=vertex_count * 3).reshape(vertex_count, 3)
++        faces = np.fromfile(f, dtype=np.dtype([(&quot;n&quot;, &quot;u1&quot;), (&quot;i&quot;, &quot;&lt;u4&quot;, 3)]), count=face_count)
++    if (faces[&quot;n&quot;] != 3).any():
++        raise GausserError(f&quot;{path.name}: only triangle meshes are supported&quot;)
++    triangles = faces[&quot;i&quot;][crop.inside(vertices)[faces[&quot;i&quot;]].all(axis=1)]
++    used = np.unique(triangles)
++    index = np.full(vertex_count, -1, dtype=np.int64)
++    index[used] = np.arange(len(used))
++    out = np.empty(len(triangles), dtype=faces.dtype)
++    out[&quot;n&quot;], out[&quot;i&quot;] = 3, index[triangles]
++    with path.open(&quot;wb&quot;) as f:
++        f.write(
++            &quot;ply\nformat binary_little_endian 1.0\n&quot;
++            f&quot;element vertex {len(used)}\nproperty float x\nproperty float y\nproperty float z\n&quot;
++            f&quot;element face {len(out)}\nproperty list uchar uint vertex_indices\nend_header\n&quot;.encode()
++        )
++        vertices[used].astype(&quot;&lt;f4&quot;).tofile(f)
++        out.tofile(f)
++    return len(out), face_count
+diff --git a/src/gausser/monitor.py b/src/gausser/monitor.py
+index 91c5022..8bd6d36 100644
+--- a/src/gausser/monitor.py
++++ b/src/gausser/monitor.py
+@@ -9,7 +9,6 @@ from __future__ import annotations
+ 
+ import io
+ import json
+-import math
+ import mimetypes
+ import os
+ import re
+@@ -222,6 +221,7 @@ def state(scene: Scene) -&gt; dict[str, Any]:
+         &quot;dense&quot;: cloud and {&quot;points&quot;: pipeline.ply_count(cloud), &quot;current&quot;: scene.dense_done()},
+         &quot;meshes&quot;: [{&quot;path&quot;: _rel(scene, p / &quot;mesh.glb&quot;), &quot;mtime&quot;: mtime(p / &quot;mesh.glb&quot;)} for p in scene.mesh_runs()],
+         &quot;mesh_current&quot;: scene.mesh_done(),
++        &quot;crop&quot;: _read_json(scene.crop),  # {up, min, max}: `gausser crop`&#x27;s box in the level frame
+     }
+ 
+ 
+@@ -294,20 +294,6 @@ def thumbnail(path: Path, size: int) -&gt; bytes:
+     return out.getvalue()
+ 
+ 
+-def psnr(render: Path, photo: Path) -&gt; float:
+-    &quot;&quot;&quot;PSNR of a render against its photo, scaled to the render&#x27;s size, over the whole image.&quot;&quot;&quot;
+-    import numpy as np
+-    from PIL import Image
+-
+-    with Image.open(render) as r:
+-        a = np.asarray(r.convert(&quot;RGB&quot;), dtype=np.float32) / 255
+-    with Image.open(photo) as p:
+-        p.draft(&quot;RGB&quot;, (a.shape[1], a.shape[0]))
+-        b = np.asarray(p.convert(&quot;RGB&quot;).resize((a.shape[1], a.shape[0])), dtype=np.float32) / 255
+-    mse = float(((a - b) ** 2).mean())
+-    return round(10 * math.log10(1 / mse), 2) if mse &gt; 0 else 99.0
+-
+-
+ def known_scenes() -&gt; dict[str, float]:
+     &quot;&quot;&quot;Scene folders in the index, with the time of their last record.&quot;&quot;&quot;
+     scenes: dict[str, float] = {}
+@@ -431,7 +417,7 @@ class Monitor:
+ 
+             def one(render: Path) -&gt; dict[str, Any]:
+                 photo = photos.get(render.stem)
+-                score = self.cached((&quot;psnr&quot;, render, mtime(render)), lambda: psnr(render, photo)) if photo else None
++                score = self.cached((&quot;psnr&quot;, render, mtime(render)), lambda: pipeline.psnr(render, photo)) if photo else None
+                 return {&quot;name&quot;: render.stem, &quot;render&quot;: _rel(scene, render), &quot;photo&quot;: photo and _rel(scene, photo), &quot;psnr&quot;: score}
+ 
+             result.append({&quot;step&quot;: int(step), &quot;mtime&quot;: mtime(folder), &quot;images&quot;: list(self.pool.map(one, renders))})
+diff --git a/src/gausser/scene.py b/src/gausser/scene.py
+index f4f2ba2..1343853 100644
+--- a/src/gausser/scene.py
++++ b/src/gausser/scene.py
+@@ -106,6 +106,7 @@ class Scene:
+         self.colmap_masks = self.root / &quot;colmap&quot; / &quot;masks&quot;  # COLMAP: &lt;name&gt;&lt;ext&gt;.png
+         self.database = self.root / &quot;database.db&quot;
+         self.sparse = self.root / &quot;sparse&quot;
++        self.crop = self.sparse / &quot;crop.json&quot;  # `gausser crop`: the box train and mesh keep to (crop.py)
+         self.dense = self.root / &quot;dense&quot;  # OpenMVS: undistorted images/, scene_dense.mvs and .ply
+         self.arkit = self.root / &quot;arkit&quot;  # iPhone LiDAR scans: poses.json and points.ply (arkit.py)
+         self.runs = self.root / &quot;runs&quot;
+@@ -246,10 +247,13 @@ class Scene:
+         return solved == {image.name for image in images}
+ 
+     def train_done(self) -&gt; bool:
+-        &quot;&quot;&quot;The newest export was trained after the current model was built.&quot;&quot;&quot;
++        &quot;&quot;&quot;The newest export was trained after the current model was built and the crop was set.&quot;&quot;&quot;
+         model = self.model()
+         exports = self.exports()
+-        return model is not None and bool(exports) and mtime(exports[-1]) &gt; mtime(model / &quot;images.bin&quot;)
++        return model is not None and bool(exports) and mtime(exports[-1]) &gt; max(mtime(model / &quot;images.bin&quot;), self._crop_time())
++
++    def _crop_time(self) -&gt; float:
++        return mtime(self.crop) if self.crop.is_file() else 0.0
+ 
+     def dense_done(self) -&gt; bool:
+         &quot;&quot;&quot;The dense cloud was built after the current model.&quot;&quot;&quot;
+@@ -258,7 +262,7 @@ class Scene:
+ 
+     def mesh_done(self) -&gt; bool:
+         cloud, meshes = self.dense_cloud(), self.mesh_runs()
+-        return cloud is not None and bool(meshes) and mtime(meshes[-1] / &quot;mesh.glb&quot;) &gt; mtime(cloud)
++        return cloud is not None and bool(meshes) and mtime(meshes[-1] / &quot;mesh.glb&quot;) &gt; max(mtime(cloud), self._crop_time())
+ 
+     def mesh_runs(self) -&gt; list[Path]:
+         return sorted((path.parent for path in self.runs.glob(&quot;mesh/*/mesh.glb&quot;)), key=lambda run: mtime(run / &quot;mesh.glb&quot;))
+diff --git a/src/gausser/steps.py b/src/gausser/steps.py
+index 1773520..b3a74d7 100644
+--- a/src/gausser/steps.py
++++ b/src/gausser/steps.py
+@@ -4,6 +4,7 @@ from __future__ import annotations
+ 
+ from fnmatch import fnmatchcase
+ import json
++import math
+ import os
+ import shutil
+ import sqlite3
+@@ -14,7 +15,7 @@ from typing import Any
+ 
+ from PIL import Image
+ 
+-from . import arkit, geo, keyframes, pano, qoocam
++from . import arkit, colmap_model, crop as cropping, geo, keyframes, pano, qoocam
+ from .scene import GEO_FILE, GausserError, Scene, is_image, is_video, registered_images, remove, replace, require_tool, run_tool
+ 
+ BRUSH_HINT = &quot;build Brush (cargo build --release) and put `brush` on PATH&quot;
+@@ -23,6 +24,10 @@ FFMPEG_HINT = &quot;brew install ffmpeg (version 7 or newer)&quot;
+ SPLAT_TRANSFORM_HINT = &quot;npm install -g @playcanvas/splat-transform&quot;
+ OPENMVS_HINT = &quot;build OpenMVS with scripts/install-openmvs.sh&quot;
+ DENSE_INIT_POINTS = 500_000  # Brush&#x27;s starting splats from dense/; it grows to --max-splats from there
++# `train --adaptive`: after --iterations, train this many more steps at a time while held-out PSNR gains this much.
++EXTEND_STEPS = 5000
++MIN_GAIN_DB = 0.1
++ADAPTIVE_EVAL_SPLIT = 20  # every 20th image held out when --eval-split is not given
+ 
+ 
+ def frames(
+@@ -425,6 +430,31 @@ def solve(scene: Scene, matcher: str = &quot;auto&quot;, no_masks: bool = False) -&gt; None:
+         )
+ 
+ 
++def start_points(scene: Scene, cloud: Path | None, init: str, crop: cropping.Crop | None) -&gt; tuple[Any, Any, str]:
++    &quot;&quot;&quot;Brush&#x27;s starting points: the dense or LiDAR `cloud` (thinned to DENSE_INIT_POINTS) or COLMAP&#x27;s, inside the crop.&quot;&quot;&quot;
++    import numpy as np
++
++    if cloud:
++        print(f&quot;Reading {cloud.relative_to(scene.root)} ({ply_count(cloud):,} points)&quot;, flush=True)
++        read = read_dense_cloud if init == &quot;dense&quot; else arkit.read_points
++        xyz, rgb = read(cloud, DENSE_INIT_POINTS if crop is None else sys.maxsize)  # thinned after cropping
++        name = str(cloud.relative_to(scene.root))
++    else:
++        points = colmap_model.read_points(scene.require_model())
++        xyz, rgb, name = points.xyz, points.rgb, &quot;the COLMAP model&quot;
++    if crop is None:
++        return xyz, rgb, name
++    inside = crop.inside(xyz)
++    print(f&quot;Crop keeps {int(inside.sum()):,} of {len(xyz):,} starting points&quot;)
++    if not inside.any():
++        raise GausserError(&quot;The crop box holds none of the starting points; check it in `gausser monitor`&quot;)
++    xyz, rgb = xyz[inside], rgb[inside]
++    if cloud and len(xyz) &gt; DENSE_INIT_POINTS:
++        pick = np.sort(np.random.default_rng(0).choice(len(xyz), DENSE_INIT_POINTS, replace=False))
++        xyz, rgb = xyz[pick], rgb[pick]
++    return xyz, rgb, name
++
++
+ def train_brush(
+     scene: Scene,
+     *,
+@@ -437,6 +467,8 @@ def train_brush(
+     no_masks: bool = False,
+     exclude_masks: bool = False,
+     init: str = &quot;auto&quot;,
++    adaptive: bool = False,
++    max_iterations: int = 60000,
+ ) -&gt; Path:
+     &quot;&quot;&quot;Train with Brush into a new runs/brush/&lt;time&gt;/ folder; `extra` goes to Brush last.
+ 
+@@ -444,6 +476,8 @@ def train_brush(
+     `exclude_masks` gives Brush masks-exclude/ as its masks (a context run without transient objects).
+     `init` picks Brush&#x27;s starting points: dense = thinned dense/ cloud, lidar = an iPhone scan&#x27;s LiDAR points
+     (arkit/), sparse = COLMAP&#x27;s points; auto = dense, else lidar, when there is one and Brush gets no masks.
++    With a crop (sparse/crop.json), Brush starts only from points in the box and the exports keep only
++    splats in it. `adaptive` continues 5000 steps at a time (see `extend`) up to `max_iterations`.
+     &quot;&quot;&quot;
+     brush = require_tool(&quot;brush&quot;, BRUSH_HINT)
+     scene.require_model()
+@@ -469,24 +503,27 @@ def train_brush(
+     masked = brush_masks is not None and brush_masks.is_dir()
+     if init == &quot;auto&quot;:
+         init = next((kind for kind, cloud in clouds.items() if cloud and not masked), &quot;sparse&quot;)
++    crop = cropping.load(scene)
++    if adaptive and not eval_split:
++        eval_split = ADAPTIVE_EVAL_SPLIT
++        print(f&quot;--adaptive judges by held-out PSNR: holding out every {eval_split}th image&quot;)
++    cloud = clouds.get(init)
++    own_points = cloud is not None or crop is not None
+     for name, source in ((&quot;images&quot;, scene.images), (&quot;sparse&quot;, scene.sparse), (&quot;masks&quot;, brush_masks)):
+-        if name == &quot;sparse&quot; and init != &quot;sparse&quot;:
++        if name == &quot;sparse&quot; and own_points:
+             continue
+         if source and source.is_dir():
+             (dataset / name).symlink_to(source)
+-    cloud = clouds.get(init)
+-    if cloud:
+-        # Brush starts from a COLMAP model&#x27;s points3D.bin, so give it the cameras with the cloud&#x27;s points.
++    if own_points:
++        # Brush starts from a COLMAP model&#x27;s points3D.bin, so give it the cameras with the chosen points.
+         model = dataset / &quot;sparse&quot; / &quot;0&quot;
+         model.mkdir(parents=True)
+         for path in scene.require_model().iterdir():
+             if path.name != &quot;points3D.bin&quot;:
+                 (model / path.name).symlink_to(path)
+-        print(f&quot;Reading {cloud.relative_to(scene.root)} ({ply_count(cloud):,} points)&quot;, flush=True)
+-        read = read_dense_cloud if init == &quot;dense&quot; else arkit.read_points
+-        xyz, rgb = read(cloud, DENSE_INIT_POINTS)
++        xyz, rgb, source_name = start_points(scene, cloud, init, crop)
+         write_points3d(model / &quot;points3D.bin&quot;, xyz, rgb)
+-        print(f&quot;Starting from {len(xyz):,} points of {cloud.relative_to(scene.root)}&quot;)
++        print(f&quot;Starting from {len(xyz):,} points of {source_name}&quot;)
+     command = [
+         brush, str(dataset),
+         &quot;--total-train-iters&quot;, str(iterations),
+@@ -505,10 +542,17 @@ def train_brush(
+     command += extra or []
+     # Brush logs eval PSNR/SSIM, refine steps and timing only at info level; without a
+     # terminal (unattended runs) nothing else is printed.
+-    run_tool(command, cwd=scene.root, env={&quot;RUST_LOG&quot;: os.environ.get(&quot;RUST_LOG&quot;, &quot;brush_cli=info&quot;)})
++    env = {&quot;RUST_LOG&quot;: os.environ.get(&quot;RUST_LOG&quot;, &quot;brush_cli=info&quot;)}
++    run_tool(command, cwd=scene.root, env=env)
+     if not list(staged.glob(&quot;exports/*.ply&quot;)):
+         raise GausserError(f&quot;Brush finished without a .ply export; output kept in {staged}&quot;)
++    if adaptive:
++        extend(scene, command, staged / &quot;exports&quot;, iterations, max_iterations, env)
+     remove(dataset)
++    if crop is not None:
++        for export in sorted(staged.glob(&quot;exports/*.ply&quot;)):
++            kept, total = cropping.crop_splats(export, crop)
++            print(f&quot;Cropped {export.name}: kept {kept:,} of {total:,} splats&quot;)
+     # `gausser composite` finds the statue (masked) and context (unmasked, excluded) runs by this marker.
+     marker = &quot;excluded&quot; if exclude_masks else &quot;unmasked&quot; if no_masks or not scene.masks.is_dir() else &quot;masked&quot;
+     (staged / marker).touch()
+@@ -519,6 +563,61 @@ def train_brush(
+     return run
+ 
+ 
++def psnr(render: Path, photo: Path) -&gt; float:
++    &quot;&quot;&quot;PSNR of a render against its photo, scaled to the render&#x27;s size, over the whole image.&quot;&quot;&quot;
++    import numpy as np
++
++    with Image.open(render) as r:
++        a = np.asarray(r.convert(&quot;RGB&quot;), dtype=np.float32) / 255
++    with Image.open(photo) as p:
++        p.draft(&quot;RGB&quot;, (a.shape[1], a.shape[0]))
++        b = np.asarray(p.convert(&quot;RGB&quot;).resize((a.shape[1], a.shape[0])), dtype=np.float32) / 255
++    mse = float(((a - b) ** 2).mean())
++    return round(10 * math.log10(1 / mse), 2) if mse &gt; 0 else 99.0
++
++
++def eval_psnr(scene: Scene, exports: Path, step: int) -&gt; float:
++    &quot;&quot;&quot;Mean PSNR of Brush&#x27;s renders of the held-out images at `step` (exports/eval_&lt;step&gt;/images/&lt;stem&gt;.png).&quot;&quot;&quot;
++    photos = {image.stem: image for image in scene.image_files()}
++    scores = [psnr(r, photos[r.stem]) for r in (exports / f&quot;eval_{step}&quot; / &quot;images&quot;).glob(&quot;*.png&quot;) if r.stem in photos]
++    if not scores:
++        raise GausserError(f&quot;Brush saved no held-out renders at step {step}&quot;)
++    return sum(scores) / len(scores)
++
++
++def extend(scene: Scene, command: list[str], exports: Path, step: int, max_iterations: int, env: dict[str, str]) -&gt; None:
++    &quot;&quot;&quot;Continue a Brush run 5000 steps at a time while its held-out PSNR still gains 0.1 dB.
++
++    Brush has no checkpoints: a continuation starts from the last export (an `init.ply` in its dataset
++    folder overrides every other start), with `--start-iter` so growth stays off and exports and evals
++    keep their step numbers. Its mean learning rate restarts where the first run&#x27;s schedule ended.
++    A continuation that made the held-out PSNR worse leaves no export.
++    &quot;&quot;&quot;
++    dataset = Path(command[1])
++    score = eval_psnr(scene, exports, step)
++    while step + EXTEND_STEPS &lt;= max_iterations:
++        print(f&quot;\nHeld-out PSNR at step {step}: {score:.2f} dB; training {EXTEND_STEPS} more steps&quot;, flush=True)
++        init = dataset / &quot;init.ply&quot;
++        init.symlink_to(exports / f&quot;export_{step}.ply&quot;)
++        more = [*command[:2], &quot;--start-iter&quot;, str(step), *command[2:]]
++        more[more.index(&quot;--total-train-iters&quot;) + 1] = str(step + EXTEND_STEPS)
++        if &quot;--lr-mean&quot; not in more:
++            more += [&quot;--lr-mean&quot;, &quot;2e-7&quot;, &quot;--lr-mean-end&quot;, &quot;1e-7&quot;]  # Brush&#x27;s default end of schedule, then half
++        run_tool(more, cwd=scene.root, env=env)
++        init.unlink()
++        new = eval_psnr(scene, exports, step + EXTEND_STEPS)
++        print(f&quot;Held-out PSNR at step {step + EXTEND_STEPS}: {new:.2f} dB ({new - score:+.2f})&quot;, flush=True)
++        if new &lt; score:
++            remove(exports / f&quot;export_{step + EXTEND_STEPS}.ply&quot;)
++            print(f&quot;Worse: keeping export_{step}.ply as the final export&quot;)
++            return
++        step, gain, score = step + EXTEND_STEPS, new - score, new
++        if gain &lt; MIN_GAIN_DB:
++            print(f&quot;Gained less than {MIN_GAIN_DB} dB: stopping at step {step}&quot;)
++            return
++    print(f&quot;Reached --max-iterations {max_iterations}&quot;)
++
++
+ def dense(scene: Scene, resolution_level: int = 1) -&gt; None:
+     &quot;&quot;&quot;Make dense/: undistorted images and an OpenMVS dense point cloud of the COLMAP model.
+ 
+@@ -566,6 +665,12 @@ def mesh(scene: Scene, *, faces: int | None = None, refine: bool = True, texture
+     # OpenMVS finds the images relative to the project, so it runs in dense/ and writes into staging.
+     run_tool([reconstruct, project, &quot;-p&quot;, &quot;scene_dense.ply&quot;, &quot;-o&quot;, str(staged / &quot;mesh.mvs&quot;)], cwd=scene.dense)
+     surface = staged / &quot;mesh.ply&quot;
++    crop = cropping.load(scene)
++    if crop is not None:  # before refining: RefineMesh and TextureMesh then only work on the subject
++        kept, total = cropping.crop_mesh(surface, crop)
++        print(f&quot;Crop keeps {kept:,} of {total:,} faces&quot;)
++        if not kept:
++            raise GausserError(&quot;The crop box holds none of the mesh; check it in `gausser monitor`&quot;)
+     if refine:
+         run_tool(
+             [refiner, project, &quot;-m&quot;, str(surface), &quot;-o&quot;, str(staged / &quot;refined.mvs&quot;), &quot;--resolution-level&quot;, &quot;1&quot;],
+diff --git a/tests/test_crop.py b/tests/test_crop.py
+new file mode 100644
+index 0000000..63399da
+--- /dev/null
++++ b/tests/test_crop.py
+@@ -0,0 +1,127 @@
++from __future__ import annotations
++
++import json
++import os
++import struct
++from pathlib import Path
++
++import numpy as np
++import pytest
++
++from gausser import cli, crop, steps
++from gausser.composite import read_ply, write_ply
++from gausser.scene import Scene
++
++from test_gausser import make_scene, tools  # noqa: F401  (fixture)
++
++UP = [0.0, 0.0, -1.0]  # a model whose up is -z: the level frame turns -z onto +y
++
++
++def splat_ply(path: Path, points: list[list[float]]) -&gt; None:
++    names = (&quot;x&quot;, &quot;y&quot;, &quot;z&quot;, &quot;opacity&quot;)
++    data = np.zeros(len(points), dtype=[(name, &quot;&lt;f4&quot;) for name in names])
++    data[&quot;x&quot;], data[&quot;y&quot;], data[&quot;z&quot;] = np.asarray(points, dtype=np.float32).T
++    header = [&quot;ply&quot;, &quot;format binary_little_endian 1.0&quot;, f&quot;element vertex {len(points)}&quot;, *(f&quot;property float {n}&quot; for n in names)]
++    path.parent.mkdir(parents=True, exist_ok=True)
++    write_ply(path, header, data)
++
++
++def cropped_scene(root: Path) -&gt; Scene:
++    &quot;&quot;&quot;A solved scene with three COLMAP points and a crop holding only the first (level y = -z).&quot;&quot;&quot;
++    scene = make_scene(root)
++    model = scene.sparse / &quot;0&quot;
++    model.mkdir(parents=True)
++    (model / &quot;images.bin&quot;).write_bytes(struct.pack(&quot;&lt;Q&quot;, 3))
++    (model / &quot;cameras.bin&quot;).write_bytes(b&quot;&quot;)
++    steps.write_points3d(model / &quot;points3D.bin&quot;, np.array([[0.0, 0, -1], [0, 0, 5], [9, 0, 0]]), np.zeros((3, 3), np.uint8))
++    assert cli.main([&quot;crop&quot;, &quot;-s&quot;, str(root), &quot;--box=-1,0,-1,1,2,1&quot;, &quot;--up=&quot; + &quot;,&quot;.join(map(str, UP))]) == 0
++    return scene
++
++
++def test_level_rotation_turns_up_onto_y_like_three_js():
++    for up in ([0, 0, -1], [0.3, -0.5, 0.8], [0, 1, 0], [0, -1, 0]):
++        r = crop.level_rotation(up)
++        assert np.allclose(r @ r.T, np.eye(3)) and np.isclose(np.linalg.det(r), 1)
++        assert np.allclose(r @ (np.array(up) / np.linalg.norm(up)), [0, 1, 0])
++    # three.js setFromUnitVectors((0,0,-1), (0,1,0)) is a quarter turn about x: (0,1,0) goes to (0,0,1)
++    assert np.allclose(crop.level_rotation([0, 0, -1]) @ [0, 1, 0], [0, 0, 1])
++
++
++def test_crop_command_sets_shows_and_clears_and_makes_train_out_of_date(tmp_path, capsys):
++    scene = cropped_scene(tmp_path)
++    export = scene.runs / &quot;brush&quot; / &quot;a&quot; / &quot;exports&quot; / &quot;export_10.ply&quot;
++    export.parent.mkdir(parents=True)
++    export.write_bytes(b&quot;ply&quot;)
++    earlier = os.stat(scene.crop).st_mtime - 5
++    os.utime(export, (earlier, earlier))
++
++    assert json.loads(scene.crop.read_text()) == {&quot;up&quot;: UP, &quot;min&quot;: [-1.0, 0.0, -1.0], &quot;max&quot;: [1.0, 2.0, 1.0]}
++    assert not scene.train_done()
++    assert cli.main([&quot;crop&quot;, &quot;-s&quot;, str(tmp_path)]) == 0
++    assert &quot;[-1.0, 0.0, -1.0] to [1.0, 2.0, 1.0]&quot; in capsys.readouterr().out
++    assert cli.main([&quot;crop&quot;, &quot;-s&quot;, str(tmp_path), &quot;--clear&quot;]) == 0
++    assert not scene.crop.exists()
++    assert cli.main([&quot;crop&quot;, &quot;-s&quot;, str(tmp_path), &quot;--box=1,0,0,0,1,1&quot;, &quot;--up=0,1,0&quot;]) == 1  # min above max
++
++
++def test_brush_starts_inside_the_crop_and_its_exports_keep_only_splats_in_it(tmp_path, tools):  # noqa: F811
++    scene = cropped_scene(tmp_path)
++    seen = {}
++
++    def brush(command):
++        data = (Path(command[1]) / &quot;sparse&quot; / &quot;0&quot; / &quot;points3D.bin&quot;).read_bytes()
++        seen[&quot;count&quot;] = struct.unpack_from(&quot;&lt;Q&quot;, data)[0]
++        splat_ply(Path(command[command.index(&quot;--export-path&quot;) + 1]) / &quot;export_10.ply&quot;, [[0, 0, -1], [0, 0, -5], [0, 3, 0]])
++
++    tools.on_run(brush)
++    run = steps.train_brush(scene, iterations=10)
++
++    assert seen[&quot;count&quot;] == 1  # (0, 0, -1) is level (0, 1, 0): inside; the others are not
++    assert xyz_of(run / &quot;exports&quot; / &quot;export_10.ply&quot;) == [[0, 0, -1]]
++    assert scene.train_done()
++
++
++def xyz_of(path: Path) -&gt; list[list[float]]:
++    _, data = read_ply(path)
++    return np.stack([data[&quot;x&quot;], data[&quot;y&quot;], data[&quot;z&quot;]], axis=1).tolist()
++
++
++def test_crop_mesh_keeps_faces_with_every_corner_inside(tmp_path):
++    vertices = np.array([[0, 0, -0.5], [0.5, 0, -0.5], [0, 0.5, -0.5], [0, 0, -9]], dtype=&quot;&lt;f4&quot;)
++    faces = np.zeros(2, dtype=[(&quot;n&quot;, &quot;u1&quot;), (&quot;i&quot;, &quot;&lt;u4&quot;, 3)])
++    faces[&quot;n&quot;], faces[&quot;i&quot;] = 3, [[0, 1, 2], [0, 1, 3]]
++    path = tmp_path / &quot;mesh.ply&quot;
++    with path.open(&quot;wb&quot;) as f:
++        f.write(b&quot;ply\nformat binary_little_endian 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\n&quot;
++                b&quot;element face 2\nproperty list uchar uint vertex_indices\nend_header\n&quot;)
++        vertices.tofile(f)
++        faces.tofile(f)
++
++    assert crop.crop_mesh(path, crop.Crop(UP, [-1, 0, -1], [1, 2, 1])) == (1, 2)
++    assert steps.ply_count(path) == 3 and steps.ply_count(path, &quot;face&quot;) == 1
++
++
++@pytest.mark.parametrize(&quot;scores, final&quot;, [({10: 20.0, 15: 21.0, 20: 21.05}, 20), ({10: 20.0, 15: 19.5}, 10)])
++def test_adaptive_training_continues_from_the_last_export_while_held_out_psnr_gains(tmp_path, tools, monkeypatch, scores, final):  # noqa: F811
++    scene = make_scene(tmp_path)
++    model = scene.sparse / &quot;0&quot;
++    model.mkdir(parents=True)
++    for name in (&quot;images.bin&quot;, &quot;cameras.bin&quot;, &quot;points3D.bin&quot;):
++        (model / name).write_bytes(b&quot;&quot;)
++    monkeypatch.setattr(steps, &quot;EXTEND_STEPS&quot;, 5)
++    monkeypatch.setattr(steps, &quot;eval_psnr&quot;, lambda scene, exports, step: scores[step])
++    inits = []
++
++    def brush(command):
++        step = int(command[command.index(&quot;--total-train-iters&quot;) + 1])
++        init = Path(command[1]) / &quot;init.ply&quot;
++        inits.append(init.resolve().name if init.exists() else None)
++        splat_ply(Path(command[command.index(&quot;--export-path&quot;) + 1]) / f&quot;export_{step}.ply&quot;, [[0, 0, 0]])
++
++    tools.on_run(brush)
++    run = steps.train_brush(scene, iterations=10, adaptive=True, max_iterations=100)
++
++    assert inits == [None, &quot;export_10.ply&quot;, &quot;export_15.ply&quot;][: len(scores)]
++    assert tools.commands[0][tools.commands[0].index(&quot;--eval-split-every&quot;) + 1] == &quot;20&quot;
++    assert tools.commands[1][2:4] == [&quot;--start-iter&quot;, &quot;10&quot;] and tools.commands[1][-4:] == [&quot;--lr-mean&quot;, &quot;2e-7&quot;, &quot;--lr-mean-end&quot;, &quot;1e-7&quot;]
++    assert scene.exports()[-1] == run / &quot;exports&quot; / f&quot;export_{final}.ply&quot;
+diff --git a/web/src/Viewer.tsx b/web/src/Viewer.tsx
+index 1db07f3..0c235dd 100644
+--- a/web/src/Viewer.tsx
++++ b/web/src/Viewer.tsx
+@@ -1,7 +1,7 @@
+ import { Suspense, useEffect, useMemo, useRef, useState } from &quot;react&quot;;
+ import type { MutableRefObject } from &quot;react&quot;;
+ import { Canvas, useFrame, useLoader, useThree } from &quot;@react-three/fiber&quot;;
+-import { OrbitControls } from &quot;@react-three/drei&quot;;
++import { OrbitControls, PivotControls } from &quot;@react-three/drei&quot;;
+ import * as THREE from &quot;three&quot;;
+ import { GLTFLoader } from &quot;three/examples/jsm/loaders/GLTFLoader.js&quot;;
+ import { SparkRenderer, SplatMesh } from &quot;@sparkjsdev/spark&quot;;
+@@ -66,6 +66,19 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
+   const model = useFetched&lt;Model&gt;(modelChoice ? &quot;model&quot; : null, { path: modelChoice?.path ?? &quot;&quot; }, modelChoice?.key);
+   const frame = useMemo(() =&gt; (model ? sceneFrame(model) : null), [model]);
+   const camera = model?.cameras.find((c) =&gt; c.name === selected) ?? null;
++  // Crop: the stored box (`gausser crop`), or the one being drawn; both in the level frame (see crop.py).
++  const [editing, setEditing] = useState(false);
++  const [drawn, setDrawn] = useState&lt;Box | null&gt;(null);
++  const stored = state.crop ? { min: new THREE.Vector3(...state.crop.min), max: new THREE.Vector3(...state.crop.max) } : null;
++  const startEditing = () =&gt; {
++    if (!frame) return;
++    const centre = frame.offset.clone().negate();
++    const half = new THREE.Vector3().setScalar(frame.scale * 0.4);
++    setDrawn(stored ?? { min: centre.clone().sub(half), max: centre.clone().add(half) });
++    setEditing(true);
++  };
++  const box = editing ? drawn : stored;
++  const command = editing &amp;&amp; drawn &amp;&amp; model ? cropCommand(state.root, drawn, model.up) : null;
+ 
+   const views = compareChoice ? [splatChoice, compareChoice] : [splatChoice];
+   return (
+@@ -99,6 +112,7 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
+             {[...state.meshes].reverse().map((m) =&gt; &lt;option key={m.path} value={m.path}&gt;{m.path.split(&quot;/&quot;).slice(1, -1).join(&quot;/&quot;)}&lt;/option&gt;)}
+           &lt;/select&gt;
+         &lt;/section&gt;
++        {frame &amp;&amp; &lt;CropSection stored={stored} drawn={editing ? drawn : null} command={command} onEdit={startEditing} onDone={() =&gt; setEditing(false)} /&gt;}
+         &lt;section&gt;
+           &lt;span className=&quot;label&quot;&gt;layers&lt;/span&gt;
+           {(Object.keys(show) as (keyof Layers)[]).map((key) =&gt; (
+@@ -152,7 +166,7 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
+           {views.map((splat, id) =&gt; (
+             &lt;View
+               key={id} id={id} sync={compareChoice ? sync : null} model={model} frame={frame} show={show} pointSize={pointSize}
+-              splat={splat ?? null} mesh={meshChoice?.path ?? null} selected={selected} onPick={setSelected} look={look} label={compareChoice ? splat?.label : undefined}
++              splat={splat ?? null} mesh={meshChoice?.path ?? null} box={box} editing={editing &amp;&amp; id === 0} onBox={setDrawn} selected={selected} onPick={setSelected} look={look} label={compareChoice ? splat?.label : undefined}
+             /&gt;
+           ))}
+           &lt;div className=&quot;canvas-hint&quot;&gt;click a camera · drag to orbit · right-drag to pan · scroll to zoom&lt;/div&gt;
+@@ -162,9 +176,9 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
+   );
+ }
+ 
+-function View({ id, sync, model, frame, show, pointSize, splat, mesh, selected, onPick, look, label }: {
++function View({ id, sync, model, frame, show, pointSize, splat, mesh, box, editing, onBox, selected, onPick, look, label }: {
+   id: number; sync: MutableRefObject&lt;Sync&gt; | null; model: Model | null; frame: Frame | null; show: Layers; pointSize: number;
+-  splat: Splat | null; mesh: string | null; selected: string | null; onPick: (name: string) =&gt; void; look: LookRequest | null; label?: string;
++  splat: Splat | null; mesh: string | null; box: Box | null; editing: boolean; onBox: (box: Box) =&gt; void; selected: string | null; onPick: (name: string) =&gt; void; look: LookRequest | null; label?: string;
+ }) {
+   const [status, setStatus] = useState(&quot;&quot;);
+   const [meshStatus, setMeshStatus] = useState(&quot;&quot;);
+@@ -196,6 +210,11 @@ function View({ id, sync, model, frame, show, pointSize, splat, mesh, selected,
+           {show.splat &amp;&amp; splat &amp;&amp; &lt;SplatView path={splat.path} onStatus={setStatus} /&gt;}
+           {show.mesh &amp;&amp; mesh &amp;&amp; &lt;MeshView path={mesh} onStatus={setMeshStatus} /&gt;}
+         &lt;/group&gt;
++        {frame &amp;&amp; box &amp;&amp; (
++          &lt;group position={frame.offset}&gt;
++            &lt;CropBox key={editing ? &quot;edit&quot; : &quot;show&quot;} box={box} editing={editing} onChange={onBox} /&gt;
++          &lt;/group&gt;
++        )}
+         {model &amp;&amp; show.cameras &amp;&amp; &lt;CameraPicker cameras={model.cameras} depth={depth} group={group} onPick={onPick} onHover={setHover} /&gt;}
+         {model &amp;&amp; frame &amp;&amp; &lt;LookThrough request={look} cameras={model.cameras} group={group} scale={frame.scale} /&gt;}
+         {show.grid &amp;&amp; frame &amp;&amp; &lt;gridHelper args={[frame.scale * 8, 40, &quot;#34294f&quot;, &quot;#34294f&quot;]} position={[0, frame.floor, 0]} /&gt;}
+@@ -208,6 +227,84 @@ function View({ id, sync, model, frame, show, pointSize, splat, mesh, selected,
+   );
+ }
+ 
++interface Box {
++  min: THREE.Vector3;
++  max: THREE.Vector3;
++}
++
++const round = (v: number) =&gt; String(Number(v.toFixed(4)));
++const boxSize = (b: Box) =&gt; [0, 1, 2].map((i) =&gt; round(b.max.getComponent(i) - b.min.getComponent(i))).join(&quot; × &quot;);
++
++function cropCommand(root: string, b: Box, up: number[]): string {
++  const quoted = /^[\w./~-]+$/.test(root) ? root : `&#x27;${root.replace(/&#x27;/g, `&#x27;\\&#x27;&#x27;`)}&#x27;`;
++  const box = [...b.min.toArray(), ...b.max.toArray()].map(round).join(&quot;,&quot;);
++  return `gausser crop -s ${quoted} --box=${box} --up=${up.map((v) =&gt; String(Number(v.toFixed(6)))).join(&quot;,&quot;)}`;
++}
++
++/** The sidebar&#x27;s crop section: the stored box, or the command for the box being drawn. */
++function CropSection({ stored, drawn, command, onEdit, onDone }: {
++  stored: Box | null; drawn: Box | null; command: string | null; onEdit: () =&gt; void; onDone: () =&gt; void;
++}) {
++  const [copied, setCopied] = useState(false);
++  useEffect(() =&gt; setCopied(false), [command]);
++  return (
++    &lt;section&gt;
++      &lt;span className=&quot;label&quot;&gt;crop&lt;/span&gt;
++      {stored &amp;&amp; !drawn &amp;&amp; &lt;span&gt;{boxSize(stored)}; train and mesh keep to it&lt;/span&gt;}
++      {drawn &amp;&amp; (
++        &lt;&gt;
++          &lt;span&gt;drag the arrows, squares and dots; {boxSize(drawn)}&lt;/span&gt;
++          &lt;code className=&quot;command&quot;&gt;{command}&lt;/code&gt;
++          &lt;span className=&quot;label&quot;&gt;run it to set the crop; the monitor only reads&lt;/span&gt;
++        &lt;/&gt;
++      )}
++      &lt;div className=&quot;buttons&quot;&gt;
++        {drawn ? (
++          &lt;&gt;
++            &lt;button className=&quot;button&quot; onClick={() =&gt; command &amp;&amp; navigator.clipboard.writeText(command).then(() =&gt; setCopied(true))}&gt;{copied ? &quot;Copied&quot; : &quot;Copy command&quot;}&lt;/button&gt;
++            &lt;button className=&quot;link-button&quot; onClick={onDone}&gt;done&lt;/button&gt;
++          &lt;/&gt;
++        ) : (
++          &lt;button className=&quot;button&quot; onClick={onEdit}&gt;{stored ? &quot;Change crop&quot; : &quot;Draw a crop box&quot;}&lt;/button&gt;
++        )}
++      &lt;/div&gt;
++    &lt;/section&gt;
++  );
++}
++
++/**
++ * The crop box in the level frame (its parent puts the level origin where the view has it). While editing,
++ * a gizmo moves it (arrows, plane squares) and scales it per axis (dots); it owns its matrix from then on.
++ */
++function CropBox({ box, editing, onChange }: { box: Box; editing: boolean; onChange: (box: Box) =&gt; void }) {
++  const matrix = useRef&lt;THREE.Matrix4 | null&gt;(null);
++  if (!matrix.current || !editing) {
++    const centre = box.min.clone().add(box.max).multiplyScalar(0.5);
++    matrix.current = new THREE.Matrix4().compose(centre, new THREE.Quaternion(), box.max.clone().sub(box.min));
++  }
++  const edges = useMemo(() =&gt; new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), []);
++  useEffect(() =&gt; () =&gt; edges.dispose(), [edges]);
++  const drag = (local: THREE.Matrix4) =&gt; {
++    matrix.current?.copy(local);
++    const centre = new THREE.Vector3();
++    const size = new THREE.Vector3();
++    local.decompose(centre, new THREE.Quaternion(), size);
++    size.set(Math.abs(size.x), Math.abs(size.y), Math.abs(size.z)).multiplyScalar(0.5);
++    onChange({ min: centre.clone().sub(size), max: centre.clone().add(size) });
++  };
++  return (
++    &lt;PivotControls matrix={matrix.current} autoTransform={false} onDrag={drag} enabled={editing} disableRotations fixed scale={110} depthTest={false}&gt;
++      &lt;lineSegments geometry={edges} renderOrder={5}&gt;
++        &lt;lineBasicMaterial color=&quot;#fede5d&quot; depthTest={false} transparent /&gt;
++      &lt;/lineSegments&gt;
++      &lt;mesh raycast={() =&gt; null}&gt;
++        &lt;boxGeometry /&gt;
++        &lt;meshBasicMaterial color=&quot;#fede5d&quot; transparent opacity={0.06} depthWrite={false} /&gt;
++      &lt;/mesh&gt;
++    &lt;/PivotControls&gt;
++  );
++}
++
+ interface Frame {
+   rotation: THREE.Quaternion; // COLMAP world → viewer (up = +Y)
+   offset: THREE.Vector3; // puts the subject at the origin
+diff --git a/web/src/api.ts b/web/src/api.ts
+index f1e3e46..5eaedd6 100644
+--- a/web/src/api.ts
++++ b/web/src/api.ts
+@@ -66,6 +66,7 @@ export interface State {
+   dense: { points: number; current: boolean } | null;
+   meshes: { path: string; mtime: number }[];
+   mesh_current: boolean;
++  crop: { up: number[]; min: [number, number, number]; max: [number, number, number] } | null;
+ }
+ 
+ export interface Camera {
+diff --git a/web/src/styles.css b/web/src/styles.css
+index 3a96206..e0e2fa7 100644
+--- a/web/src/styles.css
++++ b/web/src/styles.css
+@@ -243,3 +243,4 @@ a.button { text-decoration: none; color: inherit; }
+ .swipe .swipe-top { position: absolute; inset: 0; width: 100%; height: 100%; }
+ .swipe-edge { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--train); pointer-events: none; }
+ .canvas-tip { position: absolute; padding: 1px 6px; background: var(--deep); border: 1px solid var(--line); pointer-events: none; white-space: nowrap; }
++.side .command { display: block; padding: 6px 8px; background: var(--line); border-radius: 4px; word-break: break-all; user-select: all; font-size: 11px; }
+</pre></details>
+</main>
+</body>
+</html>

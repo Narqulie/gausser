@@ -9,13 +9,14 @@ import shlex
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from . import keyframes, mapping, pano, steps
 from .scene import GausserError, Scene, is_image, registered_images
 
 STEPS = ("frames", "mask", "solve", "dense", "train", "lod", "mesh", "map")
-COMMANDS = ("run", *STEPS, "subset", "composite", "align", "view", "orbit", "status", "monitor")
+COMMANDS = ("run", *STEPS, "crop", "subset", "composite", "align", "view", "orbit", "status", "monitor")
 QUICK_START = """\
 quick start:
   gausser clip.mp4              guided: makes clip/ next to the video and walks you through
@@ -72,6 +73,12 @@ def _add_train_options(parser: argparse.ArgumentParser) -> None:
         "--eval-split", type=int, metavar="N",
         help="Brush: hold out every Nth image and report PSNR/SSIM on it every 1000 steps",
     )
+    group.add_argument(
+        "--adaptive", action="store_true",
+        help=f"Brush: after --iterations, train {steps.EXTEND_STEPS} more steps at a time while held-out PSNR gains "
+        f"{steps.MIN_GAIN_DB} dB (holds out every {steps.ADAPTIVE_EVAL_SPLIT}th image unless --eval-split is given)",
+    )
+    group.add_argument("--max-iterations", type=int, default=60000, help="Brush: --adaptive stops here (default 60000)")
     group.add_argument(
         "--init", choices=("auto", "dense", "lidar", "sparse"), default="auto",
         help="Brush: start from the dense cloud (dense/), an iPhone scan's LiDAR points (arkit/) or COLMAP's points; "
@@ -285,6 +292,18 @@ def build_parser() -> argparse.ArgumentParser:
     subset.add_argument("patterns", nargs="+", metavar="PATTERN", help="glob on image file names, e.g. 'frame_*'")
     subset.add_argument("-o", "--output", type=Path, required=True, help="new scene folder (must not have images/)")
 
+    crop = commands.add_parser(
+        "crop", parents=[common], help="keep training and meshing to a box around the subject",
+        description="Set the box `train` and `mesh` keep to (sparse/crop.json): Brush starts only from points in it, "
+        "its exports keep only splats in it, and the mesh is cut to it before refining. The box is in the model's "
+        "level frame (up = +y); draw it in `gausser monitor` (3D tab, crop) and paste the command it shows. "
+        "Write negative numbers as --box=-1,0,-1,1,2,1. "
+        "A new crop makes train and mesh out of date; a new solve drops it. Without options: show the crop.",
+    )
+    crop.add_argument("--box", type=_floats(6), metavar="x,y,z,X,Y,Z", help="minimum and maximum corner, level frame")
+    crop.add_argument("--up", type=_floats(3), metavar="x,y,z", help="the model's up the box was drawn with (default: computed)")
+    crop.add_argument("--clear", action="store_true", help="remove the crop")
+
     commands.add_parser("status", parents=[common], help="show scene progress and installed tools")
 
     monitor = commands.add_parser(
@@ -298,6 +317,16 @@ def build_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--no-open", action="store_true", help="do not open a browser")
     monitor.add_argument("--quit-when-idle", action="store_true", help=argparse.SUPPRESS)
     return parser
+
+
+def _floats(count: int) -> Callable[[str], list[float]]:
+    def parse(text: str) -> list[float]:
+        values = [float(v) for v in text.split(",")]
+        if len(values) != count:
+            raise argparse.ArgumentTypeError(f"expected {count} comma-separated numbers")
+        return values
+
+    return parse
 
 
 def _levels(raw: str) -> tuple[int, ...]:
@@ -319,6 +348,9 @@ def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None, ex
     if args.trainer == "msplat":
         from . import msplat
 
+        if args.adaptive:
+            raise GausserError("--adaptive is for Brush")
+
         export = msplat.train(
             scene, iterations=args.iterations, downscale_factor=args.downscale,
             checkpoint_every=args.checkpoint_every, resume=resume, no_masks=args.no_masks,
@@ -329,7 +361,7 @@ def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None, ex
             scene, iterations=args.iterations, export_every=args.export_every,
             max_splats=args.max_splats, max_resolution=args.max_resolution, eval_split=args.eval_split,
             extra=extra or [], no_masks=args.no_masks, exclude_masks=getattr(args, "exclude_masks", False),
-            init=args.init,
+            init=args.init, adaptive=args.adaptive, max_iterations=args.max_iterations,
         )
 
 
@@ -437,7 +469,7 @@ def status(scene: Scene) -> None:
     for export in exports[-5:]:
         print(f"export  {export.relative_to(scene.root)}")
     if exports and model and not scene.train_done():
-        print(f"        newest export is older than the model{stale}")
+        print(f"        newest export is older than the model or the crop{stale}")
     for run in scene.lod_runs()[-3:]:
         print(f"lod     {run.relative_to(scene.root)}")
     for run in scene.mesh_runs()[-3:]:
@@ -536,7 +568,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         with scene.lock(argv):
             keep_awake()
-            if args.monitor:
+            if getattr(args, "monitor", False):  # crop has no --monitor
                 from .monitor import spawn
 
                 spawn(scene)
@@ -617,6 +649,20 @@ def _frames(scene: Scene, source: Path, ranges: list[tuple[float, float]] | None
     )
 
 
+def _crop(scene: Scene, args: argparse.Namespace) -> None:
+    from . import crop
+
+    if args.clear:
+        scene.crop.unlink(missing_ok=True)
+        print("No crop")
+    elif args.box:
+        made = crop.save(scene, args.box, args.up)
+        print(f"Crop set: {made.min} to {made.max} (level frame); train and mesh are now out of date")
+    else:
+        current = crop.load(scene)
+        print(f"Crop: {current.min} to {current.max} (level frame, up {current.up})" if current else "No crop")
+
+
 def dispatch(scene: Scene, args: argparse.Namespace) -> None:
     if args.command == "run":
         run_pipeline(scene, args)
@@ -639,6 +685,8 @@ def dispatch(scene: Scene, args: argparse.Namespace) -> None:
             raise GausserError("--exclude-masks is for Brush and cannot be combined with --no-masks")
         with scene.step("train", trainer=args.trainer, iterations=args.iterations) as made:
             made["run"] = str(_train(scene, args, args.resume, extra).relative_to(scene.root))
+    elif args.command == "crop":
+        _crop(scene, args)
     elif args.command == "dense":
         with scene.step("dense"):
             steps.dense(scene, args.resolution_level)

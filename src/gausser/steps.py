@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fnmatch import fnmatchcase
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -14,7 +15,7 @@ from typing import Any
 
 from PIL import Image
 
-from . import arkit, geo, keyframes, pano, qoocam
+from . import arkit, colmap_model, crop as cropping, geo, keyframes, pano, qoocam
 from .scene import GEO_FILE, GausserError, Scene, is_image, is_video, registered_images, remove, replace, require_tool, run_tool
 
 BRUSH_HINT = "build Brush (cargo build --release) and put `brush` on PATH"
@@ -23,6 +24,10 @@ FFMPEG_HINT = "brew install ffmpeg (version 7 or newer)"
 SPLAT_TRANSFORM_HINT = "npm install -g @playcanvas/splat-transform"
 OPENMVS_HINT = "build OpenMVS with scripts/install-openmvs.sh"
 DENSE_INIT_POINTS = 500_000  # Brush's starting splats from dense/; it grows to --max-splats from there
+# `train --adaptive`: after --iterations, train this many more steps at a time while held-out PSNR gains this much.
+EXTEND_STEPS = 5000
+MIN_GAIN_DB = 0.1
+ADAPTIVE_EVAL_SPLIT = 20  # every 20th image held out when --eval-split is not given
 
 
 def frames(
@@ -425,6 +430,31 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         )
 
 
+def start_points(scene: Scene, cloud: Path | None, init: str, crop: cropping.Crop | None) -> tuple[Any, Any, str]:
+    """Brush's starting points: the dense or LiDAR `cloud` (thinned to DENSE_INIT_POINTS) or COLMAP's, inside the crop."""
+    import numpy as np
+
+    if cloud:
+        print(f"Reading {cloud.relative_to(scene.root)} ({ply_count(cloud):,} points)", flush=True)
+        read = read_dense_cloud if init == "dense" else arkit.read_points
+        xyz, rgb = read(cloud, DENSE_INIT_POINTS if crop is None else sys.maxsize)  # thinned after cropping
+        name = str(cloud.relative_to(scene.root))
+    else:
+        points = colmap_model.read_points(scene.require_model())
+        xyz, rgb, name = points.xyz, points.rgb, "the COLMAP model"
+    if crop is None:
+        return xyz, rgb, name
+    inside = crop.inside(xyz)
+    print(f"Crop keeps {int(inside.sum()):,} of {len(xyz):,} starting points")
+    if not inside.any():
+        raise GausserError("The crop box holds none of the starting points; check it in `gausser monitor`")
+    xyz, rgb = xyz[inside], rgb[inside]
+    if cloud and len(xyz) > DENSE_INIT_POINTS:
+        pick = np.sort(np.random.default_rng(0).choice(len(xyz), DENSE_INIT_POINTS, replace=False))
+        xyz, rgb = xyz[pick], rgb[pick]
+    return xyz, rgb, name
+
+
 def train_brush(
     scene: Scene,
     *,
@@ -437,6 +467,8 @@ def train_brush(
     no_masks: bool = False,
     exclude_masks: bool = False,
     init: str = "auto",
+    adaptive: bool = False,
+    max_iterations: int = 60000,
 ) -> Path:
     """Train with Brush into a new runs/brush/<time>/ folder; `extra` goes to Brush last.
 
@@ -444,6 +476,8 @@ def train_brush(
     `exclude_masks` gives Brush masks-exclude/ as its masks (a context run without transient objects).
     `init` picks Brush's starting points: dense = thinned dense/ cloud, lidar = an iPhone scan's LiDAR points
     (arkit/), sparse = COLMAP's points; auto = dense, else lidar, when there is one and Brush gets no masks.
+    With a crop (sparse/crop.json), Brush starts only from points in the box and the exports keep only
+    splats in it. `adaptive` continues 5000 steps at a time (see `extend`) up to `max_iterations`.
     """
     brush = require_tool("brush", BRUSH_HINT)
     scene.require_model()
@@ -469,24 +503,27 @@ def train_brush(
     masked = brush_masks is not None and brush_masks.is_dir()
     if init == "auto":
         init = next((kind for kind, cloud in clouds.items() if cloud and not masked), "sparse")
+    crop = cropping.load(scene)
+    if adaptive and not eval_split:
+        eval_split = ADAPTIVE_EVAL_SPLIT
+        print(f"--adaptive judges by held-out PSNR: holding out every {eval_split}th image")
+    cloud = clouds.get(init)
+    own_points = cloud is not None or crop is not None
     for name, source in (("images", scene.images), ("sparse", scene.sparse), ("masks", brush_masks)):
-        if name == "sparse" and init != "sparse":
+        if name == "sparse" and own_points:
             continue
         if source and source.is_dir():
             (dataset / name).symlink_to(source)
-    cloud = clouds.get(init)
-    if cloud:
-        # Brush starts from a COLMAP model's points3D.bin, so give it the cameras with the cloud's points.
+    if own_points:
+        # Brush starts from a COLMAP model's points3D.bin, so give it the cameras with the chosen points.
         model = dataset / "sparse" / "0"
         model.mkdir(parents=True)
         for path in scene.require_model().iterdir():
             if path.name != "points3D.bin":
                 (model / path.name).symlink_to(path)
-        print(f"Reading {cloud.relative_to(scene.root)} ({ply_count(cloud):,} points)", flush=True)
-        read = read_dense_cloud if init == "dense" else arkit.read_points
-        xyz, rgb = read(cloud, DENSE_INIT_POINTS)
+        xyz, rgb, source_name = start_points(scene, cloud, init, crop)
         write_points3d(model / "points3D.bin", xyz, rgb)
-        print(f"Starting from {len(xyz):,} points of {cloud.relative_to(scene.root)}")
+        print(f"Starting from {len(xyz):,} points of {source_name}")
     command = [
         brush, str(dataset),
         "--total-train-iters", str(iterations),
@@ -505,10 +542,17 @@ def train_brush(
     command += extra or []
     # Brush logs eval PSNR/SSIM, refine steps and timing only at info level; without a
     # terminal (unattended runs) nothing else is printed.
-    run_tool(command, cwd=scene.root, env={"RUST_LOG": os.environ.get("RUST_LOG", "brush_cli=info")})
+    env = {"RUST_LOG": os.environ.get("RUST_LOG", "brush_cli=info")}
+    run_tool(command, cwd=scene.root, env=env)
     if not list(staged.glob("exports/*.ply")):
         raise GausserError(f"Brush finished without a .ply export; output kept in {staged}")
+    if adaptive:
+        extend(scene, command, staged / "exports", iterations, max_iterations, env)
     remove(dataset)
+    if crop is not None:
+        for export in sorted(staged.glob("exports/*.ply")):
+            kept, total = cropping.crop_splats(export, crop)
+            print(f"Cropped {export.name}: kept {kept:,} of {total:,} splats")
     # `gausser composite` finds the statue (masked) and context (unmasked, excluded) runs by this marker.
     marker = "excluded" if exclude_masks else "unmasked" if no_masks or not scene.masks.is_dir() else "masked"
     (staged / marker).touch()
@@ -517,6 +561,61 @@ def train_brush(
     replace(staged, run)
     print(f"Exports in {run / 'exports'}")
     return run
+
+
+def psnr(render: Path, photo: Path) -> float:
+    """PSNR of a render against its photo, scaled to the render's size, over the whole image."""
+    import numpy as np
+
+    with Image.open(render) as r:
+        a = np.asarray(r.convert("RGB"), dtype=np.float32) / 255
+    with Image.open(photo) as p:
+        p.draft("RGB", (a.shape[1], a.shape[0]))
+        b = np.asarray(p.convert("RGB").resize((a.shape[1], a.shape[0])), dtype=np.float32) / 255
+    mse = float(((a - b) ** 2).mean())
+    return round(10 * math.log10(1 / mse), 2) if mse > 0 else 99.0
+
+
+def eval_psnr(scene: Scene, exports: Path, step: int) -> float:
+    """Mean PSNR of Brush's renders of the held-out images at `step` (exports/eval_<step>/images/<stem>.png)."""
+    photos = {image.stem: image for image in scene.image_files()}
+    scores = [psnr(r, photos[r.stem]) for r in (exports / f"eval_{step}" / "images").glob("*.png") if r.stem in photos]
+    if not scores:
+        raise GausserError(f"Brush saved no held-out renders at step {step}")
+    return sum(scores) / len(scores)
+
+
+def extend(scene: Scene, command: list[str], exports: Path, step: int, max_iterations: int, env: dict[str, str]) -> None:
+    """Continue a Brush run 5000 steps at a time while its held-out PSNR still gains 0.1 dB.
+
+    Brush has no checkpoints: a continuation starts from the last export (an `init.ply` in its dataset
+    folder overrides every other start), with `--start-iter` so growth stays off and exports and evals
+    keep their step numbers. Its mean learning rate restarts where the first run's schedule ended.
+    A continuation that made the held-out PSNR worse leaves no export.
+    """
+    dataset = Path(command[1])
+    score = eval_psnr(scene, exports, step)
+    while step + EXTEND_STEPS <= max_iterations:
+        print(f"\nHeld-out PSNR at step {step}: {score:.2f} dB; training {EXTEND_STEPS} more steps", flush=True)
+        init = dataset / "init.ply"
+        init.symlink_to(exports / f"export_{step}.ply")
+        more = [*command[:2], "--start-iter", str(step), *command[2:]]
+        more[more.index("--total-train-iters") + 1] = str(step + EXTEND_STEPS)
+        if "--lr-mean" not in more:
+            more += ["--lr-mean", "2e-7", "--lr-mean-end", "1e-7"]  # Brush's default end of schedule, then half
+        run_tool(more, cwd=scene.root, env=env)
+        init.unlink()
+        new = eval_psnr(scene, exports, step + EXTEND_STEPS)
+        print(f"Held-out PSNR at step {step + EXTEND_STEPS}: {new:.2f} dB ({new - score:+.2f})", flush=True)
+        if new < score:
+            remove(exports / f"export_{step + EXTEND_STEPS}.ply")
+            print(f"Worse: keeping export_{step}.ply as the final export")
+            return
+        step, gain, score = step + EXTEND_STEPS, new - score, new
+        if gain < MIN_GAIN_DB:
+            print(f"Gained less than {MIN_GAIN_DB} dB: stopping at step {step}")
+            return
+    print(f"Reached --max-iterations {max_iterations}")
 
 
 def dense(scene: Scene, resolution_level: int = 1) -> None:
@@ -566,6 +665,12 @@ def mesh(scene: Scene, *, faces: int | None = None, refine: bool = True, texture
     # OpenMVS finds the images relative to the project, so it runs in dense/ and writes into staging.
     run_tool([reconstruct, project, "-p", "scene_dense.ply", "-o", str(staged / "mesh.mvs")], cwd=scene.dense)
     surface = staged / "mesh.ply"
+    crop = cropping.load(scene)
+    if crop is not None:  # before refining: RefineMesh and TextureMesh then only work on the subject
+        kept, total = cropping.crop_mesh(surface, crop)
+        print(f"Crop keeps {kept:,} of {total:,} faces")
+        if not kept:
+            raise GausserError("The crop box holds none of the mesh; check it in `gausser monitor`")
     if refine:
         run_tool(
             [refiner, project, "-m", str(surface), "-o", str(staged / "refined.mvs"), "--resolution-level", "1"],

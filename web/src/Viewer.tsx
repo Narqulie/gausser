@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import { Canvas, useFrame, useLoader, useThree } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, PivotControls } from "@react-three/drei";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
@@ -66,6 +66,19 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
   const model = useFetched<Model>(modelChoice ? "model" : null, { path: modelChoice?.path ?? "" }, modelChoice?.key);
   const frame = useMemo(() => (model ? sceneFrame(model) : null), [model]);
   const camera = model?.cameras.find((c) => c.name === selected) ?? null;
+  // Crop: the stored box (`gausser crop`), or the one being drawn; both in the level frame (see crop.py).
+  const [editing, setEditing] = useState(false);
+  const [drawn, setDrawn] = useState<Box | null>(null);
+  const stored = state.crop ? { min: new THREE.Vector3(...state.crop.min), max: new THREE.Vector3(...state.crop.max) } : null;
+  const startEditing = () => {
+    if (!frame) return;
+    const centre = frame.offset.clone().negate();
+    const half = new THREE.Vector3().setScalar(frame.scale * 0.4);
+    setDrawn(stored ?? { min: centre.clone().sub(half), max: centre.clone().add(half) });
+    setEditing(true);
+  };
+  const box = editing ? drawn : stored;
+  const command = editing && drawn && model ? cropCommand(state.root, drawn, model.up) : null;
 
   const views = compareChoice ? [splatChoice, compareChoice] : [splatChoice];
   return (
@@ -99,6 +112,7 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
             {[...state.meshes].reverse().map((m) => <option key={m.path} value={m.path}>{m.path.split("/").slice(1, -1).join("/")}</option>)}
           </select>
         </section>
+        {frame && <CropSection stored={stored} drawn={editing ? drawn : null} command={command} onEdit={startEditing} onDone={() => setEditing(false)} />}
         <section>
           <span className="label">layers</span>
           {(Object.keys(show) as (keyof Layers)[]).map((key) => (
@@ -152,7 +166,7 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
           {views.map((splat, id) => (
             <View
               key={id} id={id} sync={compareChoice ? sync : null} model={model} frame={frame} show={show} pointSize={pointSize}
-              splat={splat ?? null} mesh={meshChoice?.path ?? null} selected={selected} onPick={setSelected} look={look} label={compareChoice ? splat?.label : undefined}
+              splat={splat ?? null} mesh={meshChoice?.path ?? null} box={box} editing={editing && id === 0} onBox={setDrawn} selected={selected} onPick={setSelected} look={look} label={compareChoice ? splat?.label : undefined}
             />
           ))}
           <div className="canvas-hint">click a camera · drag to orbit · right-drag to pan · scroll to zoom</div>
@@ -162,9 +176,9 @@ export function Viewer({ state, focus }: { state: State; focus: string | null })
   );
 }
 
-function View({ id, sync, model, frame, show, pointSize, splat, mesh, selected, onPick, look, label }: {
+function View({ id, sync, model, frame, show, pointSize, splat, mesh, box, editing, onBox, selected, onPick, look, label }: {
   id: number; sync: MutableRefObject<Sync> | null; model: Model | null; frame: Frame | null; show: Layers; pointSize: number;
-  splat: Splat | null; mesh: string | null; selected: string | null; onPick: (name: string) => void; look: LookRequest | null; label?: string;
+  splat: Splat | null; mesh: string | null; box: Box | null; editing: boolean; onBox: (box: Box) => void; selected: string | null; onPick: (name: string) => void; look: LookRequest | null; label?: string;
 }) {
   const [status, setStatus] = useState("");
   const [meshStatus, setMeshStatus] = useState("");
@@ -196,6 +210,11 @@ function View({ id, sync, model, frame, show, pointSize, splat, mesh, selected, 
           {show.splat && splat && <SplatView path={splat.path} onStatus={setStatus} />}
           {show.mesh && mesh && <MeshView path={mesh} onStatus={setMeshStatus} />}
         </group>
+        {frame && box && (
+          <group position={frame.offset}>
+            <CropBox key={editing ? "edit" : "show"} box={box} editing={editing} onChange={onBox} />
+          </group>
+        )}
         {model && show.cameras && <CameraPicker cameras={model.cameras} depth={depth} group={group} onPick={onPick} onHover={setHover} />}
         {model && frame && <LookThrough request={look} cameras={model.cameras} group={group} scale={frame.scale} />}
         {show.grid && frame && <gridHelper args={[frame.scale * 8, 40, "#34294f", "#34294f"]} position={[0, frame.floor, 0]} />}
@@ -205,6 +224,84 @@ function View({ id, sync, model, frame, show, pointSize, splat, mesh, selected, 
       {hover && <div className="canvas-tip" style={{ left: hover.x + 14, top: hover.y + 10 }}>{hover.name}</div>}
       {(status || (mesh && meshStatus)) && <div className="canvas-note">{[status, mesh && meshStatus].filter(Boolean).join(" · ")}</div>}
     </div>
+  );
+}
+
+interface Box {
+  min: THREE.Vector3;
+  max: THREE.Vector3;
+}
+
+const round = (v: number) => String(Number(v.toFixed(4)));
+const boxSize = (b: Box) => [0, 1, 2].map((i) => round(b.max.getComponent(i) - b.min.getComponent(i))).join(" × ");
+
+function cropCommand(root: string, b: Box, up: number[]): string {
+  const quoted = /^[\w./~-]+$/.test(root) ? root : `'${root.replace(/'/g, `'\\''`)}'`;
+  const box = [...b.min.toArray(), ...b.max.toArray()].map(round).join(",");
+  return `gausser crop -s ${quoted} --box=${box} --up=${up.map((v) => String(Number(v.toFixed(6)))).join(",")}`;
+}
+
+/** The sidebar's crop section: the stored box, or the command for the box being drawn. */
+function CropSection({ stored, drawn, command, onEdit, onDone }: {
+  stored: Box | null; drawn: Box | null; command: string | null; onEdit: () => void; onDone: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => setCopied(false), [command]);
+  return (
+    <section>
+      <span className="label">crop</span>
+      {stored && !drawn && <span>{boxSize(stored)}; train and mesh keep to it</span>}
+      {drawn && (
+        <>
+          <span>drag the arrows, squares and dots; {boxSize(drawn)}</span>
+          <code className="command">{command}</code>
+          <span className="label">run it to set the crop; the monitor only reads</span>
+        </>
+      )}
+      <div className="buttons">
+        {drawn ? (
+          <>
+            <button className="button" onClick={() => command && navigator.clipboard.writeText(command).then(() => setCopied(true))}>{copied ? "Copied" : "Copy command"}</button>
+            <button className="link-button" onClick={onDone}>done</button>
+          </>
+        ) : (
+          <button className="button" onClick={onEdit}>{stored ? "Change crop" : "Draw a crop box"}</button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * The crop box in the level frame (its parent puts the level origin where the view has it). While editing,
+ * a gizmo moves it (arrows, plane squares) and scales it per axis (dots); it owns its matrix from then on.
+ */
+function CropBox({ box, editing, onChange }: { box: Box; editing: boolean; onChange: (box: Box) => void }) {
+  const matrix = useRef<THREE.Matrix4 | null>(null);
+  if (!matrix.current || !editing) {
+    const centre = box.min.clone().add(box.max).multiplyScalar(0.5);
+    matrix.current = new THREE.Matrix4().compose(centre, new THREE.Quaternion(), box.max.clone().sub(box.min));
+  }
+  const edges = useMemo(() => new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), []);
+  useEffect(() => () => edges.dispose(), [edges]);
+  const drag = (local: THREE.Matrix4) => {
+    matrix.current?.copy(local);
+    const centre = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    local.decompose(centre, new THREE.Quaternion(), size);
+    size.set(Math.abs(size.x), Math.abs(size.y), Math.abs(size.z)).multiplyScalar(0.5);
+    onChange({ min: centre.clone().sub(size), max: centre.clone().add(size) });
+  };
+  return (
+    <PivotControls matrix={matrix.current} autoTransform={false} onDrag={drag} enabled={editing} disableRotations fixed scale={110} depthTest={false}>
+      <lineSegments geometry={edges} renderOrder={5}>
+        <lineBasicMaterial color="#fede5d" depthTest={false} transparent />
+      </lineSegments>
+      <mesh raycast={() => null}>
+        <boxGeometry />
+        <meshBasicMaterial color="#fede5d" transparent opacity={0.06} depthWrite={false} />
+      </mesh>
+    </PivotControls>
   );
 }
 

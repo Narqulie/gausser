@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import io
 import json
-import math
 import mimetypes
 import os
 import re
@@ -222,6 +221,7 @@ def state(scene: Scene) -> dict[str, Any]:
         "dense": cloud and {"points": pipeline.ply_count(cloud), "current": scene.dense_done()},
         "meshes": [{"path": _rel(scene, p / "mesh.glb"), "mtime": mtime(p / "mesh.glb")} for p in scene.mesh_runs()],
         "mesh_current": scene.mesh_done(),
+        "crop": _read_json(scene.crop),  # {up, min, max}: `gausser crop`'s box in the level frame
     }
 
 
@@ -292,20 +292,6 @@ def thumbnail(path: Path, size: int) -> bytes:
     out = io.BytesIO()
     image.save(out, "JPEG", quality=80)
     return out.getvalue()
-
-
-def psnr(render: Path, photo: Path) -> float:
-    """PSNR of a render against its photo, scaled to the render's size, over the whole image."""
-    import numpy as np
-    from PIL import Image
-
-    with Image.open(render) as r:
-        a = np.asarray(r.convert("RGB"), dtype=np.float32) / 255
-    with Image.open(photo) as p:
-        p.draft("RGB", (a.shape[1], a.shape[0]))
-        b = np.asarray(p.convert("RGB").resize((a.shape[1], a.shape[0])), dtype=np.float32) / 255
-    mse = float(((a - b) ** 2).mean())
-    return round(10 * math.log10(1 / mse), 2) if mse > 0 else 99.0
 
 
 def known_scenes() -> dict[str, float]:
@@ -431,7 +417,7 @@ class Monitor:
 
             def one(render: Path) -> dict[str, Any]:
                 photo = photos.get(render.stem)
-                score = self.cached(("psnr", render, mtime(render)), lambda: psnr(render, photo)) if photo else None
+                score = self.cached(("psnr", render, mtime(render)), lambda: pipeline.psnr(render, photo)) if photo else None
                 return {"name": render.stem, "render": _rel(scene, render), "photo": photo and _rel(scene, photo), "psnr": score}
 
             result.append({"step": int(step), "mtime": mtime(folder), "images": list(self.pool.map(one, renders))})

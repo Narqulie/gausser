@@ -106,6 +106,7 @@ class Scene:
         self.colmap_masks = self.root / "colmap" / "masks"  # COLMAP: <name><ext>.png
         self.database = self.root / "database.db"
         self.sparse = self.root / "sparse"
+        self.crop = self.sparse / "crop.json"  # `gausser crop`: the box train and mesh keep to (crop.py)
         self.dense = self.root / "dense"  # OpenMVS: undistorted images/, scene_dense.mvs and .ply
         self.arkit = self.root / "arkit"  # iPhone LiDAR scans: poses.json and points.ply (arkit.py)
         self.runs = self.root / "runs"
@@ -246,10 +247,13 @@ class Scene:
         return solved == {image.name for image in images}
 
     def train_done(self) -> bool:
-        """The newest export was trained after the current model was built."""
+        """The newest export was trained after the current model was built and the crop was set."""
         model = self.model()
         exports = self.exports()
-        return model is not None and bool(exports) and mtime(exports[-1]) > mtime(model / "images.bin")
+        return model is not None and bool(exports) and mtime(exports[-1]) > max(mtime(model / "images.bin"), self._crop_time())
+
+    def _crop_time(self) -> float:
+        return mtime(self.crop) if self.crop.is_file() else 0.0
 
     def dense_done(self) -> bool:
         """The dense cloud was built after the current model."""
@@ -258,7 +262,7 @@ class Scene:
 
     def mesh_done(self) -> bool:
         cloud, meshes = self.dense_cloud(), self.mesh_runs()
-        return cloud is not None and bool(meshes) and mtime(meshes[-1] / "mesh.glb") > mtime(cloud)
+        return cloud is not None and bool(meshes) and mtime(meshes[-1] / "mesh.glb") > max(mtime(cloud), self._crop_time())
 
     def mesh_runs(self) -> list[Path]:
         return sorted((path.parent for path in self.runs.glob("mesh/*/mesh.glb")), key=lambda run: mtime(run / "mesh.glb"))

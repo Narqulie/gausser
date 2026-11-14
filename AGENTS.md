@@ -25,6 +25,7 @@ src/gausser/
 ├── arkit.py   iPhone LiDAR scans (Stray Scanner folder): arkit/ poses, depth maps and LiDAR points; solve's snap to metres
 ├── geo.py     GPS: DJI .SRT subtitle tracks → EXIF GPS in frames; solve's georeference (similarity onto GPS in EPSG:3067/UTM)
 ├── mapping.py `gausser map`: orthographic top-down splat render → ortho.tif, dsm.tif (COG, rasterio), map.html (Leaflet)
+├── crop.py    `gausser crop`: box in the level frame (sparse/crop.json); crops Brush's start points, exports and the OpenMVS mesh
 ├── colmap_model.py the one reader of binary COLMAP models (cameras.bin, images.bin, points3D.bin)
 ├── msplat.py  experimental Msplat trainer with checkpoint resume; masks via black compositing
 ├── composite.py `gausser composite`: visual-hull filter of the statue splat, voxel carve of the context, PLY merge
@@ -81,6 +82,14 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLT
   record is also appended there with its `scene`, and `gausser monitor` adds an `opened` record. API
   requests name their scene (`?scene=`); folders not in the index are refused. Tests set `GAUSSER_HOME`
   to a temporary folder (autouse fixture). The end record of `train`/`lod` carries `run` (the run folder).
+- `crop` (sparse/crop.json, `{up, min, max}`): the box is axis-aligned in the level frame = model coordinates turned by the
+  shortest rotation of `up` (orbit.camera_up) onto +y, exactly the monitor's `sceneFrame` turn (three.js setFromUnitVectors);
+  `crop.level_rotation` must stay equal to it. The monitor draws/edits the box but only shows a `gausser crop --box=… --up=…`
+  command to copy; it never writes. Crop mtime counts as an input of train and mesh (`Scene._crop_time`).
+- `train --adaptive` (steps.extend): continuations put `init.ply` → the last export into Brush's dataset folder (Brush loads
+  a file named init.ply over any points3D.bin), add `--start-iter N` (keeps growth off and step numbers) and
+  `--lr-mean 2e-7 --lr-mean-end 1e-7` (Brush's mean LR schedule restarts from step_count 0). Judged by `steps.eval_psnr`
+  from the saved eval renders, not by parsing Brush's log. Crop is applied to exports only after the last continuation.
 - `train --eval-split N` adds `--eval-save-to-disk`: Brush writes `exports/eval_<step>/images/<stem>.png`;
   the monitor computes PSNR against `images/<stem>.*` itself (Brush logs only the mean).
 - Log parsing for progress and stats lives in `web/src/parse.ts` only; the CLI still passes tool output
