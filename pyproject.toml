@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "Photos or video in, Gaussian splats out"
 readme = "README.md"
 requires-python = ">=3.12"  # msplat ships only cp312/cp313 wheels
-dependencies = ["numpy>=1.26,<2", "opencv-python>=4.10,<4.12", "Pillow>=12.3,<13", "questionary>=2,<3", "scipy>=1.13,<2"]  # numpy, Pillow: orbit and composite; scipy: align; opencv: frames
+dependencies = ["numpy>=1.26,<2", "opencv-python>=4.10,<4.12", "Pillow>=12.3,<13", "pyproj>=3.7,<4", "questionary>=2,<3", "scipy>=1.13,<2"]  # numpy, Pillow: orbit and composite; scipy: align; opencv: frames; pyproj: georeferencing
 
 [project.optional-dependencies]
 # SAM3 itself is installed separately at a pinned commit and patched for macOS (see README).
@@ -26,13 +26,14 @@ sam = [
     "torchvision>=0.25,<0.26",
 ]
 msplat = ["msplat==1.1.4", "Pillow>=12.3,<13"]
-dev = ["pytest>=8.0", "ruff>=0.15,<0.16", "mypy>=1.19,<2", "numpy>=1.26,<2", "opencv-python>=4.10,<4.12", "Pillow>=12.3,<13", "scipy>=1.13,<2"]
+map = ["rasterio>=1.4,<2"]  # `gausser map`: GeoTIFF output
+dev = ["pytest>=8.0", "rasterio>=1.4,<2", "pyproj>=3.7,<4", "ruff>=0.15,<0.16", "mypy>=1.19,<2", "numpy>=1.26,<2", "opencv-python>=4.10,<4.12", "Pillow>=12.3,<13", "scipy>=1.13,<2"]
 
 [project.scripts]
 gausser = "gausser.cli:main"
 
 [tool.setuptools.package-data]
-gausser = ["orbit.mjs", "web/*", "web/assets/*"]  # web/: built from the repository's web/ (npm run build)
+gausser = ["orbit.mjs", "py.typed", "web/*", "web/assets/*"]  # web/: built from the repository's web/ (npm run build)
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -51,5 +52,5 @@ files = ["src"]
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["msplat", "msplat.*", "sam3.*", "torch", "torch.*", "questionary", "scipy", "scipy.*"]
+module = ["msplat", "msplat.*", "sam3.*", "torch", "torch.*", "questionary", "scipy", "scipy.*", "rasterio", "rasterio.*"]
 ignore_missing_imports = true

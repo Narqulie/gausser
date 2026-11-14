@@ -14,7 +14,6 @@ import mimetypes
 import os
 import re
 import shutil
-import struct
 import subprocess
 import sys
 import threading
@@ -27,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
 
-from . import orbit, pano, steps as pipeline
+from . import colmap_model, orbit, pano, steps as pipeline
 from .scene import GausserError, Scene, index, index_path, is_image, mtime, registered_images
 
 WEB = Path(__file__).with_name("web")
@@ -37,8 +36,6 @@ IDLE_SECONDS = 600  # a spawned monitor quits after this long without a page pol
 MAX_POINTS = 200_000
 CACHE_BYTES = 512 << 20  # thumbnails and model JSON kept in memory; the oldest go when this is exceeded
 # Parameter counts of COLMAP camera models by model id, and the index of fy (else fy = fx).
-CAMERA_PARAMS = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 8, 6: 12, 7: 5, 8: 4, 9: 5, 10: 12, 11: 16}
-FY_INDEX = {1: 1, 4: 1, 5: 1, 6: 1, 10: 1, 11: 1}
 
 
 # Terminal control sequences: CSI (colours, cursor moves), OSC/APC/DCS strings (titles, kitty graphics), others.
@@ -232,56 +229,24 @@ def read_model(model: Path, max_points: int = MAX_POINTS) -> dict[str, Any]:
     """Cameras, a subsample of the points and statistics of a binary COLMAP model."""
     import numpy as np
 
-    data = (model / "cameras.bin").read_bytes()
-    intrinsics: dict[int, tuple[float, float, int, int]] = {}
-    (count,), at = struct.unpack_from("<Q", data), 8
-    for _ in range(count):
-        camera_id, kind, width, height = struct.unpack_from("<iiQQ", data, at)
-        at += 24
-        params = struct.unpack_from(f"<{CAMERA_PARAMS[kind]}d", data, at)
-        at += 8 * CAMERA_PARAMS[kind]
-        intrinsics[camera_id] = (params[0], params[FY_INDEX.get(kind, 0)], width, height)
-
-    data = (model / "images.bin").read_bytes()
-    cameras = []
-    rights, downs = [], []
-    (count,), at = struct.unpack_from("<Q", data), 8
-    for _ in range(count):
-        _id, qw, qx, qy, qz, tx, ty, tz, camera_id = struct.unpack_from("<idddddddi", data, at)
-        end = data.index(b"\0", at + 64)
-        name = data[at + 64:end].decode(errors="replace")
-        (points,) = struct.unpack_from("<Q", data, end + 1)
-        at = end + 9
-        observed = np.frombuffer(data, dtype="<i8", count=points * 3, offset=at)[2::3] if points else np.empty(0)
-        at += points * 24
-        r = np.array([
-            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
-            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
-            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
-        ])
-        fx, fy, width, height = intrinsics.get(camera_id, (1.0, 1.0, 1, 1))
+    intrinsics = colmap_model.read_cameras(model)
+    cameras, rights, downs = [], [], []
+    for image in colmap_model.read_images(model, observations=True):
+        camera = intrinsics.get(image.camera_id)
+        fx, fy = camera.intrinsics[:2] if camera else (1.0, 1.0)
+        r = image.rotation
         rights.append(r[0])
         downs.append(r[1])
         cameras.append({
-            "name": name, "center": np.round(-r.T @ np.array([tx, ty, tz]), 5).tolist(),
+            "name": image.name, "center": np.round(image.centre, 5).tolist(),
             "rotation": np.round(r.T, 5).ravel().tolist(),  # camera to world, OpenCV axes (x right, y down, z forward)
-            "fx": fx, "fy": fy, "width": width, "height": height, "points": int((observed >= 0).sum()),
+            "fx": fx, "fy": fy, "width": camera.width if camera else 1, "height": camera.height if camera else 1,
+            "points": int((image.observations[:, 2] >= 0).sum()),
         })
 
     up = orbit.level_up(rights, downs).tolist() if rights else [0.0, -1.0, 0.0]
-
-    data = (model / "points3D.bin").read_bytes()
-    (count,), at = struct.unpack_from("<Q", data), 8
-    xyz = np.empty((count, 3))
-    rgb = np.empty((count, 3), dtype=np.uint8)
-    errors = np.empty(count)
-    tracks = np.empty(count, dtype=np.int64)
-    for i in range(count):
-        x, y, z, r_, g, b, error, track = struct.unpack_from("<dddBBBdQ", data, at + 8)
-        xyz[i] = x, y, z
-        rgb[i] = r_, g, b
-        errors[i], tracks[i] = error, track
-        at += 51 + track * 8
+    points = colmap_model.read_points(model)
+    xyz, rgb, errors, tracks, count = points.xyz, points.rgb, points.errors, points.tracks, len(points.ids)
     keep = np.random.default_rng(0).choice(count, max_points, replace=False) if count > max_points else slice(None)
     lengths, counts = np.unique(np.minimum(tracks, 30), return_counts=True)
     return {

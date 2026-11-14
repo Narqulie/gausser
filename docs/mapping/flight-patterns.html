@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gausser mapping: flight patterns for a DJI Mini</title>
+<style>
+  :root {
+    --bg: #241b2f; --deep: #171520; --raise: #2a2139; --line: #34294f;
+    --text: #f0eff1; --muted: #848bbd; --dim: #614d85;
+    --nadir: #36f9f6; --oblns: #ff7edb; --oblew: #fede5d; --area: #72f1b8; --red: #fe4450;
+    --font: mononoki, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); }
+  main { max-width: 1280px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 8px; color: var(--muted); font-weight: normal; }
+  p, li { color: var(--muted); max-width: 90ch; }
+  b, strong { color: var(--text); }
+  .controls { display: flex; flex-wrap: wrap; gap: 16px 28px; background: var(--raise); border: 1px solid var(--line);
+              padding: 12px 16px; border-radius: 6px; margin: 16px 0; }
+  .controls label { display: grid; gap: 2px; color: var(--muted); font-size: 12px; }
+  .controls output { color: var(--text); }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .panel { background: var(--deep); border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+  .panel svg { width: 100%; height: auto; display: block; }
+  .side svg { max-height: 260px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: normal; }
+  .warn { color: var(--red); }
+  .key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mapping flight: nadir grid + two oblique crosshatch passes</h1>
+  <p>Plan view of one example site. Each faint rectangle is one photo's ground footprint, so darker areas are seen by more photos.
+     The green box is the area you want mapped. Plan in 12 MP photo mode: full-resolution photos save slowly and
+     the drone skips shots between waypoints.</p>
+
+  <div class="controls">
+    <label>Drone <select id="cam"><option value="m4">DJI Mini 4 Pro (1/1.3", 6.9 mm)</option><option value="m5">DJI Mini 5 Pro (1", 9.1 mm)</option></select><output id="cam-o"></output></label>
+    <label>Area width (east-west) <input id="aw" type="range" min="40" max="300" step="10" value="150"><output id="aw-o"></output></label>
+    <label>Area depth (north-south) <input id="ah" type="range" min="40" max="300" step="10" value="100"><output id="ah-o"></output></label>
+    <label>Height above ground <input id="alt" type="range" min="30" max="120" step="5" value="60"><output id="alt-o"></output></label>
+    <label>Front overlap <input id="fo" type="range" min="60" max="90" step="5" value="80"><output id="fo-o"></output></label>
+    <label>Side overlap <input id="so" type="range" min="50" max="85" step="5" value="70"><output id="so-o"></output></label>
+    <label>Seconds per photo <input id="iv" type="range" min="2" max="6" step="0.5" value="3"><output id="iv-o"></output></label>
+  </div>
+
+  <div class="grid">
+    <div class="panel"><h2><span class="key" style="background:var(--nadir)"></span>Flight A: nadir, gimbal −90°</h2><svg id="pa"></svg></div>
+    <div class="panel"><h2><span class="key" style="background:var(--oblns)"></span>Flight B: oblique −45°, N–S lines</h2><svg id="pb"></svg></div>
+    <div class="panel"><h2><span class="key" style="background:var(--oblew)"></span>Flight C: oblique −45°, E–W lines</h2><svg id="pc"></svg></div>
+  </div>
+
+  <div class="two">
+    <div class="panel side"><h2>Side view: why oblique lines run past the area</h2><svg id="side"></svg></div>
+    <div class="panel"><h2>Numbers per flight</h2><table id="stats"></table>
+      <p id="notes" style="font-size:12px"></p></div>
+  </div>
+
+  <p>How to read it: Flight A gives the orthophoto and DSM. B and C look at the same ground from four directions
+     (camera faces the direction of travel, so alternate lines face opposite ways). Obliques remove the "bowl" doming of
+     nadir-only grids and show walls for the mesh and the splat. For a flat map only, fly A + B. For 3D and splats, fly all three.</p>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+// sensor mm, lens mm, image widths. Mini 4 Pro lens derived from its 82.1° diagonal FOV.
+const CAMS = { m4: { SW: 9.6, SH: 7.2, F: 6.89, PX12: 4032, PXF: 8064, full: "48 MP" },
+               m5: { SW: 13.10, SH: 9.80, F: 9.10, PX12: 4000, PXF: 8192, full: "50 MP" } };
+let SW, SH, F, PX12, PXF, FULL;
+const ns = "http://www.w3.org/2000/svg";
+const el = (tag, attrs, parent) => { const e = document.createElementNS(ns, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); parent && parent.appendChild(e); return e; };
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+// One flight: parallel lines along `axis` ("x" = east-west lines, "y" = north-south), photos every `step` m.
+// The camera's long side (W) is across track. Oblique: look point is `look` m ahead in the travel direction.
+function plan(aw, ah, alt, fo, so, axis, oblique) {
+  const W = alt * SW / F, L = alt * SH / F;
+  const lineGap = W * (1 - so / 100), step = L * (1 - fo / 100);
+  const look = oblique ? alt : 0;                 // -45° gimbal: centre of view is alt metres ahead
+  const along = axis === "x" ? aw : ah, across = axis === "x" ? ah : aw;
+  const nLines = Math.ceil(across / lineGap) + 3;  // one extra line beyond each edge
+  const off0 = (across - (nLines - 1) * lineGap) / 2;
+  const s0 = -step - look, s1 = along + step + look; // one extra photo past each end, plus the look-ahead
+  const lines = [];
+  for (let i = 0; i < nLines; i++) {
+    const c = off0 + i * lineGap, fwd = i % 2 === 0, shots = [];
+    for (let s = s0; s <= s1 + 1e-6; s += step) shots.push(s);
+    if (!fwd) shots.reverse();
+    lines.push({ c, fwd, shots });
+  }
+  return { W, L, lineGap, step, look, lines, axis, along };
+}
+
+function stats(p, iv) {
+  const photos = p.lines.reduce((n, l) => n + l.shots.length, 0);
+  const lineLen = p.lines[0].shots.length > 1 ? Math.abs(p.lines[0].shots.at(-1) - p.lines[0].shots[0]) : 0;
+  const dist = p.lines.length * lineLen + (p.lines.length - 1) * p.lineGap;
+  const speed = Math.min(p.step / iv, 10);
+  const minutes = (dist / speed + p.lines.length * 8) / 60;   // + ~8 s per turn (rough)
+  const missions = Math.max(Math.ceil(photos / 200), Math.ceil(minutes / 25));
+  return { photos, dist, speed, minutes, missions };
+}
+
+function draw(svg, p, aw, ah, color) {
+  svg.innerHTML = "";
+  const pad = Math.max(p.look, p.W) + 30;
+  const x0 = -pad, y0 = -pad, w = aw + 2 * pad, h = ah + 2 * pad;
+  svg.setAttribute("viewBox", `${x0} ${y0} ${w} ${h}`);
+  const g = el("g", { transform: `scale(1,-1) translate(0,${-ah})` }, svg);   // north up
+  const fw = p.L, fa = p.W;   // footprint: along-track L, across-track W
+  const pos = (l, s) => p.axis === "x" ? [s, l.c] : [l.c, s];
+  // footprints
+  for (const l of p.lines) for (const s of l.shots) {
+    const dir = l.fwd ? 1 : -1, cs = s + dir * p.look;   // look point
+    const [cx, cy] = pos(l, cs);
+    const along = p.look ? fw * 1.9 : fw, acrossW = p.look ? fa * 1.25 : fa;  // -45° footprint is longer and wider
+    const rw = p.axis === "x" ? along : acrossW, rh = p.axis === "x" ? acrossW : along;
+    el("rect", { x: cx - rw / 2, y: cy - rh / 2, width: rw, height: rh, fill: color, "fill-opacity": p.look ? 0.02 : 0.035, stroke: "none" }, g);
+  }
+  el("rect", { x: 0, y: 0, width: aw, height: ah, fill: "none", stroke: css("--area"), "stroke-width": 2 }, g);
+  // path
+  let d = "";
+  p.lines.forEach((l, i) => {
+    const a = pos(l, l.shots[0]), b = pos(l, l.shots.at(-1));
+    d += (i ? "L" : "M") + a.join(",") + "L" + b.join(",");
+  });
+  el("path", { d, fill: "none", stroke: color, "stroke-width": 1.5 }, g);
+  // photo points
+  for (const l of p.lines) for (const s of l.shots) { const [x, y] = pos(l, s); el("circle", { cx: x, cy: y, r: 1.4, fill: color }, g); }
+  // arrows on each line: travel and camera direction
+  for (const l of p.lines) {
+    const mid = l.shots[Math.floor(l.shots.length / 2)], dir = l.fwd ? 1 : -1;
+    const [x, y] = pos(l, mid), [tx, ty] = pos(l, mid + dir * 14);
+    el("line", { x1: x, y1: y, x2: tx, y2: ty, stroke: color, "stroke-width": 3, "marker-end": `url(#arr-${svg.id})` }, g);
+    if (p.look) {   // dashed sight line from drone to look point
+      const [lx, ly] = pos(l, l.shots[2] + dir * p.look), [dx, dy] = pos(l, l.shots[2]);
+      el("line", { x1: dx, y1: dy, x2: lx, y2: ly, stroke: css("--text"), "stroke-width": 0.8, "stroke-dasharray": "3 3", opacity: 0.6 }, g);
+      el("circle", { cx: lx, cy: ly, r: 2.5, fill: "none", stroke: css("--text"), opacity: 0.8 }, g);
+    }
+  }
+  const defs = el("defs", {}, svg), m = el("marker", { id: `arr-${svg.id}`, viewBox: "0 0 10 10", refX: 5, refY: 5, markerWidth: 3, markerHeight: 3, orient: "auto-start-reverse" }, defs);
+  el("path", { d: "M0,0L10,5L0,10z", fill: color }, m);
+  // takeoff + scale bar (in screen coordinates, outside the flipped group)
+  const t = el("text", { x: x0 + 6, y: y0 + 14, fill: css("--muted"), "font-size": Math.max(w, h) / 40, "font-family": css("--font") }, svg);
+  t.textContent = `${Math.round(w)} × ${Math.round(h)} m shown · N ↑`;
+}
+
+function drawSide(svg, alt) {
+  svg.innerHTML = "";
+  const w = alt * 4, h = alt * 1.35;
+  svg.setAttribute("viewBox", `${-alt * 1.6} ${-h + alt * 0.15} ${w} ${h}`);
+  const fs = alt / 14, font = css("--font");
+  const txt = (x, y, s, c) => { const t = el("text", { x, y, fill: c || css("--muted"), "font-size": fs, "font-family": font }, svg); t.textContent = s; };
+  el("line", { x1: -alt * 1.6, y1: 0, x2: alt * 2.4, y2: 0, stroke: css("--dim"), "stroke-width": 1 }, svg);
+  el("rect", { x: 0, y: -2, width: alt * 1.0, height: 2, fill: css("--area") }, svg);
+  txt(alt * 0.05, -alt * 0.04, "area →", css("--area"));
+  // drone positions: at area edge minus look-ahead
+  const vfov = Math.atan(SH / 2 / F);   // half FOV along track
+  const cone = (dx, gimbal, c) => {
+    el("circle", { cx: dx, cy: -alt, r: alt / 30, fill: c }, svg);
+    for (const a of [gimbal - vfov, gimbal + vfov]) {
+      const gx = dx + alt / Math.tan(a);
+      el("line", { x1: dx, y1: -alt, x2: gx, y2: 0, stroke: c, "stroke-width": 0.8, "stroke-dasharray": "4 3" }, svg);
+    }
+    el("line", { x1: dx, y1: -alt, x2: dx + alt / Math.tan(gimbal), y2: 0, stroke: c, "stroke-width": 1.5 }, svg);
+  };
+  cone(alt * 1.6, Math.PI / 2, css("--nadir"));
+  txt(alt * 1.6 + alt / 20, -alt - alt / 12, "nadir −90°", css("--nadir"));
+  cone(-alt, Math.PI / 4, css("--oblns"));
+  txt(-alt - alt / 2, -alt - alt / 12, "oblique −45°", css("--oblns"));
+  el("line", { x1: -alt, y1: alt * 0.06, x2: 0, y2: alt * 0.06, stroke: css("--text"), "stroke-width": 0.8, "marker-end": "url(#a2)", "marker-start": "url(#a2)" }, svg);
+  txt(-alt * 0.85, alt * 0.16 - 0, `look-ahead = height = ${alt} m`, css("--text"));
+  el("line", { x1: alt * 2.2, y1: 0, x2: alt * 2.2, y2: -alt, stroke: css("--muted"), "stroke-width": 0.8 }, svg);
+  txt(alt * 2.22, -alt / 2, `${alt} m`);
+  const defs = el("defs", {}, svg), m = el("marker", { id: "a2", viewBox: "0 0 10 10", refX: 5, refY: 5, markerWidth: 4, markerHeight: 4, orient: "auto-start-reverse" }, defs);
+  el("path", { d: "M0,0L10,5L0,10z", fill: css("--text") }, m);
+}
+
+function update() {
+  const v = (id) => +$(id).value;
+  ({ SW, SH, F, PX12, PXF, full: FULL } = CAMS[$("cam").value]);
+  const aw = v("aw"), ah = v("ah"), alt = v("alt"), fo = v("fo"), so = v("so"), iv = v("iv");
+  for (const [id, u] of [["aw", " m"], ["ah", " m"], ["alt", " m"], ["fo", " %"], ["so", " %"], ["iv", " s"]]) $(id + "-o").textContent = $(id).value + u;
+  const A = plan(aw, ah, alt, fo, so, "x", false);
+  const B = plan(aw, ah, alt, fo, so, "y", true);
+  const C = plan(aw, ah, alt, fo, so, "x", true);
+  draw($("pa"), A, aw, ah, css("--nadir"));
+  draw($("pb"), B, aw, ah, css("--oblns"));
+  draw($("pc"), C, aw, ah, css("--oblew"));
+  drawSide($("side"), alt);
+  const rows = [["", "A nadir", "B oblique N–S", "C oblique E–W"]];
+  const S = [A, B, C].map((p) => stats(p, iv));
+  const f1 = (x) => x.toFixed(1), f0 = (x) => Math.round(x);
+  rows.push(["photos (= waypoints)", ...S.map((s) => f0(s.photos))]);
+  rows.push(["lines", ...[A, B, C].map((p) => p.lines.length)]);
+  rows.push(["line spacing, m", ...[A, B, C].map((p) => f1(p.lineGap))]);
+  rows.push(["photo spacing, m", ...[A, B, C].map((p) => f1(p.step))]);
+  rows.push(["speed, m/s", ...S.map((s) => f1(s.speed))]);
+  rows.push(["distance, m", ...S.map((s) => f0(s.dist))]);
+  rows.push(["minutes (rough)", ...S.map((s) => f1(s.minutes))]);
+  rows.push(["DJI Fly missions", ...S.map((s) => s.missions)]);
+  $("stats").replaceChildren(...rows.map((r, i) => {
+    const tr = document.createElement("tr");
+    r.forEach((c, j) => {
+      const td = tr.appendChild(document.createElement(i ? "td" : "th"));
+      td.textContent = c;
+      if (i === rows.length - 1 && j && c > 1) td.className = "warn";
+    });
+    return tr;
+  }));
+  const gsd12 = A.W / PX12 * 100, gsdF = A.W / PXF * 100;
+  $("notes").textContent = `Footprint ${f0(A.W)} × ${f0(A.L)} m. GSD ${gsd12.toFixed(1)} cm/px at 12 MP (${gsdF.toFixed(1)} at ${FULL}).
+    Limits per DJI Fly mission: 200 waypoints, one battery (plan ≤ 25 min). One waypoint per photo, because DJI Fly does not reliably
+    honour interval triggers. Minutes assume ~8 s per turn; check the first real flight's photo timestamps and adjust "seconds per photo".
+    Shutter 1/500 s at ${f1(S[0].speed)} m/s blurs ${(S[0].speed / 500 * 100).toFixed(1)} cm, under one pixel.`;
+}
+for (const i of document.querySelectorAll("input, select")) i.addEventListener("input", update);
+update();
+</script>
+</body>
+</html>

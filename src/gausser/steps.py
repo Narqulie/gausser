@@ -14,8 +14,8 @@ from typing import Any
 
 from PIL import Image
 
-from . import keyframes, pano, qoocam
-from .scene import GausserError, Scene, is_image, is_video, registered_images, remove, replace, require_tool, run_tool
+from . import arkit, geo, keyframes, pano, qoocam
+from .scene import GEO_FILE, GausserError, Scene, is_image, is_video, registered_images, remove, replace, require_tool, run_tool
 
 BRUSH_HINT = "build Brush (cargo build --release) and put `brush` on PATH"
 COLMAP_HINT = "brew install colmap"
@@ -28,6 +28,7 @@ DENSE_INIT_POINTS = 500_000  # Brush's starting splats from dense/; it grows to 
 def frames(
     scene: Scene, source: Path, ranges: list[tuple[float, float]] | None = None, *, spacing: str = "medium",
     min_frames: int = keyframes.MIN_FRAMES, max_frames: int = keyframes.MAX_FRAMES, every: int | None = None,
+    overlap: float | None = None,
 ) -> int:
     """Select frames from a video (or a folder of videos) into images/; `ranges` keeps only those seconds.
 
@@ -35,7 +36,12 @@ def frames(
     extracts the picked frames. A folder of photos is used whole. 360° frames go to panos/ instead,
     and images/ gets their pinhole views (pano.py): 2:1 equirectangular frames, or a QooCam 8K raw
     video's two fisheye images side by side, with the camera's calibration in panos/lenses.json and
-    the lens-circle masks in masks-exclude/.
+    the lens-circle masks in masks-exclude/. A Stray Scanner LiDAR scan folder (arkit.py) gives frames
+    from its rgb.mp4 plus arkit/ (ARKit poses and LiDAR points of those frames).
+
+    `overlap` (0-1) is for mapping: a frame whenever the view has moved so far that the next one shares
+    only that much of it, however many frames that gives. A DJI video's subtitle file (geo.py) gives each
+    frame its GPS position in EXIF, as drone photos have.
     """
     source = source.expanduser().resolve()
     if not source.exists():
@@ -43,13 +49,14 @@ def frames(
     staging = scene.staging("frames")
     staged = staging / "images"
     staged.mkdir()
-    photos = sorted(path for path in source.iterdir() if is_image(path)) if source.is_dir() else []
-    videos = sorted(path for path in source.iterdir() if is_video(path)) if source.is_dir() else [source]
+    scan = arkit.is_scan(source)
+    photos = sorted(path for path in source.iterdir() if is_image(path)) if source.is_dir() and not scan else []
+    videos = [source / "rgb.mp4"] if scan else sorted(path for path in source.iterdir() if is_video(path)) if source.is_dir() else [source]
     if ranges and not source.is_file():
         raise GausserError("--range needs a video file")
     if photos and videos and source.is_dir():
         raise GausserError(f"{source} has both photos and videos; use a folder of one kind")
-    rig = qoocam.calibration(photos[0] if photos else videos[0]) if photos or videos else None
+    rig = qoocam.calibration(photos[0] if photos else videos[0]) if (photos or videos) and not scan else None
     if photos:
         for photo in photos:
             if rig:
@@ -57,7 +64,9 @@ def frames(
             else:
                 shutil.copy2(photo, staged / photo.name)
     elif videos:
-        _select_frames(videos, ranges, staging, staged, rig, spacing, min_frames, max_frames, every)
+        items = _select_frames(videos, ranges, staging, staged, rig, spacing, min_frames, max_frames, every, overlap)
+        if scan:
+            arkit.import_scan(source, staged, items, staging / "arkit")
     count = sum(1 for path in staged.iterdir() if is_image(path))
     if count == 0:
         raise GausserError(f"No photos or videos in {source}")
@@ -77,9 +86,12 @@ def frames(
     else:
         replace(staged, scene.images)
         remove(scene.panos)
-    remove(scene.masks, scene.masks_exclude, scene.colmap_masks, scene.database, scene.sparse, scene.dense)  # built from the old images
+    # built from the old images
+    remove(scene.masks, scene.masks_exclude, scene.colmap_masks, scene.database, scene.sparse, scene.dense, scene.arkit)
     if keep.is_dir():
         replace(keep, scene.masks_exclude)
+    if scan:
+        replace(staging / "arkit", scene.arkit)
     remove(staging)
     print(f"{count} frames in {scene.panos if scene.is_pano() else scene.images}")
     return count
@@ -87,9 +99,12 @@ def frames(
 
 def _select_frames(
     videos: list[Path], ranges: list[tuple[float, float]] | None, staging: Path, staged: Path, rig: dict[str, Any] | None,
-    spacing: str, min_frames: int, max_frames: int, every: int | None,
-) -> None:
-    """Analyse every part (video or range), choose one level for all of them, extract into `staged` with frames.json."""
+    spacing: str, min_frames: int, max_frames: int, every: int | None, overlap: float | None,
+) -> list[dict[str, Any]]:
+    """Analyse every part (video or range), choose one level for all of them, extract into `staged` with frames.json.
+
+    With `overlap`, each part has one level, the threshold for that overlap, and the frame count is not limited.
+    """
     ffmpeg, ffprobe = require_tool("ffmpeg", FFMPEG_HINT), require_tool("ffprobe", FFMPEG_HINT)
     spans = ranges or [None]  # type: ignore[list-item]
     parts = [(video, span) for video in videos for span in spans]
@@ -97,16 +112,27 @@ def _select_frames(
     for number, (video, span) in enumerate(parts, start=1):
         print(f"== {video.name}" + (f" {span[0]:g}-{span[1]:g} s" if span else "") + f" ({number}/{len(parts)})", flush=True)
         infos.append(keyframes.probe(ffprobe, video, span))
-        analysed.append(keyframes.analyse(ffmpeg, video, infos[-1], span, every))
+        levels = (keyframes.overlap_level(infos[-1], overlap),) if overlap else keyframes.LEVELS
+        analysed.append(keyframes.analyse(ffmpeg, video, infos[-1], span, every, levels))
     counts = [sum(len(part[level]) for part in analysed) for level in range(len(analysed[0]))]
-    level = keyframes.choose(counts, keyframes.SPACINGS[spacing], min_frames, max_frames) if not every else 0
-    note = f"every {every} frames" if every else f"level {level} of {len(counts) - 1} (spacing {spacing}); frames per level {counts}"
+    fixed = every or overlap
+    level = 0 if fixed else keyframes.choose(counts, keyframes.SPACINGS[spacing], min_frames, max_frames)
+    note = (
+        f"every {every} frames" if every else f"{overlap:.0%} overlap" if overlap
+        else f"level {level} of {len(counts) - 1} (spacing {spacing}); frames per level {counts}"
+    )
     print(f"Selecting {counts[level]} frames: {note}", flush=True)
-    if counts[level] < min_frames and not every:
+    if counts[level] < min_frames and not fixed:
         print(f"warning: fewer than --min-frames {min_frames}; the video is short or hardly moves", flush=True)
     items = []
-    for number, ((video, span), info, levels) in enumerate(zip(parts, infos, analysed, strict=True), start=1):
-        picks = levels[level]
+    tracks = {video: geo.track(video) for video in videos}
+    for found in filter(None, tracks.values()):
+        print(f"GPS from {found.source.name}: {len(found.times)} positions", flush=True)
+    if overlap and not any(tracks.values()):
+        print("warning: no GPS for these frames, so maps will not be georeferenced. "
+              "Turn on Video Subtitles in DJI Fly; the drone then writes a .SRT next to each video", flush=True)
+    for number, ((video, span), info, picked) in enumerate(zip(parts, infos, analysed, strict=True), start=1):
+        picks = picked[level]
         if not picks:
             continue
         print(f"Extracting {len(picks)} frames from {video.name}", flush=True)
@@ -115,12 +141,17 @@ def _select_frames(
         for path, pick in zip(paths, picks, strict=True):
             name = f"{prefix}frame_{pick.frame:06d}.jpg"
             path.rename(staged / name)
+            time = (span[0] if span else 0) + pick.frame / info.fps
             items.append({
-                "name": name, "source": video.name, "frame": pick.frame, "time": round((span[0] if span else 0) + pick.frame / info.fps, 3),
+                "name": name, "source": video.name, "frame": pick.frame, "time": round(time, 3),
                 "motion": round(pick.motion, 4), "sharpness": round(pick.sharpness, 1),
             })
-    record = {"method": f"every {every}" if every else "motion", "level": level, "per_level": counts, "analysed": sum(i.frames for i in infos), "total_selected": len(items), "items": items}
+            if (track := tracks[video]) is not None:
+                geo.add_gps(staged / name, *track.at(time))
+    method = f"every {every}" if every else f"overlap {overlap:g}" if overlap else "motion"
+    record = {"method": method, "level": level, "per_level": counts, "analysed": sum(i.frames for i in infos), "total_selected": len(items), "items": items}
     (staged / "frames.json").write_text(json.dumps(record, indent=1))
+    return items
 
 
 def _write_keep_masks(views: Path, out: Path, keep: list[Any]) -> None:
@@ -266,9 +297,13 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     """
     colmap = require_tool("colmap", COLMAP_HINT)
     images = scene.require_images()
+    rig = scene.is_pano()
+    positions = {} if rig else geo.image_positions(images)  # drone photos and DJI video frames carry GPS
     if matcher == "auto":
-        # Exhaustive matching is quadratic; it takes hours on hundreds of images.
-        matcher = "exhaustive" if len(images) <= 200 else "sequential"
+        # With GPS (drone photos and frames), COLMAP pairs each image with its neighbours on the ground,
+        # which also links the strips of a mapping flight. Exhaustive matching is quadratic; it takes hours
+        # on hundreds of images.
+        matcher = "spatial" if len(positions) * 2 > len(images) else "exhaustive" if len(images) <= 200 else "sequential"
     gpu = "0" if sys.platform == "darwin" else "1"  # Homebrew COLMAP on macOS has no CUDA.
 
     staged = scene.staging("solve")
@@ -285,7 +320,6 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         "--ImageReader.single_camera", "1",
         "--FeatureExtraction.use_gpu", gpu,
     ]
-    rig = scene.is_pano()
     lenses = pano.lenses(scene.panos) if rig else None
     if rig:
         masks = staged / "masks"
@@ -299,6 +333,9 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         ]
     elif scene.colmap_masks.is_dir() and not no_masks:
         extract += ["--ImageReader.mask_path", str(scene.colmap_masks)]
+    poses = None if rig else scene.arkit_poses()
+    if poses:  # ARKit's focal length is a better start than COLMAP's guess; bundle adjustment refines it
+        extract += ["--ImageReader.camera_model", "SIMPLE_RADIAL", "--ImageReader.camera_params", arkit.camera_params(poses)]
     run_tool(extract, cwd=staged)
     match = [colmap, f"{matcher}_matcher", "--database_path", str(database), "--FeatureMatching.use_gpu", gpu]
     mapper = [colmap, "mapper", "--database_path", str(database), "--image_path", str(scene.images), "--output_path", str(sparse)]
@@ -322,12 +359,17 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         match += ["--SequentialMatching.loop_detection", "1"]
     run_tool(match, cwd=staged)
     sparse.mkdir()
-    # Snapshots of the growing model, about 20 per solve, for `gausser monitor`.
-    (staged / "snapshots").mkdir()
-    mapper += [
-        "--Mapper.snapshot_path", str(staged / "snapshots"),
-        "--Mapper.snapshot_frames_freq", str(max(5, len(images) // (pano.VIEWS if rig else 1) // 20)),
-    ]
+    if positions:
+        # A nadir mapping flight is close to a plane seen from one side; on one, the incremental mapper placed
+        # 41 of 81 frames in 10 min and the global mapper (GLOMAP) all 81 in 1.5 min, 0.3 m RMS from their GPS.
+        mapper[1] = "global_mapper"
+    else:
+        # Snapshots of the growing model, about 20 per solve, for `gausser monitor`.
+        (staged / "snapshots").mkdir()
+        mapper += [
+            "--Mapper.snapshot_path", str(staged / "snapshots"),
+            "--Mapper.snapshot_frames_freq", str(max(5, len(images) // (pano.VIEWS if rig else 1) // 20)),
+        ]
     run_tool(mapper, cwd=staged)
 
     # COLMAP can split the scene into several models; keep the largest as sparse/0.
@@ -338,16 +380,34 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     final = staged / "final"
     final.mkdir()
     best.rename(final / "0")
-    if rig:  # COLMAP's frame is arbitrary (for fisheyes, a lens's); turn the model so gravity is +y
-        transform = staged / "level.txt"
-        transform.write_text(pano.level_transform(final / "0" / "images.bin", lenses))
-        (staged / "level").mkdir()
+    model = final / "0"
+
+    def transform(text: str) -> None:
+        """Move the model by a similarity, "scale qw qx qy qz tx ty tz" (x' = s·R·x + t)."""
+        (staged / "transform.txt").write_text(text)
+        moved = staged / "moved"
+        moved.mkdir()
         run_tool(
-            [colmap, "model_transformer", "--input_path", str(final / "0"), "--output_path", str(staged / "level"),
-             "--transform_path", str(transform)],
+            [colmap, "model_transformer", "--input_path", str(model), "--output_path", str(moved),
+             "--transform_path", str(staged / "transform.txt")],
             cwd=staged,
         )
-        replace(staged / "level", final / "0")
+        replace(moved, model)
+
+    if rig:  # COLMAP's frame is arbitrary (for fisheyes, a lens's); turn the model so gravity is +y
+        transform(pano.level_transform(model / "images.bin", lenses))
+    if poses:  # an iPhone LiDAR scan: move the model onto ARKit's cameras (metres, gravity +y, the LiDAR points' frame)
+        text, note = arkit.snap_transform(model, scene.arkit, poses)
+        transform(text)
+        error = arkit.snap_error(model / "images.bin", poses)
+        print(f"Snapped to ARKit: {note}; camera centres within {error * 100:.1f} cm RMS of ARKit's")
+        if error > 0.1:
+            print("warning: COLMAP and ARKit disagree by more than 10 cm; check the model before training", flush=True)
+    elif len(positions) >= 3:  # drone GPS: move the model into a map projection (geo.py)
+        text, record, note = geo.georeference(model / "images.bin", positions)
+        transform(text)
+        (final / GEO_FILE).write_text(json.dumps(record, indent=1))
+        print(f"Georeferenced: {note}")
     if no_masks:
         (final / NO_MASKS).touch()
     replace(database, scene.database)
@@ -382,8 +442,8 @@ def train_brush(
 
     `no_masks` leaves masks/ out of Brush's folder, so it trains on whole images.
     `exclude_masks` gives Brush masks-exclude/ as its masks (a context run without transient objects).
-    `init` picks Brush's starting points: dense = thinned dense/ cloud, sparse = COLMAP's points,
-    auto = dense when dense/ exists.
+    `init` picks Brush's starting points: dense = thinned dense/ cloud, lidar = an iPhone scan's LiDAR points
+    (arkit/), sparse = COLMAP's points; auto = dense, else lidar, when there is one and Brush gets no masks.
     """
     brush = require_tool("brush", BRUSH_HINT)
     scene.require_model()
@@ -400,28 +460,33 @@ def train_brush(
     if not no_masks and not scene.masks.is_dir() and pano.lenses(scene.panos):
         exclude_masks = True  # fisheye views are black outside the lens circle; never train on that
     brush_masks = None if no_masks else scene.masks_exclude if exclude_masks else scene.masks
-    dense = scene.dense_cloud()
-    if init == "dense" and dense is None:
+    clouds = {"dense": scene.dense_cloud(), "lidar": scene.lidar_cloud()}
+    if init == "dense" and clouds["dense"] is None:
         raise GausserError("No dense point cloud; run `gausser dense` first")
-    # The dense cloud ignores masks: a masked run starting from it would keep background splats (see composite).
+    if init == "lidar" and clouds["lidar"] is None:
+        raise GausserError("No LiDAR points; they come from `gausser frames` on an iPhone LiDAR scan folder")
+    # The clouds ignore masks: a masked run starting from one would keep background splats (see composite).
     masked = brush_masks is not None and brush_masks.is_dir()
-    init = "dense" if init == "dense" or (init == "auto" and dense and not masked) else "sparse"
+    if init == "auto":
+        init = next((kind for kind, cloud in clouds.items() if cloud and not masked), "sparse")
     for name, source in (("images", scene.images), ("sparse", scene.sparse), ("masks", brush_masks)):
-        if name == "sparse" and init == "dense":
+        if name == "sparse" and init != "sparse":
             continue
         if source and source.is_dir():
             (dataset / name).symlink_to(source)
-    if init == "dense" and dense:
-        # Brush starts from a COLMAP model's points3D.bin, so give it the cameras with dense points.
+    cloud = clouds.get(init)
+    if cloud:
+        # Brush starts from a COLMAP model's points3D.bin, so give it the cameras with the cloud's points.
         model = dataset / "sparse" / "0"
         model.mkdir(parents=True)
         for path in scene.require_model().iterdir():
             if path.name != "points3D.bin":
                 (model / path.name).symlink_to(path)
-        print(f"Reading {dense.relative_to(scene.root)} ({ply_count(dense):,} points; about 1 s per 8 million)", flush=True)
-        xyz, rgb = read_dense_cloud(dense, DENSE_INIT_POINTS)
+        print(f"Reading {cloud.relative_to(scene.root)} ({ply_count(cloud):,} points)", flush=True)
+        read = read_dense_cloud if init == "dense" else arkit.read_points
+        xyz, rgb = read(cloud, DENSE_INIT_POINTS)
         write_points3d(model / "points3D.bin", xyz, rgb)
-        print(f"Starting from {len(xyz):,} points of the dense cloud ({dense.relative_to(scene.root)})")
+        print(f"Starting from {len(xyz):,} points of {cloud.relative_to(scene.root)}")
     command = [
         brush, str(dataset),
         "--total-train-iters", str(iterations),

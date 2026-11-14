@@ -1,0 +1,1633 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gausser drone mapping: first orthophoto (2026-11-14)</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  /* Tokens from gausser's monitor (web/src/styles.css). */
+  :root {
+    --bg: #241b2f; --deep: #171520; --raise: #2a2139; --line: #34294f;
+    --text: #f0eff1; --muted: #848bbd; --dim: #614d85;
+    --frames: #fede5d; --mask: #ff8b39; --solve: #36f9f6; --train: #ff7edb; --lod: #72f1b8; --red: #fe4450;
+    --font: mononoki, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var(--font); }
+  main { max-width: 1200px; margin: 0 auto; padding: 28px 24px 80px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; color: var(--solve); margin: 36px 0 10px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  h3 { font-size: 14px; color: var(--train); margin: 20px 0 6px; }
+  p, li { color: var(--text); max-width: 100ch; }
+  .muted { color: var(--muted); }
+  code { color: var(--frames); }
+  a { color: var(--solve); }
+  #map { height: 640px; border: 1px solid var(--line); border-radius: 6px; }
+  .bar { display: flex; gap: 18px; align-items: center; margin: 8px 0; color: var(--muted); font-size: 13px; }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 14px 0; }
+  .card { background: var(--raise); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+  .card b { display: block; font-size: 20px; color: var(--lod); }
+  .card span { color: var(--muted); font-size: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: normal; }
+  img.full { width: 100%; border: 1px solid var(--line); border-radius: 6px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  pre { background: var(--deep); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow: auto; font-size: 12px; max-height: 560px; }
+  details { margin: 6px 0; } summary { cursor: pointer; color: var(--muted); }
+  .good { color: var(--lod); } .bad { color: var(--red); } .warn { color: var(--mask); }
+</style>
+</head>
+<body>
+<main>
+<h1>Gausser drone mapping: first georeferenced orthophoto</h1>
+<p class="muted">2026-11-14 · DJI Mini 4 Pro nadir video over Niemenranta, Tampere · scene <code>~/Desktop/straight_down/map</code></p>
+
+<h2>Changelog</h2>
+<ul>
+  <li><b>frames --overlap PERCENT</b>: mapping frame selection from a nadir video, a frame whenever the next would share only that much of the view; no frame-count limits.</li>
+  <li><b>GPS for video frames</b>: a DJI <code>.SRT</code> subtitle file gives every picked frame its position, written into the frame's EXIF without re-encoding (<code>geo.py</code>).</li>
+  <li><b>Georeferenced solve</b>: with GPS, COLMAP matches GPS neighbours (<code>spatial</code>), maps with the global mapper (GLOMAP) and the model is fitted onto the GPS in EPSG:3067 (Finland) or UTM; <code>sparse/geo.json</code> holds CRS and origin.</li>
+  <li><b>gausser map</b>: orthophoto and DSM as Cloud Optimized GeoTIFFs, rendered straight down from the trained splat, plus <code>map.html</code> over satellite/OSM (<code>mapping.py</code>); <code>run --map</code>.</li>
+  <li><b>Fix</b>: every COLMAP matcher segfaulted (Homebrew faiss 1.16 under the colmap 4.2.1_4 bottle); rebuilt colmap from source.</li>
+  <li><b>Clean-up</b>: one COLMAP binary-model reader (<code>colmap_model.py</code>) replaces four copies in monitor, orbit, composite and arkit; solve's three model moves share one helper.</li>
+  <li><b>New project</b>: <code>~/Developer/waypoint-burner</code> plans DJI Fly waypoint missions and writes them onto the RC 2 (second agent; untested on the drone).</li>
+</ul>
+
+<h2>Map: the orthophoto on the city map</h2>
+<div class="bar">
+  <label>orthophoto opacity <input id="op" type="range" min="0" max="1" step="0.05" value="1"></label>
+  <span>layers (top right): satellite / OpenStreetMap, orthophoto, flight track, picked frames</span>
+</div>
+<div id="map"></div>
+<div class="cards"><div class="card"><b>75/81</b><span>frames fitted to GPS</span></div><div class="card"><b>0.279 m</b><span>RMS camera vs GPS, horizontal</span></div><div class="card"><b>3 cm</b><span>cell, 3780×3614</span></div><div class="card"><b>EPSG:3067</b><span>CRS (ETRS-TM35FIN)</span></div></div>
+
+<h2>Surface model (DSM)</h2>
+<div class="two">
+  <img class="full" src="2026-11-14-drone-mapping/dsm.webp" alt="DSM hillshade">
+  <div>
+    <p>Height of the splat surface per cell, coloured low (cyan) to high (pink) and hill-shaded. Roofs, the trees
+    and the street level separate clearly; flat ground looks grainy because the splat surface varies by a few centimetres,
+    which the shading exaggerates. Relative heights come from the photos and are good. The absolute level is not:
+    it inherits the drone's <code>abs_alt</code>, which puts the ground at about 303–310 m, while the real ground here is about
+    100 m above sea level. A ground control point or a known height would fix the offset.</p>
+    <p class="muted">Files: <code>runs/map/&lt;time&gt;/dsm.tif</code> (float32, NaN = no data) and <code>ortho.tif</code> (RGBA), both COG in EPSG:3067.</p>
+  </div>
+</div>
+
+<h2>The flight, reviewed</h2>
+<img class="full" src="2026-11-14-drone-mapping/frames.jpg" alt="12 of the 81 frames">
+<p class="muted">12 of the 81 picked frames. Sharp, evenly exposed, camera straight down.</p>
+<table><tr><th>Length</th><td class="">110 s of 4K 30p video, 81 frames picked at 80% overlap</td></tr><tr><th>Height</th><td class="good">46.4–49.8 m above take-off</td></tr><tr><th>Camera</th><td class="good">gimbal -90° to -89.4° (straight down all the way)</td></tr><tr><th>Exposure</th><td class="good">shutter 1/555 s or faster, ISO ≤ 100: no motion blur</td></tr><tr><th>Pattern</th><td class="warn">4 passes in a zigzag, ~85 × 65 m; turns bank up to 17°</td></tr><tr><th>Angles</th><td class="warn">nadir only, no crosshatch or oblique pass</td></tr></table>
+<h3>What to change next time</h3>
+<ol>
+  <li><b>Parallel lines, not a zigzag.</b> The four passes crossed at angles, and at the turns the view swings fast. Fly straight parallel lines 20–25 m apart at 50 m; the waypoint planner draws them.</li>
+  <li><b>Add a crosshatch or a −45° pass.</b> Straight-down only lets the model bend into a shallow bowl; obliques also give walls for the splat.</li>
+  <li><b>Fly the whole area plus a margin.</b> The map is only as wide as the strip the camera saw; the edges get one or two views and come out soft.</li>
+  <li><b>Snow and low sun</b> leave white and shadow areas with little texture; overcast midday or no snow gives COLMAP more to match.</li>
+  <li><b>Keep Video Subtitles on</b> in DJI Fly: the <code>.SRT</code> is what puts the map in place.</li>
+</ol>
+
+<h2>Why it now registers every frame</h2>
+<table>
+  <tr><th>Mapper</th><th>Frames placed</th><th>Time</th><th>Cameras vs GPS (RMS)</th></tr>
+  <tr><td>COLMAP incremental <code>mapper</code></td><td class="bad">41 / 81</td><td>~10 min</td><td>1.16 m horizontal</td></tr>
+  <tr><td>COLMAP <code>global_mapper</code> (GLOMAP), now used with GPS</td><td class="good">81 / 81</td><td>1.5 min</td><td>0.28 m horizontal, 0.44 m vertical</td></tr>
+</table>
+<p>A nadir flight is a near-planar scene seen from one side; the incremental mapper kept failing to add the second and fourth pass.
+The global mapper solves all rotations and positions at once and placed every frame. The GPS fit then dropped 6 of 81 positions
+as outliers (more than 3× the median distance).</p>
+
+<h2>Waypoint planner and burner (new project)</h2>
+<p><code>~/Developer/waypoint-burner</code>, built by a second agent (Sonnet 5.5): <code>plan</code> writes a DJI Fly WPML mission
+(KMZ) and a preview for photo or video capture, with the camera's long side across the track, oblique passes run past the area,
+and splits at 200 waypoints or one battery; <code>burn</code> backs up the placeholder mission on the RC 2 and replaces its KMZ
+over MTP (libmtp). 44 tests pass. <span class="warn">Not yet verified: DJI Fly accepting the files, and a real burn.</span> Nothing committed.</p>
+
+<h2>What changed, where</h2>
+<p class="muted">The working tree also holds earlier uncommitted iPhone LiDAR (arkit) work from 2026-11-09; the diff below includes it.</p>
+<pre> AGENTS.md                |  35 ++++++++++-
+ README.md                |  61 ++++++++++++++++--
+ pyproject.toml           |   9 +--
+ scripts/install-macos.sh |   2 +-
+ src/gausser/align.py     |   4 +-
+ src/gausser/cli.py       |  64 ++++++++++++++++---
+ src/gausser/composite.py |  40 +++---------
+ src/gausser/guide.py     |  11 +++-
+ src/gausser/keyframes.py |  29 +++++++--
+ src/gausser/monitor.py   |  59 ++++--------------
+ src/gausser/orbit.py     |  31 +++------
+ src/gausser/pano.py      |  11 +---
+ src/gausser/scene.py     |  33 ++++++++++
+ src/gausser/steps.py     | 159 +++++++++++++++++++++++++++++++++--------------
+ tests/test_gausser.py    |  72 ++++++++++++++++++---
+ tests/test_keyframes.py  |  19 ++++++
+ 16 files changed, 444 insertions(+), 195 deletions(-)
+</pre>
+<details><summary><code>src/gausser/geo.py</code> (new, 225 lines)</summary><pre>&quot;&quot;&quot;GPS of photos and drone video frames.
+
+DJI drones write a subtitle file next to each video when &quot;Video Subtitles&quot; is on in DJI Fly
+(&lt;video stem&gt;.SRT): one block per frame with its time in the video and the drone&#x27;s position, e.g.
+``[latitude: 61.498123] [longitude: 23.763456] [rel_alt: 50.000 abs_alt: 160.123]``. `frames` reads
+it and writes each extracted frame&#x27;s position into the frame&#x27;s EXIF GPS tags, so video frames carry
+their position the same way drone photos do, and COLMAP reads it from there.
+
+`solve` georeferences a model whose images have GPS: it fits a similarity from the COLMAP camera centres
+to their GPS positions in a projected CRS (EPSG:3067 in Finland, else the UTM zone) and moves the model
+there. Coordinates stay small and in gausser&#x27;s axes: x = east, y = down, z = north, in metres from the
+origin in sparse/geo.json, so (E, N, H) = origin + (x, z, -y).
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+import bisect
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from typing import Any
+
+from .scene import GausserError
+
+_TIME = re.compile(r&quot;(\d+):(\d+):(\d+)[,.](\d+)\s*--&gt;&quot;)
+_LAT = re.compile(r&quot;latitude\s*:\s*(-?[\d.]+)&quot;, re.I)
+_LON = re.compile(r&quot;longitude\s*:\s*(-?[\d.]+)&quot;, re.I)
+_ABS = re.compile(r&quot;abs_alt\s*:\s*(-?[\d.]+)&quot;, re.I)
+_REL = re.compile(r&quot;rel_alt\s*:\s*(-?[\d.]+)&quot;, re.I)
+_GPS = re.compile(r&quot;GPS\s*\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)&quot;)  # older DJI: GPS(lon, lat, alt)
+
+
+@dataclass
+class Track:
+    &quot;&quot;&quot;A video&#x27;s positions: time in seconds from the video&#x27;s start, degrees, metres.&quot;&quot;&quot;
+
+    source: Path
+    times: list[float]
+    points: list[tuple[float, float, float]]  # latitude, longitude, altitude
+
+    def at(self, time: float) -&gt; tuple[float, float, float]:
+        &quot;&quot;&quot;The position at `time`, linear between samples, held at the ends.&quot;&quot;&quot;
+        i = bisect.bisect_left(self.times, time)
+        if i == 0:
+            return self.points[0]
+        if i == len(self.times):
+            return self.points[-1]
+        t0, t1 = self.times[i - 1], self.times[i]
+        w = (time - t0) / (t1 - t0) if t1 &gt; t0 else 0.0
+        a, b = self.points[i - 1], self.points[i]
+        return (a[0] + w * (b[0] - a[0]), a[1] + w * (b[1] - a[1]), a[2] + w * (b[2] - a[2]))
+
+
+def parse_srt(text: str, source: Path) -&gt; Track | None:
+    &quot;&quot;&quot;The positions of a DJI subtitle file; blocks without a GPS fix (0, 0) are skipped.&quot;&quot;&quot;
+    times: list[float] = []
+    points: list[tuple[float, float, float]] = []
+    for block in re.split(r&quot;\n\s*\n&quot;, text.replace(&quot;\r&quot;, &quot;&quot;)):
+        start = _TIME.search(block)
+        lat, lon, alt = _LAT.search(block), _LON.search(block), _ABS.search(block) or _REL.search(block)
+        if start and lat and lon:
+            point = (float(lat[1]), float(lon[1]), float(alt[1]) if alt else 0.0)
+        elif start and (gps := _GPS.search(block)):
+            point = (float(gps[2]), float(gps[1]), float(gps[3]))
+        else:
+            continue
+        if point[0] == 0 and point[1] == 0:
+            continue
+        h, m, s, fraction = start.groups()
+        time = int(h) * 3600 + int(m) * 60 + int(s) + int(fraction) / 10 ** len(fraction)
+        if times and time &lt;= times[-1]:
+            continue
+        times.append(time)
+        points.append(point)
+    return Track(source, times, points) if times else None
+
+
+def track(video: Path) -&gt; Track | None:
+    &quot;&quot;&quot;The GPS track of a DJI video from its subtitle file, if there is one.&quot;&quot;&quot;
+    for subtitles in (video.with_suffix(&quot;.SRT&quot;), video.with_suffix(&quot;.srt&quot;)):
+        if subtitles.is_file() and not subtitles.name.startswith(&quot;._&quot;):
+            return parse_srt(subtitles.read_text(errors=&quot;replace&quot;), subtitles)
+    return None
+
+
+def _dms(value: float) -&gt; tuple[float, float, float]:
+    value = abs(value)
+    degrees = int(value)
+    minutes = int((value - degrees) * 60)
+    return float(degrees), float(minutes), round((value - degrees - minutes / 60) * 3600, 4)
+
+
+def add_gps(jpeg: Path, latitude: float, longitude: float, altitude: float) -&gt; None:
+    &quot;&quot;&quot;Give a JPEG without EXIF (ffmpeg&#x27;s frames) EXIF GPS tags, without re-encoding its pixels.&quot;&quot;&quot;
+    from PIL import ExifTags, Image
+
+    exif = Image.Exif()
+    exif.get_ifd(ExifTags.IFD.GPSInfo).update({
+        ExifTags.GPS.GPSLatitudeRef: &quot;N&quot; if latitude &gt;= 0 else &quot;S&quot;,
+        ExifTags.GPS.GPSLatitude: _dms(latitude),
+        ExifTags.GPS.GPSLongitudeRef: &quot;E&quot; if longitude &gt;= 0 else &quot;W&quot;,
+        ExifTags.GPS.GPSLongitude: _dms(longitude),
+        ExifTags.GPS.GPSAltitudeRef: 0 if altitude &gt;= 0 else 1,
+        ExifTags.GPS.GPSAltitude: round(abs(altitude), 3),
+    })
+    payload = exif.tobytes()  # b&quot;Exif\0\0&quot; + TIFF
+    data = jpeg.read_bytes()
+    if data[:2] != b&quot;\xff\xd8&quot;:
+        raise GausserError(f&quot;{jpeg.name} is not a JPEG&quot;)
+    jpeg.write_bytes(data[:2] + b&quot;\xff\xe1&quot; + (len(payload) + 2).to_bytes(2, &quot;big&quot;) + payload + data[2:])
+
+
+def crs_for(latitude: float, longitude: float) -&gt; str:
+    &quot;&quot;&quot;EPSG:3067 (ETRS-TM35FIN) in Finland, else the WGS 84 UTM zone.&quot;&quot;&quot;
+    if 59 &lt;= latitude &lt;= 70.5 and 19 &lt;= longitude &lt;= 32:
+        return &quot;EPSG:3067&quot;
+    zone = int((longitude + 180) // 6) % 60 + 1
+    return f&quot;EPSG:{32600 + zone if latitude &gt;= 0 else 32700 + zone}&quot;
+
+
+def project(points: Any, crs: str) -&gt; Any:
+    &quot;&quot;&quot;(latitude, longitude, altitude) rows → (east, north, height) in `crs`; altitude passes through.&quot;&quot;&quot;
+    import numpy as np
+    from pyproj import Transformer
+
+    points = np.asarray(points, dtype=np.float64)
+    east, north = Transformer.from_crs(&quot;EPSG:4326&quot;, crs, always_xy=True).transform(points[:, 1], points[:, 0])
+    return np.stack([east, north, points[:, 2]], 1)
+
+
+def to_local(enh: Any, origin: Any) -&gt; Any:
+    &quot;&quot;&quot;(east, north, height) → gausser&#x27;s local axes (x east, y down, z north).&quot;&quot;&quot;
+    import numpy as np
+
+    d = np.asarray(enh, dtype=np.float64) - origin
+    return np.stack([d[:, 0], -d[:, 2], d[:, 1]], 1)
+
+
+def similarity(source: Any, target: Any) -&gt; tuple[float, Any, Any]:
+    &quot;&quot;&quot;Umeyama: scale s, rotation R, translation t minimising |s·R·source + t − target|.&quot;&quot;&quot;
+    import numpy as np
+
+    mu_s, mu_t = source.mean(0), target.mean(0)
+    a, b = source - mu_s, target - mu_t
+    u, sigma, vt = np.linalg.svd(np.einsum(&quot;ni,nj-&gt;ij&quot;, b, a) / len(a))
+    d = np.diag([1.0, 1.0, np.sign(np.linalg.det(u) * np.linalg.det(vt))])
+    r = np.einsum(&quot;ij,jk,kl-&gt;il&quot;, u, d, vt)
+    s = float(np.trace(np.diag(sigma) @ d) / a.var(0).sum())
+    return s, r, mu_t - s * np.einsum(&quot;ij,j-&gt;i&quot;, r, mu_s)
+
+
+def georeference(images_bin: Path, positions: dict[str, tuple[float, float, float]]) -&gt; tuple[str, dict[str, Any], str]:
+    &quot;&quot;&quot;`colmap model_transformer` similarity from a model onto its images&#x27; GPS, the geo.json record, and a log line.
+
+    Images whose GPS disagrees with the model by more than 3× the median (or 1 m) are left out of the fit,
+    twice over, so a few bad fixes do not tilt the model.
+    &quot;&quot;&quot;
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+
+    from .orbit import read_cameras
+
+    centres, _, _, names = read_cameras(images_bin)
+    pairs = [(centre, positions[name]) for centre, name in zip(centres, names, strict=True) if name in positions]
+    if len(pairs) &lt; 3:
+        raise GausserError(f&quot;Only {len(pairs)} solved images have GPS; cannot georeference&quot;)
+    source = np.array([pair[0] for pair in pairs])
+    gps = np.array([pair[1] for pair in pairs])
+    crs = crs_for(*gps.mean(0)[:2])
+    enh = project(gps, crs)
+    origin = np.round(enh.mean(0))
+    target = to_local(enh, origin)
+    if np.ptp(target[:, [0, 2]], axis=0).max() &lt; 5:
+        raise GausserError(&quot;The GPS positions span less than 5 m; too little to georeference&quot;)
+    keep = np.ones(len(source), dtype=bool)
+    s, r, t = similarity(source, target)
+    for _ in range(2):
+        error = np.linalg.norm(s * np.einsum(&quot;ij,nj-&gt;ni&quot;, r, source) + t - target, axis=1)
+        keep = error &lt;= max(1.0, 3 * float(np.median(error)))
+        s, r, t = similarity(source[keep], target[keep])
+    residual = s * np.einsum(&quot;ij,nj-&gt;ni&quot;, r, source[keep]) + t - target[keep]
+    horizontal = float(np.sqrt(np.mean(residual[:, 0] ** 2 + residual[:, 2] ** 2)))
+    vertical = float(np.sqrt(np.mean(residual[:, 1] ** 2)))
+    x, y, z, w = Rotation.from_matrix(r).as_quat()
+    text = f&quot;{s:.12g} {w:.12g} {x:.12g} {y:.12g} {z:.12g} {t[0]:.12g} {t[1]:.12g} {t[2]:.12g}\n&quot;
+    record = {
+        &quot;crs&quot;: crs, &quot;origin&quot;: origin.tolist(), &quot;axes&quot;: &quot;x east, y down, z north; metres from origin (east, north, height)&quot;,
+        &quot;images&quot;: int(keep.sum()), &quot;rms_horizontal_m&quot;: round(horizontal, 3), &quot;rms_vertical_m&quot;: round(vertical, 3),
+    }
+    note = (
+        f&quot;{crs}, {int(keep.sum())}/{len(pairs)} cameras within {horizontal:.2f} m horizontally and &quot;
+        f&quot;{vertical:.2f} m vertically RMS of their GPS&quot;
+    )
+    return text, record, note
+
+
+def image_positions(images: list[Path]) -&gt; dict[str, tuple[float, float, float]]:
+    &quot;&quot;&quot;The GPS of every image that has it, by file name.&quot;&quot;&quot;
+    found = {image.name: read_gps(image) for image in images}
+    return {name: position for name, position in found.items() if position}
+
+
+def read_gps(image: Path) -&gt; tuple[float, float, float] | None:
+    &quot;&quot;&quot;Latitude, longitude and altitude from an image&#x27;s EXIF GPS tags, if it has them.&quot;&quot;&quot;
+    from PIL import ExifTags, Image
+
+    try:
+        with Image.open(image) as opened:
+            gps = opened.getexif().get_ifd(ExifTags.IFD.GPSInfo)
+    except OSError:
+        return None
+    try:
+        lat = sum(float(v) / 60**i for i, v in enumerate(gps[ExifTags.GPS.GPSLatitude]))
+        lon = sum(float(v) / 60**i for i, v in enumerate(gps[ExifTags.GPS.GPSLongitude]))
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    if gps.get(ExifTags.GPS.GPSLatitudeRef) == &quot;S&quot;:
+        lat = -lat
+    if gps.get(ExifTags.GPS.GPSLongitudeRef) == &quot;W&quot;:
+        lon = -lon
+    alt = float(gps.get(ExifTags.GPS.GPSAltitude, 0.0))
+    if gps.get(ExifTags.GPS.GPSAltitudeRef) in (1, b&quot;\x01&quot;):
+        alt = -alt
+    return (lat, lon, alt) if (lat, lon) != (0.0, 0.0) else None
+</pre></details><details><summary><code>src/gausser/mapping.py</code> (new, 258 lines)</summary><pre>&quot;&quot;&quot;`gausser map`: an orthophoto and a surface model (DSM) of a georeferenced scene, from its trained splat.
+
+The splat is rendered looking straight down with an orthographic camera: each Gaussian projects onto
+the ground plane as a 2D Gaussian and is alpha-blended top first, as a splat renderer does, but on a
+fixed ground grid. The same blend gives each cell its surface height, which is the DSM: the height of
+the splat at which the cell becomes half covered (the median depth, so faint splats above do not lift it). Both are
+GeoTIFFs in the scene&#x27;s CRS (sparse/geo.json), next to map.html, which lays the orthophoto over a web
+map with the cameras&#x27; GPS positions.
+
+Local axes are gausser&#x27;s: x east, y down, z north, in metres from the origin; image row 0 is north.
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from .colmap_model import quaternion_matrix
+from .composite import read_ply
+from .scene import GausserError, Scene, replace
+
+SH_C0 = 0.28209479177387814
+# Real spherical-harmonics basis of degrees 1-3 for a view straight down, d = (0, 1, 0) in local axes
+# (3DGS&#x27;s convention: the direction from the camera to the splat). Only terms with y alone survive.
+SH_DOWN = (
+    -0.4886025119029199, 0.0, 0.0,  # degree 1: -C1·y, C1·z, -C1·x
+    0.0, 0.0, -0.31539156525252005, 0.0, -0.5462742152960396,  # degree 2
+    0.5900435899266435, 0.0, 0.4570457994644658, 0.0, 0.0, 0.0, 0.0,  # degree 3
+)
+MAX_RADIUS = 512  # px; see render()
+MAX_PAIRS = 10_000_000  # splat-pixel pairs blended at once: about 4 GB at the peak
+
+
+def splat_colour(splat: dict[str, Any]) -&gt; Any:
+    &quot;&quot;&quot;RGB in 0-1 of each splat seen from straight above (spherical harmonics up to the degree present).&quot;&quot;&quot;
+    import numpy as np
+
+    rgb = 0.5 + SH_C0 * np.stack([splat[f&quot;f_dc_{c}&quot;] for c in range(3)], 1)
+    rest = sorted((name for name in splat if name.startswith(&quot;f_rest_&quot;)), key=lambda n: int(n.split(&quot;_&quot;)[-1]))
+    per_channel = len(rest) // 3  # 3DGS stores f_rest channel by channel
+    for c in range(3):
+        for k in range(min(per_channel, len(SH_DOWN))):
+            if SH_DOWN[k]:
+                rgb[:, c] += SH_DOWN[k] * splat[rest[c * per_channel + k]]
+    return np.clip(rgb, 0, 1)
+
+
+def ground_covariance(splat: dict[str, Any]) -&gt; tuple[Any, Any, Any]:
+    &quot;&quot;&quot;Each Gaussian&#x27;s covariance projected onto the ground: the x-x, x-z and z-z terms of R·S²·Rᵀ.&quot;&quot;&quot;
+    import numpy as np
+
+    q = np.stack([splat[f&quot;rot_{i}&quot;] for i in range(4)], 1)  # w, x, y, z
+    r = np.moveaxis(quaternion_matrix(*(q / np.linalg.norm(q, axis=1, keepdims=True)).T), 2, 0)
+    s2 = np.exp(2 * np.stack([splat[f&quot;scale_{i}&quot;] for i in range(3)], 1))
+    rx, rz = r[:, 0, :], r[:, 2, :]  # the x and z rows of R
+    return (rx * rx * s2).sum(1), (rx * rz * s2).sum(1), (rz * rz * s2).sum(1)
+
+
+def render(splat: dict[str, Any], west: float, north: float, width: int, height: int, resolution: float) -&gt; tuple[Any, Any, Any]:
+    &quot;&quot;&quot;Orthographic top-down render: RGB (0-1, unpremultiplied), coverage (0-1) and surface y per cell (NaN below half coverage).&quot;&quot;&quot;
+    import numpy as np
+
+    opacity = 1 / (1 + np.exp(-splat[&quot;opacity&quot;]))
+    keep = opacity &gt; 1 / 255
+    x, y, z = splat[&quot;x&quot;][keep], splat[&quot;y&quot;][keep], splat[&quot;z&quot;][keep]
+    colour, opacity = splat_colour(splat)[keep], opacity[keep]
+    sxx, sxz, szz = (term[keep] for term in ground_covariance(splat))
+    # Pixel coordinates: column east, row south. A tiny blur keeps sub-pixel splats from aliasing (3DGS adds 0.3 px²).
+    col, row = (x - west) / resolution, (north - z) / resolution
+    a, b, c = sxx / resolution**2 + 0.3, -sxz / resolution**2, szz / resolution**2 + 0.3
+    det = a * c - b * b
+    # Out to where its alpha falls below 1/255 along its longest axis (3DGS uses a looser 3σ).
+    sigma = np.sqrt(0.5 * (a + c) + np.sqrt(np.maximum(0.25 * (a - c) ** 2 + b * b, 0)))
+    radius = np.ceil(sigma * np.sqrt(2 * np.log(np.maximum(255 * opacity, 1)))).astype(np.int64)
+    # Wider splats are haze and floaters; cutting them to a box would draw its edges, so they are left out.
+    radius = np.where(radius &lt;= MAX_RADIUS, radius, -1)
+    c0, c1 = np.maximum(np.floor(col - radius), 0).astype(np.int64), np.minimum(np.ceil(col + radius), width).astype(np.int64)
+    r0, r1 = np.maximum(np.floor(row - radius), 0).astype(np.int64), np.minimum(np.ceil(row + radius), height).astype(np.int64)
+    w, h = c1 - c0, r1 - r0
+    visible = (w &gt; 0) &amp; (h &gt; 0)
+    order = np.argsort(y[visible], kind=&quot;stable&quot;)  # top first: y points down
+    index = np.flatnonzero(visible)[order]
+    conic = np.stack([c / det, -b / det, a / det], 1)  # inverse covariance (a b; b c)
+
+    accum = np.zeros((height * width, 3))
+    surface = np.full(height * width, np.nan)
+    transmit = np.ones(height * width)
+    sizes = (w * h)[index]
+    starts = np.concatenate([[0], np.cumsum(sizes)])
+    chunk_start = 0
+    while chunk_start &lt; len(index):
+        chunk_end = int(np.searchsorted(starts, starts[chunk_start] + MAX_PAIRS, side=&quot;right&quot;)) - 1
+        chunk_end = max(chunk_end, chunk_start + 1)
+        ids = index[chunk_start:chunk_end]
+        counts = sizes[chunk_start:chunk_end]
+        owner = np.repeat(np.arange(len(ids)), counts)
+        local = np.arange(counts.sum()) - np.repeat(np.cumsum(counts) - counts, counts)
+        sid = ids[owner]
+        cc = c0[sid] + local % w[sid]
+        rr = r0[sid] + local // w[sid]
+        dx, dy = cc + 0.5 - col[sid], rr + 0.5 - row[sid]
+        power = -0.5 * (conic[sid, 0] * dx * dx + 2 * conic[sid, 1] * dx * dy + conic[sid, 2] * dy * dy)
+        alpha = np.minimum(0.99, opacity[sid] * np.exp(power))
+        use = alpha &gt;= 1 / 255
+        pixel, alpha, sid = (rr * width + cc)[use], alpha[use], sid[use]
+        # Blend front to back per pixel: sort by pixel, keeping the depth order within each pixel.
+        by_pixel = np.argsort(pixel, kind=&quot;stable&quot;)
+        pixel, alpha, sid = pixel[by_pixel], alpha[by_pixel], sid[by_pixel]
+        log_keep = np.log1p(-alpha)
+        total = np.cumsum(log_keep)
+        first = np.flatnonzero(np.r_[True, pixel[1:] != pixel[:-1]])
+        group_base = np.repeat(np.r_[0.0, total][first], np.diff(np.r_[first, len(pixel)]))
+        before = np.exp(total - log_keep - group_base)  # transmittance in front of each splat within this chunk
+        ahead = transmit[pixel] * before  # transmittance in front of each splat
+        weight = alpha * ahead
+        half = (ahead &gt; 0.5) &amp; (ahead * (1 - alpha) &lt;= 0.5)  # the splat at which the pixel becomes half covered
+        surface[pixel[half]] = y[sid[half]]
+        for channel in range(3):
+            accum[:, channel] += np.bincount(pixel, weight * colour[sid, channel], minlength=len(transmit))
+        ends = np.r_[first[1:], len(pixel)] - 1
+        transmit[pixel[first]] *= np.exp(total[ends] - group_base[first])
+        chunk_start = chunk_end
+    coverage = 1 - transmit
+    seen = np.maximum(coverage, 1e-6)
+    rgb = (accum / seen[:, None]).reshape(height, width, 3)
+    return rgb, coverage.reshape(height, width), surface.reshape(height, width)
+
+
+def extent(splat: dict[str, Any], margin: float = 0.0) -&gt; tuple[float, float, float, float]:
+    &quot;&quot;&quot;West, east, south, north of the opaque splats (0.5-99.5 percentiles, so lone floaters do not count).&quot;&quot;&quot;
+    import numpy as np
+
+    solid = 1 / (1 + np.exp(-splat[&quot;opacity&quot;])) &gt; 0.5
+    x, z = splat[&quot;x&quot;][solid], splat[&quot;z&quot;][solid]
+    if len(x) &lt; 100:
+        raise GausserError(&quot;The splat has too few opaque Gaussians to map&quot;)
+    west, east = np.percentile(x, [0.5, 99.5])
+    south, north = np.percentile(z, [0.5, 99.5])
+    return west - margin, east + margin, south - margin, north + margin
+
+
+def make(scene: Scene, source: Path | None = None, resolution: float = 0.03) -&gt; Path:
+    &quot;&quot;&quot;Write runs/map/&lt;time&gt;/: ortho.tif, dsm.tif (heights in the CRS&#x27;s vertical frame of the GPS) and map.html.&quot;&quot;&quot;
+    import numpy as np
+
+    record = scene.geo()
+    if record is None:
+        raise GausserError(&quot;The model is not georeferenced (no sparse/geo.json); solve photos or video frames with GPS&quot;)
+    if source is None:
+        exports = scene.exports()
+        if not exports:
+            raise GausserError(&quot;No trained .ply export found; run `gausser train` first&quot;)
+        source = exports[-1]
+    print(f&quot;Reading {source}&quot;, flush=True)
+    _, data = read_ply(source)
+    splat = {name: data[name] for name in data.dtype.names}
+    west, east, south, north = extent(splat)
+    width, height = int(np.ceil((east - west) / resolution)), int(np.ceil((north - south) / resolution))
+    print(f&quot;Rendering {width}×{height} cells of {resolution * 100:g} cm ({east - west:.0f} × {north - south:.0f} m) &quot;
+          f&quot;from {len(splat[&#x27;x&#x27;]):,} splats&quot;, flush=True)
+    rgb, coverage, depth = render(splat, west, north, width, height, resolution)
+    staged = scene.staging(&quot;map&quot;)
+    origin = np.array(record[&quot;origin&quot;], dtype=np.float64)
+    corner = (origin[0] + west, origin[1] + north)  # the north-west corner in the CRS
+    alpha = np.where(coverage &gt; 0.5, 255, 0).astype(np.uint8)
+    ortho = np.concatenate([np.round(rgb * 255).astype(np.uint8), alpha[..., None]], 2)
+    dsm = (origin[2] - depth).astype(np.float32)  # NaN where less than half covered
+    _write_geotiff(staged / &quot;ortho.tif&quot;, ortho, corner, resolution, record[&quot;crs&quot;])
+    _write_geotiff(staged / &quot;dsm.tif&quot;, dsm, corner, resolution, record[&quot;crs&quot;])
+    bounds = _web_overlay(staged / &quot;ortho.tif&quot;, staged / &quot;ortho-web.webp&quot;)
+    cameras = [list(position[:2]) for position in _camera_gps(scene)]
+    (staged / &quot;map.json&quot;).write_text(json.dumps({
+        &quot;crs&quot;: record[&quot;crs&quot;], &quot;resolution_m&quot;: resolution, &quot;north_west&quot;: list(corner), &quot;size&quot;: [width, height],
+        &quot;source&quot;: str(source), &quot;bounds_latlon&quot;: bounds,
+    }, indent=1))
+    (staged / &quot;map.html&quot;).write_text(_html(bounds, cameras))
+    run = scene.new_run(&quot;map&quot;)
+    replace(staged, run)
+    print(f&quot;Orthophoto and DSM in {run}; open {run / &#x27;map.html&#x27;}&quot;)
+    return run
+
+
+def _write_geotiff(path: Path, data: Any, corner: tuple[float, float], resolution: float, crs: str) -&gt; None:
+    &quot;&quot;&quot;A Cloud Optimized GeoTIFF: bands last in `data`, uint8 RGBA or float32 with NaN as no data.&quot;&quot;&quot;
+    import numpy as np
+    from rasterio.enums import ColorInterp
+    from rasterio.io import MemoryFile
+    from rasterio.shutil import copy
+    from rasterio.transform import from_origin
+
+    bands = data.reshape(data.shape[0], data.shape[1], -1)
+    profile = {
+        &quot;driver&quot;: &quot;GTiff&quot;, &quot;width&quot;: bands.shape[1], &quot;height&quot;: bands.shape[0], &quot;count&quot;: bands.shape[2],
+        &quot;dtype&quot;: str(bands.dtype), &quot;crs&quot;: crs, &quot;transform&quot;: from_origin(corner[0], corner[1], resolution, resolution),
+    }
+    if bands.dtype == np.float32:
+        profile[&quot;nodata&quot;] = float(&quot;nan&quot;)
+    with MemoryFile() as memory:
+        with memory.open(**profile) as dataset:
+            dataset.write(np.moveaxis(bands, 2, 0))
+            if bands.shape[2] == 4:
+                dataset.colorinterp = [ColorInterp.red, ColorInterp.green, ColorInterp.blue, ColorInterp.alpha]
+        copy(memory.name, str(path), driver=&quot;COG&quot;, compress=&quot;DEFLATE&quot;)
+
+
+def _web_overlay(ortho: Path, image: Path, size: int = 4096) -&gt; list[list[float]]:
+    &quot;&quot;&quot;The orthophoto in Web Mercator as WebP (long edge `size`), and its [[south, west], [north, east]] in degrees.&quot;&quot;&quot;
+    import numpy as np
+    import rasterio
+    from PIL import Image
+    from pyproj import Transformer
+    from rasterio.warp import Resampling, calculate_default_transform, reproject
+
+    with rasterio.open(ortho) as source:
+        transform, cols, rows = calculate_default_transform(source.crs, &quot;EPSG:3857&quot;, source.width, source.height, *source.bounds)
+        assert cols is not None and rows is not None  # always set when the source size is given
+        width, height = int(cols), int(rows)
+        scale = max(width, height) / size
+        if scale &gt; 1:
+            width, height = int(width / scale), int(height / scale)
+            transform = transform * transform.scale(scale)
+        out = np.zeros((4, height, width), dtype=np.uint8)
+        reproject(rasterio.band(source, [1, 2, 3, 4]), out, dst_transform=transform, dst_crs=&quot;EPSG:3857&quot;, resampling=Resampling.average)
+    Image.fromarray(np.moveaxis(out, 0, 2), &quot;RGBA&quot;).save(image, quality=85)  # 3 MB; a PNG was 20 MB
+    west, north = transform * (0, 0)
+    east, south = transform * (width, height)
+    lon, lat = Transformer.from_crs(&quot;EPSG:3857&quot;, &quot;EPSG:4326&quot;, always_xy=True).transform([west, east], [south, north])
+    return [[lat[0], lon[0]], [lat[1], lon[1]]]
+
+
+def _camera_gps(scene: Scene) -&gt; list[tuple[float, float, float]]:
+    from . import geo
+
+    return list(geo.image_positions(scene.image_files()).values())
+
+
+def _html(bounds: list[list[float]], cameras: list[list[float]]) -&gt; str:
+    return &quot;&quot;&quot;&lt;!doctype html&gt;
+&lt;html&gt;&lt;head&gt;&lt;meta charset=&quot;utf-8&quot;&gt;&lt;title&gt;gausser map&lt;/title&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;https://unpkg.com/leaflet@1.9.4/dist/leaflet.css&quot;&gt;
+&lt;script src=&quot;https://unpkg.com/leaflet@1.9.4/dist/leaflet.js&quot;&gt;&lt;/script&gt;
+&lt;style&gt;html,body,#map{height:100%;margin:0}#ctl{position:absolute;z-index:1000;top:10px;left:50px;background:#241b2f;color:#f0eff1;
+font:13px mononoki,Menlo,monospace;padding:6px 10px;border-radius:4px}&lt;/style&gt;&lt;/head&gt;
+&lt;body&gt;&lt;div id=&quot;map&quot;&gt;&lt;/div&gt;&lt;div id=&quot;ctl&quot;&gt;orthophoto &lt;input id=&quot;op&quot; type=&quot;range&quot; min=&quot;0&quot; max=&quot;1&quot; step=&quot;0.05&quot; value=&quot;1&quot;&gt;&lt;/div&gt;
+&lt;script&gt;
+const bounds = BOUNDS, cameras = CAMERAS;
+const map = L.map(&quot;map&quot;, {maxZoom: 23});
+const osm = L.tileLayer(&quot;https://tile.openstreetmap.org/{z}/{x}/{y}.png&quot;, {maxNativeZoom: 19, maxZoom: 23, attribution: &quot;© OpenStreetMap&quot;});
+const sat = L.tileLayer(&quot;https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}&quot;,
+  {maxNativeZoom: 19, maxZoom: 23, attribution: &quot;Esri World Imagery&quot;}).addTo(map);
+const ortho = L.imageOverlay(&quot;ortho-web.webp&quot;, bounds).addTo(map);
+const cams = L.layerGroup(cameras.map(c =&gt; L.circleMarker(c, {radius: 3, color: &quot;#ff7edb&quot;, weight: 1})));
+L.control.layers({&quot;Satellite&quot;: sat, &quot;OpenStreetMap&quot;: osm}, {&quot;Orthophoto&quot;: ortho, &quot;Cameras (GPS)&quot;: cams}).addTo(map);
+map.fitBounds(bounds);
+document.getElementById(&quot;op&quot;).oninput = e =&gt; ortho.setOpacity(+e.target.value);
+&lt;/script&gt;&lt;/body&gt;&lt;/html&gt;
+&quot;&quot;&quot;.replace(&quot;BOUNDS&quot;, json.dumps(bounds)).replace(&quot;CAMERAS&quot;, json.dumps(cameras))
+</pre></details><details><summary><code>src/gausser/colmap_model.py</code> (new, 104 lines)</summary><pre>&quot;&quot;&quot;Readers for binary COLMAP models (cameras.bin, images.bin, points3D.bin).&quot;&quot;&quot;
+
+from __future__ import annotations
+
+import struct
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+# Parameters per camera model id; the models listed in SINGLE_FOCAL have one focal length (f, cx, cy, …).
+PARAM_COUNTS = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 8, 6: 12, 7: 5, 8: 4, 9: 5, 10: 12, 11: 16}
+SINGLE_FOCAL = {0, 2, 3, 8, 9}
+
+
+@dataclass
+class Camera:
+    model: int
+    width: int
+    height: int
+    params: tuple[float, ...]
+
+    @property
+    def intrinsics(self) -&gt; tuple[float, float, float, float]:
+        &quot;&quot;&quot;fx, fy, cx, cy.&quot;&quot;&quot;
+        p = self.params
+        return (p[0], p[0], p[1], p[2]) if self.model in SINGLE_FOCAL else (p[0], p[1], p[2], p[3])
+
+
+@dataclass
+class Image:
+    name: str
+    camera_id: int
+    rotation: Any  # cam_from_world R (3×3)
+    translation: Any  # cam_from_world t
+    observations: Any  # (N, 3): x, y, point id (-1 = none); empty unless asked for
+
+    @property
+    def centre(self) -&gt; Any:
+        return -self.rotation.T @ self.translation
+
+
+def quaternion_matrix(qw: float, qx: float, qy: float, qz: float) -&gt; Any:
+    import numpy as np
+
+    return np.array([
+        [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+        [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+        [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+    ])
+
+
+def read_cameras(model: Path) -&gt; dict[int, Camera]:
+    data = (model / &quot;cameras.bin&quot;).read_bytes()
+    cameras = {}
+    (count,), at = struct.unpack_from(&quot;&lt;Q&quot;, data), 8
+    for _ in range(count):
+        camera_id, kind, width, height = struct.unpack_from(&quot;&lt;iiQQ&quot;, data, at)
+        params = struct.unpack_from(f&quot;&lt;{PARAM_COUNTS[kind]}d&quot;, data, at + 24)
+        at += 24 + 8 * PARAM_COUNTS[kind]
+        cameras[camera_id] = Camera(kind, width, height, params)
+    return cameras
+
+
+def read_images(model: Path, observations: bool = False) -&gt; list[Image]:
+    import numpy as np
+
+    data = (model / &quot;images.bin&quot;).read_bytes()
+    images = []
+    (count,), at = struct.unpack_from(&quot;&lt;Q&quot;, data), 8
+    for _ in range(count):
+        _id, qw, qx, qy, qz, tx, ty, tz, camera_id = struct.unpack_from(&quot;&lt;idddddddi&quot;, data, at)
+        end = data.index(b&quot;\0&quot;, at + 64)
+        (points,) = struct.unpack_from(&quot;&lt;Q&quot;, data, end + 1)
+        rows = np.empty((0, 3))
+        if observations and points:
+            rows = np.frombuffer(data, dtype=&quot;&lt;f8&quot;, count=points * 3, offset=end + 9).reshape(-1, 3).copy()
+            rows[:, 2] = np.frombuffer(data, dtype=&quot;&lt;i8&quot;, count=points * 3, offset=end + 9)[2::3]
+        name = data[at + 64:end].decode(errors=&quot;replace&quot;)
+        images.append(Image(name, camera_id, quaternion_matrix(qw, qx, qy, qz), np.array([tx, ty, tz]), rows))
+        at = end + 9 + points * 24
+    return images
+
+
+@dataclass
+class Points:
+    ids: Any  # (N,) uint64
+    xyz: Any  # (N, 3)
+    rgb: Any  # (N, 3) uint8
+    errors: Any  # (N,) reprojection error, px
+    tracks: Any  # (N,) number of images that see each point
+
+
+def read_points(model: Path) -&gt; Points:
+    import numpy as np
+
+    data = (model / &quot;points3D.bin&quot;).read_bytes()
+    (count,), at = struct.unpack_from(&quot;&lt;Q&quot;, data), 8
+    ids, tracks = np.empty(count, dtype=np.uint64), np.empty(count, dtype=np.int64)
+    xyz, rgb, errors = np.empty((count, 3)), np.empty((count, 3), dtype=np.uint8), np.empty(count)
+    for i in range(count):
+        ids[i], *xyz[i], r, g, b, errors[i], tracks[i] = struct.unpack_from(&quot;&lt;QdddBBBdQ&quot;, data, at)
+        rgb[i] = r, g, b
+        at += 51 + int(tracks[i]) * 8
+    return Points(ids, xyz, rgb, errors, tracks)
+</pre></details>
+<details><summary>Diff of changed files</summary><pre>diff --git a/pyproject.toml b/pyproject.toml
+index 1ec376a..b84aba4 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -8,7 +8,7 @@ version = &quot;0.3.0&quot;
+ description = &quot;Photos or video in, Gaussian splats out&quot;
+ readme = &quot;README.md&quot;
+ requires-python = &quot;&gt;=3.12&quot;  # msplat ships only cp312/cp313 wheels
+-dependencies = [&quot;numpy&gt;=1.26,&lt;2&quot;, &quot;opencv-python&gt;=4.10,&lt;4.12&quot;, &quot;Pillow&gt;=12.3,&lt;13&quot;, &quot;questionary&gt;=2,&lt;3&quot;, &quot;scipy&gt;=1.13,&lt;2&quot;]  # numpy, Pillow: orbit and composite; scipy: align; opencv: frames
++dependencies = [&quot;numpy&gt;=1.26,&lt;2&quot;, &quot;opencv-python&gt;=4.10,&lt;4.12&quot;, &quot;Pillow&gt;=12.3,&lt;13&quot;, &quot;pyproj&gt;=3.7,&lt;4&quot;, &quot;questionary&gt;=2,&lt;3&quot;, &quot;scipy&gt;=1.13,&lt;2&quot;]  # numpy, Pillow: orbit and composite; scipy: align; opencv: frames; pyproj: georeferencing
+ 
+ [project.optional-dependencies]
+ # SAM3 itself is installed separately at a pinned commit and patched for macOS (see README).
+@@ -26,13 +26,14 @@ sam = [
+     &quot;torchvision&gt;=0.25,&lt;0.26&quot;,
+ ]
+ msplat = [&quot;msplat==1.1.4&quot;, &quot;Pillow&gt;=12.3,&lt;13&quot;]
+-dev = [&quot;pytest&gt;=8.0&quot;, &quot;ruff&gt;=0.15,&lt;0.16&quot;, &quot;mypy&gt;=1.19,&lt;2&quot;, &quot;numpy&gt;=1.26,&lt;2&quot;, &quot;opencv-python&gt;=4.10,&lt;4.12&quot;, &quot;Pillow&gt;=12.3,&lt;13&quot;, &quot;scipy&gt;=1.13,&lt;2&quot;]
++map = [&quot;rasterio&gt;=1.4,&lt;2&quot;]  # `gausser map`: GeoTIFF output
++dev = [&quot;pytest&gt;=8.0&quot;, &quot;rasterio&gt;=1.4,&lt;2&quot;, &quot;pyproj&gt;=3.7,&lt;4&quot;, &quot;ruff&gt;=0.15,&lt;0.16&quot;, &quot;mypy&gt;=1.19,&lt;2&quot;, &quot;numpy&gt;=1.26,&lt;2&quot;, &quot;opencv-python&gt;=4.10,&lt;4.12&quot;, &quot;Pillow&gt;=12.3,&lt;13&quot;, &quot;scipy&gt;=1.13,&lt;2&quot;]
+ 
+ [project.scripts]
+ gausser = &quot;gausser.cli:main&quot;
+ 
+ [tool.setuptools.package-data]
+-gausser = [&quot;orbit.mjs&quot;, &quot;web/*&quot;, &quot;web/assets/*&quot;]  # web/: built from the repository&#x27;s web/ (npm run build)
++gausser = [&quot;orbit.mjs&quot;, &quot;py.typed&quot;, &quot;web/*&quot;, &quot;web/assets/*&quot;]  # web/: built from the repository&#x27;s web/ (npm run build)
+ 
+ [tool.setuptools.packages.find]
+ where = [&quot;src&quot;]
+@@ -51,5 +52,5 @@ files = [&quot;src&quot;]
+ check_untyped_defs = true
+ 
+ [[tool.mypy.overrides]]
+-module = [&quot;msplat&quot;, &quot;msplat.*&quot;, &quot;sam3.*&quot;, &quot;torch&quot;, &quot;torch.*&quot;, &quot;questionary&quot;, &quot;scipy&quot;, &quot;scipy.*&quot;]
++module = [&quot;msplat&quot;, &quot;msplat.*&quot;, &quot;sam3.*&quot;, &quot;torch&quot;, &quot;torch.*&quot;, &quot;questionary&quot;, &quot;scipy&quot;, &quot;scipy.*&quot;, &quot;rasterio&quot;, &quot;rasterio.*&quot;]
+ ignore_missing_imports = true
+diff --git a/src/gausser/align.py b/src/gausser/align.py
+index 8222be6..f3bcfbd 100644
+--- a/src/gausser/align.py
++++ b/src/gausser/align.py
+@@ -81,10 +81,10 @@ class Matcher:
+     &quot;&quot;&quot;Residuals of REFERENCE points against a moving cloud under x&#x27; = s·R·x + t, in reference units.&quot;&quot;&quot;
+ 
+     def __init__(self, moving: Any, reference: Any, cap: float, with_scale: bool, reach: float = math.inf) -&gt; None:
+-        from scipy.spatial import cKDTree
++        from scipy.spatial import KDTree
+ 
+         self.moving, self.reference, self.cap, self.with_scale, self.reach = moving, reference, cap, with_scale, reach
+-        self.tree = cKDTree(moving, leafsize=64, balanced_tree=False, compact_nodes=False)  # builds fast, queries ~4x faster here
++        self.tree = KDTree(moving, leafsize=64, balanced_tree=False, compact_nodes=False)  # builds fast, queries ~4x faster here
+ 
+     def residuals(self, s: float, r: Any, t: Any) -&gt; tuple[Any, Any]:
+         # (q - t) @ R = Rᵀ(q - t). Far-away queries are slow, so ``reach`` caps the search; misses are inf.
+diff --git a/src/gausser/cli.py b/src/gausser/cli.py
+index a6fa8ff..eaa9a06 100644
+--- a/src/gausser/cli.py
++++ b/src/gausser/cli.py
+@@ -11,10 +11,10 @@ import subprocess
+ import sys
+ from pathlib import Path
+ 
+-from . import keyframes, pano, steps
++from . import keyframes, mapping, pano, steps
+ from .scene import GausserError, Scene, is_image, registered_images
+ 
+-STEPS = (&quot;frames&quot;, &quot;mask&quot;, &quot;solve&quot;, &quot;dense&quot;, &quot;train&quot;, &quot;lod&quot;, &quot;mesh&quot;)
++STEPS = (&quot;frames&quot;, &quot;mask&quot;, &quot;solve&quot;, &quot;dense&quot;, &quot;train&quot;, &quot;lod&quot;, &quot;mesh&quot;, &quot;map&quot;)
+ COMMANDS = (&quot;run&quot;, *STEPS, &quot;subset&quot;, &quot;composite&quot;, &quot;align&quot;, &quot;view&quot;, &quot;orbit&quot;, &quot;status&quot;, &quot;monitor&quot;)
+ QUICK_START = &quot;&quot;&quot;\
+ quick start:
+@@ -54,8 +54,9 @@ def _add_no_masks_option(parser: argparse.ArgumentParser) -&gt; None:
+ def _add_solve_options(parser: argparse.ArgumentParser) -&gt; None:
+     group = parser.add_argument_group(&quot;solve (COLMAP)&quot;)
+     group.add_argument(
+-        &quot;--matcher&quot;, choices=(&quot;auto&quot;, &quot;exhaustive&quot;, &quot;sequential&quot;, &quot;vocab_tree&quot;), default=&quot;auto&quot;,
+-        help=&quot;auto = exhaustive up to 200 images, else sequential with loop detection; &quot;
++        &quot;--matcher&quot;, choices=(&quot;auto&quot;, &quot;exhaustive&quot;, &quot;sequential&quot;, &quot;spatial&quot;, &quot;vocab_tree&quot;), default=&quot;auto&quot;,
++        help=&quot;auto = spatial (GPS neighbours) when most images have GPS, else exhaustive up to 200 images, &quot;
++        &quot;else sequential with loop detection; &quot;
+         &quot;vocab_tree suits large unordered photo sets&quot;,
+     )
+ 
+@@ -72,8 +73,9 @@ def _add_train_options(parser: argparse.ArgumentParser) -&gt; None:
+         help=&quot;Brush: hold out every Nth image and report PSNR/SSIM on it every 1000 steps&quot;,
+     )
+     group.add_argument(
+-        &quot;--init&quot;, choices=(&quot;auto&quot;, &quot;dense&quot;, &quot;sparse&quot;), default=&quot;auto&quot;,
+-        help=&quot;Brush: start from the dense cloud (dense/) or COLMAP&#x27;s points; auto = dense when dense/ exists and Brush gets no masks&quot;,
++        &quot;--init&quot;, choices=(&quot;auto&quot;, &quot;dense&quot;, &quot;lidar&quot;, &quot;sparse&quot;), default=&quot;auto&quot;,
++        help=&quot;Brush: start from the dense cloud (dense/), an iPhone scan&#x27;s LiDAR points (arkit/) or COLMAP&#x27;s points; &quot;
++        &quot;auto = dense, else lidar, when there is one and Brush gets no masks&quot;,
+     )
+     group.add_argument(&quot;--downscale&quot;, type=float, default=4.0, help=&quot;Msplat: load images at 1/N size (default 4)&quot;)
+     group.add_argument(&quot;--checkpoint-every&quot;, type=int, default=1000, help=&quot;Msplat: checkpoint every N steps&quot;)
+@@ -101,6 +103,11 @@ def _add_mesh_options(parser: argparse.ArgumentParser) -&gt; None:
+     group.add_argument(&quot;--texture-size&quot;, type=int, default=8192, help=&quot;largest texture image side (default 8192)&quot;)
+ 
+ 
++def _add_map_options(parser: argparse.ArgumentParser) -&gt; None:
++    group = parser.add_argument_group(&quot;map&quot;)
++    group.add_argument(&quot;--resolution&quot;, type=float, default=0.03, metavar=&quot;M&quot;, help=&quot;orthophoto and DSM cell size in metres (default 0.03)&quot;)
++
++
+ def _add_frames_options(parser: argparse.ArgumentParser) -&gt; None:
+     group = parser.add_argument_group(&quot;frames&quot;)
+     group.add_argument(
+@@ -110,6 +117,11 @@ def _add_frames_options(parser: argparse.ArgumentParser) -&gt; None:
+     group.add_argument(&quot;--min-frames&quot;, type=int, default=keyframes.MIN_FRAMES, help=&quot;use closer spacing if fewer frames result (default %(default)s)&quot;)
+     group.add_argument(&quot;--max-frames&quot;, type=int, default=keyframes.MAX_FRAMES, help=&quot;use wider spacing if more frames result (default %(default)s)&quot;)
+     group.add_argument(&quot;--every&quot;, type=int, metavar=&quot;N&quot;, help=&quot;instead of by motion: the sharpest of every N video frames&quot;)
++    group.add_argument(
++        &quot;--overlap&quot;, type=int, metavar=&quot;PERCENT&quot;,
++        help=&quot;mapping (straight-down drone video): a frame whenever the next one would share only PERCENT of the view, &quot;
++        &quot;e.g. 80; no frame count limits. A DJI video&#x27;s .SRT subtitle file gives the frames GPS&quot;,
++    )
+ 
+ 
+ def build_parser() -&gt; argparse.ArgumentParser:
+@@ -140,10 +152,11 @@ def build_parser() -&gt; argparse.ArgumentParser:
+     run.add_argument(&quot;--dense&quot;, action=&quot;store_true&quot;, help=&quot;also build a dense point cloud before training; Brush then starts from it&quot;)
+     run.add_argument(&quot;--lod&quot;, action=&quot;store_true&quot;, help=&quot;also build a streamed LOD set&quot;)
+     run.add_argument(&quot;--mesh&quot;, action=&quot;store_true&quot;, help=&quot;also build a textured mesh (implies --dense)&quot;)
++    run.add_argument(&quot;--map&quot;, action=&quot;store_true&quot;, help=&quot;also make an orthophoto and DSM (needs images with GPS)&quot;)
+     run.add_argument(&quot;--from&quot;, dest=&quot;from_step&quot;, choices=STEPS, help=&quot;redo this step and every step after it&quot;)
+     for add in (
+         _add_frames_options, _add_mask_options, _add_solve_options, _add_dense_options, _add_train_options,
+-        _add_lod_options, _add_mesh_options,
++        _add_lod_options, _add_mesh_options, _add_map_options,
+     ):
+         add(run)
+     _add_no_masks_option(run)
+@@ -153,7 +166,7 @@ def build_parser() -&gt; argparse.ArgumentParser:
+         description=&quot;Select sharp frames into images/: one is picked wherever the camera has moved on, &quot;
+         &quot;so a walk-around gives enough overlapping frames without tuning. A folder of photos is used whole.&quot;,
+     )
+-    frames.add_argument(&quot;source&quot;, type=Path, help=&quot;video file, or folder of videos or images&quot;)
++    frames.add_argument(&quot;source&quot;, type=Path, help=&quot;video file, folder of videos or images, or an iPhone LiDAR scan folder (Stray Scanner app)&quot;)
+     frames.add_argument(
+         &quot;--range&quot;, dest=&quot;ranges&quot;, action=&quot;append&quot;, type=_time_range, metavar=&quot;START-END&quot;,
+         help=&quot;keep only this part of the video, in seconds or m:ss (repeatable), e.g. --range 1.5-32.5 --range 0:57-1:20&quot;,
+@@ -186,6 +199,15 @@ def build_parser() -&gt; argparse.ArgumentParser:
+     )
+     _add_mesh_options(mesh)
+ 
++    map_ = commands.add_parser(
++        &quot;map&quot;, parents=[working], help=&quot;orthophoto and DSM GeoTIFFs from the trained splat&quot;,
++        description=&quot;Render the newest splat straight down into runs/map/&lt;time&gt;/: ortho.tif and dsm.tif in the scene&#x27;s CRS &quot;
++        &quot;and map.html, the orthophoto over a web map. Needs a model georeferenced from GPS (drone photos, or DJI video &quot;
++        &quot;frames with a .SRT subtitle file).&quot;,
++    )
++    map_.add_argument(&quot;source&quot;, nargs=&quot;?&quot;, type=Path, help=&quot;splat .ply (default: the newest export)&quot;)
++    _add_map_options(map_)
++
+     train = commands.add_parser(
+         &quot;train&quot;, parents=[working], help=&quot;train splats with Brush or Msplat&quot;,
+         description=&quot;Train splats. Extra arguments after -- go to Brush, e.g. -- --alpha-mode transparent.&quot;,
+@@ -325,7 +347,7 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -&gt; None:
+         raise GausserError(&quot;--from frames needs --video&quot;)
+     if args.from_step == &quot;mask&quot; and not args.prompt:
+         raise GausserError(&quot;--from mask needs --prompt&quot;)
+-    if args.from_step in (&quot;dense&quot;, &quot;lod&quot;, &quot;mesh&quot;):
++    if args.from_step in (&quot;dense&quot;, &quot;lod&quot;, &quot;mesh&quot;, &quot;map&quot;):
+         setattr(args, args.from_step, True)
+     if args.mesh:
+         args.dense = True
+@@ -372,6 +394,10 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -&gt; None:
+     if args.mesh and due(&quot;mesh&quot;, scene.mesh_done()):
+         with scene.step(&quot;mesh&quot;) as made:
+             made[&quot;run&quot;] = str(_mesh(scene, args).relative_to(scene.root))
++        ran(&quot;mesh&quot;)
++    if args.map and due(&quot;map&quot;, scene.map_done()):
++        with scene.step(&quot;map&quot;) as made:
++            made[&quot;run&quot;] = str(mapping.make(scene, resolution=args.resolution).relative_to(scene.root))
+ 
+ 
+ def status(scene: Scene) -&gt; None:
+@@ -396,11 +422,17 @@ def status(scene: Scene) -&gt; None:
+     if model:
+         solved = f&quot;{registered_images(model)}/{len(images)} images registered&quot;
+         print(f&quot;model   {solved}{&#x27;&#x27; if scene.solve_done(images) else stale}&quot;)
++        geo = scene.geo()
++        if geo:
++            print(f&quot;        georeferenced: {geo[&#x27;crs&#x27;]}, cameras within {geo[&#x27;rms_horizontal_m&#x27;]} m of their GPS (RMS)&quot;)
+     else:
+         print(&quot;model   -&quot;)
+     cloud = scene.dense_cloud()
+     if cloud:
+         print(f&quot;dense   {steps.ply_count(cloud):,} points{&#x27;&#x27; if scene.dense_done() else stale}&quot;)
++    lidar = scene.lidar_cloud()
++    if lidar:
++        print(f&quot;lidar   {steps.ply_count(lidar):,} points, ARKit poses (iPhone scan)&quot;)
+     exports = scene.exports()
+     for export in exports[-5:]:
+         print(f&quot;export  {export.relative_to(scene.root)}&quot;)
+@@ -410,6 +442,8 @@ def status(scene: Scene) -&gt; None:
+         print(f&quot;lod     {run.relative_to(scene.root)}&quot;)
+     for run in scene.mesh_runs()[-3:]:
+         print(f&quot;mesh    {(run / &#x27;mesh.glb&#x27;).relative_to(scene.root)}&quot;)
++    for run in scene.map_runs()[-3:]:
++        print(f&quot;map     {(run / &#x27;map.html&#x27;).relative_to(scene.root)}&quot;)
+     if scene.tmp.is_dir():
+         size = sum(path.stat().st_size for path in scene.tmp.rglob(&quot;*&quot;) if path.is_file() and not path.is_symlink())
+         if size:
+@@ -573,7 +607,14 @@ def _time_range(text: str) -&gt; tuple[float, float]:
+ def _frames(scene: Scene, source: Path, ranges: list[tuple[float, float]] | None, args: argparse.Namespace) -&gt; None:
+     if args.min_frames &gt; args.max_frames or (args.every is not None and args.every &lt; 1):
+         raise GausserError(&quot;--min-frames must not exceed --max-frames, and --every must be at least 1&quot;)
+-    steps.frames(scene, source, ranges, spacing=args.spacing, min_frames=args.min_frames, max_frames=args.max_frames, every=args.every)
++    if args.overlap is not None and not 30 &lt;= args.overlap &lt;= 95:
++        raise GausserError(&quot;--overlap is a percentage from 30 to 95&quot;)
++    if args.overlap is not None and args.every is not None:
++        raise GausserError(&quot;--overlap and --every cannot be combined&quot;)
++    steps.frames(
++        scene, source, ranges, spacing=args.spacing, min_frames=args.min_frames, max_frames=args.max_frames, every=args.every,
++        overlap=args.overlap / 100 if args.overlap is not None else None,
++    )
+ 
+ 
+ def dispatch(scene: Scene, args: argparse.Namespace) -&gt; None:
+@@ -604,6 +645,9 @@ def dispatch(scene: Scene, args: argparse.Namespace) -&gt; None:
+     elif args.command == &quot;mesh&quot;:
+         with scene.step(&quot;mesh&quot;) as made:
+             made[&quot;run&quot;] = str(_mesh(scene, args).relative_to(scene.root))
++    elif args.command == &quot;map&quot;:
++        with scene.step(&quot;map&quot;) as made:
++            made[&quot;run&quot;] = str(mapping.make(scene, args.source, args.resolution).relative_to(scene.root))
+     elif args.command == &quot;lod&quot;:
+         with scene.step(&quot;lod&quot;) as made:
+             made[&quot;run&quot;] = str(_lod(scene, args.source, args).relative_to(scene.root))
+diff --git a/src/gausser/composite.py b/src/gausser/composite.py
+index af068f7..2958e53 100644
+--- a/src/gausser/composite.py
++++ b/src/gausser/composite.py
+@@ -10,42 +10,17 @@ statue is appended.
+ from __future__ import annotations
+ 
+ import shutil
+-import struct
+ from pathlib import Path
+ from typing import Any
+ 
++from .colmap_model import read_cameras, read_images
+ from .scene import GausserError, Scene, replace
+ 
+ 
+ def read_colmap(model: Path) -&gt; tuple[tuple[float, float, float, float], list[tuple[str, Any, Any]]]:
+     &quot;&quot;&quot;(fx, fy, cx, cy) of the single camera and [(image name, R, t)] from a binary COLMAP model.&quot;&quot;&quot;
+-    import numpy as np
+-
+-    with (model / &quot;cameras.bin&quot;).open(&quot;rb&quot;) as f:
+-        f.read(8)
+-        _id, camera, _w, _h = struct.unpack(&quot;&lt;iiQQ&quot;, f.read(24))
+-        count = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8}.get(camera)  # SIMPLE_PINHOLE, PINHOLE, SIMPLE_RADIAL, RADIAL, OPENCV
+-        if count is None:
+-            raise GausserError(f&quot;Unsupported COLMAP camera model {camera}&quot;)
+-        p = struct.unpack(f&quot;&lt;{count}d&quot;, f.read(8 * count))
+-        intrinsics = (p[0], p[0], p[1], p[2]) if camera in (0, 2, 3) else (p[0], p[1], p[2], p[3])
+-    images = []
+-    with (model / &quot;images.bin&quot;).open(&quot;rb&quot;) as f:
+-        (n,) = struct.unpack(&quot;&lt;Q&quot;, f.read(8))
+-        for _ in range(n):
+-            _i, qw, qx, qy, qz, tx, ty, tz, _c = struct.unpack(&quot;&lt;idddddddi&quot;, f.read(64))
+-            name = b&quot;&quot;
+-            while (ch := f.read(1)) not in (b&quot;\0&quot;, b&quot;&quot;):
+-                name += ch
+-            (points,) = struct.unpack(&quot;&lt;Q&quot;, f.read(8))
+-            f.seek(points * 24, 1)
+-            r = np.array([
+-                [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+-                [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+-                [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+-            ])
+-            images.append((name.decode(), r, np.array([tx, ty, tz])))
+-    return intrinsics, images
++    camera = next(iter(read_cameras(model).values()))
++    return camera.intrinsics, [(image.name, image.rotation, image.translation) for image in read_images(model)]
+ 
+ 
+ def hull_keep(
+@@ -66,7 +41,7 @@ def hull_keep(
+         mask_path = scene.masks / f&quot;{Path(name).stem}.png&quot;
+         if not mask_path.is_file():
+             continue
+-        small = Image.open(mask_path).convert(&quot;L&quot;).reduce(scale).point(lambda v: 255 if v &gt; 127 else 0)
++        small = Image.open(mask_path).convert(&quot;L&quot;).reduce(scale).point([0] * 128 + [255] * 128)
+         if not small.getextrema()[1]:
+             continue
+         mask = np.asarray(small.filter(ImageFilter.MaxFilter(2 * slack + 1))) &gt; 127
+@@ -226,8 +201,11 @@ def composite(
+     if out:
+         out = out.expanduser().resolve()
+         out.parent.mkdir(parents=True, exist_ok=True)
+-        shutil.move(staged / &quot;composite.ply&quot;, out)  # not replace(): -o may be on another filesystem than the scene
+-        shutil.rmtree(staged)
++        try:
++            shutil.move(staged / &quot;composite.ply&quot;, out)  # not replace(): -o may be on another filesystem than the scene
++        except OSError as exc:
++            raise GausserError(f&quot;Cannot write {out}: {exc}; the composite is kept in {staged}&quot;) from exc
++        shutil.rmtree(staged, ignore_errors=True)
+     else:
+         run = scene.new_run(&quot;composite&quot;)
+         replace(staged, run)
+diff --git a/src/gausser/keyframes.py b/src/gausser/keyframes.py
+index 1c2037d..201f9c5 100644
+--- a/src/gausser/keyframes.py
++++ b/src/gausser/keyframes.py
+@@ -19,6 +19,7 @@ from __future__ import annotations
+ 
+ import json
+ import subprocess
++import tempfile
+ import time
+ from dataclasses import dataclass
+ from pathlib import Path
+@@ -189,10 +190,20 @@ def input_options(span: tuple[float, float] | None, video: Path) -&gt; list[str]:
+     return [*seek, &quot;-i&quot;, str(video)]
+ 
+ 
++def overlap_level(info: VideoInfo, overlap: float) -&gt; float:
++    &quot;&quot;&quot;The threshold at which consecutive frames still share `overlap` (0-1) of the view, whichever way the camera moves.
++
++    For mapping: a nadir drone video moves the ground across the frame, so a frame whenever the ground
++    has moved (1 - overlap) of the short edge keeps at least that overlap.
++    &quot;&quot;&quot;
++    return (1 - overlap) * min(info.width, info.height) / max(info.width, info.height)
++
++
+ def analyse(
+     ffmpeg: str, video: Path, info: VideoInfo, span: tuple[float, float] | None, every: int | None,
++    levels: tuple[float, ...] = LEVELS,
+ ) -&gt; list[list[Pick]]:
+-    &quot;&quot;&quot;The picks of each level of LEVELS (one level when `every` is set: the sharpest of each `every` frames).&quot;&quot;&quot;
++    &quot;&quot;&quot;The picks of each threshold in `levels` (one level when `every` is set: the sharpest of each `every` frames).&quot;&quot;&quot;
+     import cv2
+     import numpy as np
+ 
+@@ -205,7 +216,7 @@ def analyse(
+         &quot;-vf&quot;, f&quot;scale={width}:{height},format=gray&quot;, &quot;-fps_mode&quot;, &quot;passthrough&quot;, &quot;-f&quot;, &quot;rawvideo&quot;, &quot;-&quot;,
+     ]
+     print(&quot;$ &quot; + &quot; &quot;.join(command), flush=True)
+-    ladder = None if every else Ladder(*flow_size, LEVELS, max(MIN_GAP_FRAMES, round(MAX_GAP_SECONDS * info.fps)))
++    ladder = None if every else Ladder(*flow_size, levels, max(MIN_GAP_FRAMES, round(MAX_GAP_SECONDS * info.fps)))
+     flow_engine = cv2.DISOpticalFlow.create(cv2.DISOPTICAL_FLOW_PRESET_ULTRAFAST)
+     flow_engine.setPatchSize(8)
+     flow_engine.setPatchStride(8)
+@@ -214,8 +225,11 @@ def analyse(
+     sharps: list[float] = []
+     previous = None
+     shown = time.monotonic()
+-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+-    stdout, stderr = cast(BinaryIO, process.stdout), cast(BinaryIO, process.stderr)
++    # stderr goes to a file: ffmpeg can log a line per frame (iPhone clips: &quot;non monotonically increasing
++    # dts&quot;), and an undrained pipe fills at 64 KB and blocks ffmpeg while we wait for the next frame.
++    log = tempfile.TemporaryFile()
++    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log)
++    stdout = cast(BinaryIO, process.stdout)
+     size = width * height
+     while len(data := stdout.read(size)) == size:
+         grey = np.frombuffer(data, dtype=np.uint8).reshape(height, width)
+@@ -230,8 +244,11 @@ def analyse(
+             shown = time.monotonic()
+             print(f&quot;analysed {len(sharps)}/{max(info.frames, len(sharps))} frames&quot;, flush=True)
+     stdout.close()
+-    error = stderr.read().decode(errors=&quot;replace&quot;).strip()
+-    if process.wait() != 0 or not sharps:
++    returncode = process.wait()
++    log.seek(0)
++    error = log.read().decode(errors=&quot;replace&quot;).strip()
++    log.close()
++    if returncode != 0 or not sharps:
+         raise GausserError(f&quot;ffmpeg could not decode {video.name}: {error[-500:] or &#x27;no frames&#x27;}&quot;)
+     print(f&quot;analysed {len(sharps)}/{len(sharps)} frames&quot;, flush=True)
+     return [windows(sharps, every)] if every else ladder.finish()  # type: ignore[union-attr]
+diff --git a/src/gausser/monitor.py b/src/gausser/monitor.py
+index 85ac80d..91c5022 100644
+--- a/src/gausser/monitor.py
++++ b/src/gausser/monitor.py
+@@ -14,7 +14,6 @@ import mimetypes
+ import os
+ import re
+ import shutil
+-import struct
+ import subprocess
+ import sys
+ import threading
+@@ -27,7 +26,7 @@ from pathlib import Path
+ from typing import Any
+ from urllib.parse import parse_qs, quote, urlsplit
+ 
+-from . import orbit, pano, steps as pipeline
++from . import colmap_model, orbit, pano, steps as pipeline
+ from .scene import GausserError, Scene, index, index_path, is_image, mtime, registered_images
+ 
+ WEB = Path(__file__).with_name(&quot;web&quot;)
+@@ -37,8 +36,6 @@ IDLE_SECONDS = 600  # a spawned monitor quits after this long without a page pol
+ MAX_POINTS = 200_000
+ CACHE_BYTES = 512 &lt;&lt; 20  # thumbnails and model JSON kept in memory; the oldest go when this is exceeded
+ # Parameter counts of COLMAP camera models by model id, and the index of fy (else fy = fx).
+-CAMERA_PARAMS = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 8, 6: 12, 7: 5, 8: 4, 9: 5, 10: 12, 11: 16}
+-FY_INDEX = {1: 1, 4: 1, 5: 1, 6: 1, 10: 1, 11: 1}
+ 
+ 
+ # Terminal control sequences: CSI (colours, cursor moves), OSC/APC/DCS strings (titles, kitty graphics), others.
+@@ -232,56 +229,24 @@ def read_model(model: Path, max_points: int = MAX_POINTS) -&gt; dict[str, Any]:
+     &quot;&quot;&quot;Cameras, a subsample of the points and statistics of a binary COLMAP model.&quot;&quot;&quot;
+     import numpy as np
+ 
+-    data = (model / &quot;cameras.bin&quot;).read_bytes()
+-    intrinsics: dict[int, tuple[float, float, int, int]] = {}
+-    (count,), at = struct.unpack_from(&quot;&lt;Q&quot;, data), 8
+-    for _ in range(count):
+-        camera_id, kind, width, height = struct.unpack_from(&quot;&lt;iiQQ&quot;, data, at)
+-        at += 24
+-        params = struct.unpack_from(f&quot;&lt;{CAMERA_PARAMS[kind]}d&quot;, data, at)
+-        at += 8 * CAMERA_PARAMS[kind]
+-        intrinsics[camera_id] = (params[0], params[FY_INDEX.get(kind, 0)], width, height)
+-
+-    data = (model / &quot;images.bin&quot;).read_bytes()
+-    cameras = []
+-    rights, downs = [], []
+-    (count,), at = struct.unpack_from(&quot;&lt;Q&quot;, data), 8
+-    for _ in range(count):
+-        _id, qw, qx, qy, qz, tx, ty, tz, camera_id = struct.unpack_from(&quot;&lt;idddddddi&quot;, data, at)
+-        end = data.index(b&quot;\0&quot;, at + 64)
+-        name = data[at + 64:end].decode(errors=&quot;replace&quot;)
+-        (points,) = struct.unpack_from(&quot;&lt;Q&quot;, data, end + 1)
+-        at = end + 9
+-        observed = np.frombuffer(data, dtype=&quot;&lt;i8&quot;, count=points * 3, offset=at)[2::3] if points else np.empty(0)
+-        at += points * 24
+-        r = np.array([
+-            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+-            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+-            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+-        ])
+-        fx, fy, width, height = intrinsics.get(camera_id, (1.0, 1.0, 1, 1))
++    intrinsics = colmap_model.read_cameras(model)
++    cameras, rights, downs = [], [], []
++    for image in colmap_model.read_images(model, observations=True):
++        camera = intrinsics.get(image.camera_id)
++        fx, fy = camera.intrinsics[:2] if camera else (1.0, 1.0)
++        r = image.rotation
+         rights.append(r[0])
+         downs.append(r[1])
+         cameras.append({
+-            &quot;name&quot;: name, &quot;center&quot;: np.round(-r.T @ np.array([tx, ty, tz]), 5).tolist(),
++            &quot;name&quot;: image.name, &quot;center&quot;: np.round(image.centre, 5).tolist(),
+             &quot;rotation&quot;: np.round(r.T, 5).ravel().tolist(),  # camera to world, OpenCV axes (x right, y down, z forward)
+-            &quot;fx&quot;: fx, &quot;fy&quot;: fy, &quot;width&quot;: width, &quot;height&quot;: height, &quot;points&quot;: int((observed &gt;= 0).sum()),
++            &quot;fx&quot;: fx, &quot;fy&quot;: fy, &quot;width&quot;: camera.width if camera else 1, &quot;height&quot;: camera.height if camera else 1,
++            &quot;points&quot;: int((image.observations[:, 2] &gt;= 0).sum()),
+         })
+ 
+     up = orbit.level_up(rights, downs).tolist() if rights else [0.0, -1.0, 0.0]
+-
+-    data = (model / &quot;points3D.bin&quot;).read_bytes()
+-    (count,), at = struct.unpack_from(&quot;&lt;Q&quot;, data), 8
+-    xyz = np.empty((count, 3))
+-    rgb = np.empty((count, 3), dtype=np.uint8)
+-    errors = np.empty(count)
+-    tracks = np.empty(count, dtype=np.int64)
+-    for i in range(count):
+-        x, y, z, r_, g, b, error, track = struct.unpack_from(&quot;&lt;dddBBBdQ&quot;, data, at + 8)
+-        xyz[i] = x, y, z
+-        rgb[i] = r_, g, b
+-        errors[i], tracks[i] = error, track
+-        at += 51 + track * 8
++    points = colmap_model.read_points(model)
++    xyz, rgb, errors, tracks, count = points.xyz, points.rgb, points.errors, points.tracks, len(points.ids)
+     keep = np.random.default_rng(0).choice(count, max_points, replace=False) if count &gt; max_points else slice(None)
+     lengths, counts = np.unique(np.minimum(tracks, 30), return_counts=True)
+     return {
+diff --git a/src/gausser/orbit.py b/src/gausser/orbit.py
+index 249b22b..91106c3 100644
+--- a/src/gausser/orbit.py
++++ b/src/gausser/orbit.py
+@@ -10,10 +10,10 @@ import json
+ import os
+ import re
+ import shutil
+-import struct
+ from pathlib import Path
+ from typing import Any
+ 
++from .colmap_model import read_images
+ from .scene import GausserError, Scene, replace, require_tool, run_tool
+ from .view import resolve_splat, serve
+ 
+@@ -40,26 +40,15 @@ def read_cameras(images_bin: Path) -&gt; tuple[Any, Any, Any, list[str]]:
+     &quot;&quot;&quot;Centres, viewing directions, right/down axes and names of the registered cameras in a binary images.bin.&quot;&quot;&quot;
+     import numpy as np
+ 
+-    centres, directions, axes, names = [], [], [], []
+-    with images_bin.open(&quot;rb&quot;) as f:
+-        (count,) = struct.unpack(&quot;&lt;Q&quot;, f.read(8))
+-        for _ in range(count):
+-            _id, qw, qx, qy, qz, tx, ty, tz, _camera = struct.unpack(&quot;&lt;idddddddi&quot;, f.read(64))
+-            name = b&quot;&quot;
+-            while (char := f.read(1)) not in (b&quot;\0&quot;, b&quot;&quot;):
+-                name += char
+-            names.append(name.decode())
+-            (points,) = struct.unpack(&quot;&lt;Q&quot;, f.read(8))
+-            f.seek(points * 24, 1)
+-            r = np.array([
+-                [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+-                [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+-                [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+-            ])
+-            centres.append(-r.T @ np.array([tx, ty, tz]))
+-            directions.append(r.T @ np.array([0, 0, 1.0]))
+-            axes.append(r[:2])  # camera right and image-down axes in world coordinates
+-    return np.array(centres), np.array(directions), np.array(axes), names
++    images = read_images(images_bin.parent)
++    if not images:
++        return np.empty((0, 3)), np.empty((0, 3)), np.empty((0, 2, 3)), []
++    return (
++        np.array([image.centre for image in images]),
++        np.array([image.rotation[2] for image in images]),  # the camera&#x27;s z (forward) axis in world coordinates
++        np.array([image.rotation[:2] for image in images]),  # camera right and image-down axes in world coordinates
++        [image.name for image in images],
++    )
+ 
+ 
+ def camera_up(images_bin: Path) -&gt; Any:
+diff --git a/src/gausser/scene.py b/src/gausser/scene.py
+index 18c85e1..f4f2ba2 100644
+--- a/src/gausser/scene.py
++++ b/src/gausser/scene.py
+@@ -80,6 +80,20 @@ class _Tee:
+ _log: BinaryIO | None = None  # the running step&#x27;s log; run_tool copies tool output into it
+ 
+ 
++GEO_FILE = &quot;geo.json&quot;  # in sparse/: the CRS and origin of a georeferenced model (geo.py)
++
++
++def read_json(path: Path) -&gt; dict[str, Any] | None:
++    &quot;&quot;&quot;A JSON object, or None if the file does not exist.&quot;&quot;&quot;
++    if not path.is_file():
++        return None
++    try:
++        record: dict[str, Any] = json.loads(path.read_text())
++    except (OSError, ValueError) as exc:
++        raise GausserError(f&quot;Cannot read {path}: {exc}&quot;) from exc
++    return record
++
++
+ class Scene:
+     def __init__(self, root: Path | str) -&gt; None:
+         self.root = Path(root).expanduser().resolve()
+@@ -93,6 +107,7 @@ class Scene:
+         self.database = self.root / &quot;database.db&quot;
+         self.sparse = self.root / &quot;sparse&quot;
+         self.dense = self.root / &quot;dense&quot;  # OpenMVS: undistorted images/, scene_dense.mvs and .ply
++        self.arkit = self.root / &quot;arkit&quot;  # iPhone LiDAR scans: poses.json and points.ply (arkit.py)
+         self.runs = self.root / &quot;runs&quot;
+         self.tmp = self.root / &quot;.gausser&quot; / &quot;tmp&quot;
+         # Read only by `gausser monitor`; no step depends on them.
+@@ -158,6 +173,17 @@ class Scene:
+         cloud = self.dense / &quot;scene_dense.ply&quot;
+         return cloud if cloud.is_file() and (self.dense / &quot;scene_dense.mvs&quot;).is_file() else None
+ 
++    def arkit_poses(self) -&gt; dict[str, Any] | None:
++        return read_json(self.arkit / &quot;poses.json&quot;)
++
++    def geo(self) -&gt; dict[str, Any] | None:
++        &quot;&quot;&quot;The CRS and origin of a georeferenced model (sparse/geo.json, written by `solve` from GPS).&quot;&quot;&quot;
++        return read_json(self.sparse / GEO_FILE)
++
++    def lidar_cloud(self) -&gt; Path | None:
++        cloud = self.arkit / &quot;points.ply&quot;
++        return cloud if cloud.is_file() else None
++
+     @contextmanager
+     def lock(self, argv: list[str] | None = None) -&gt; Iterator[None]:
+         &quot;&quot;&quot;Hold the scene for one command; a second command fails instead of clobbering it.
+@@ -237,6 +263,13 @@ class Scene:
+     def mesh_runs(self) -&gt; list[Path]:
+         return sorted((path.parent for path in self.runs.glob(&quot;mesh/*/mesh.glb&quot;)), key=lambda run: mtime(run / &quot;mesh.glb&quot;))
+ 
++    def map_runs(self) -&gt; list[Path]:
++        return sorted(path.parent for path in self.runs.glob(&quot;map/*/map.html&quot;))
++
++    def map_done(self) -&gt; bool:
++        exports, maps = self.exports(), self.map_runs()
++        return bool(exports and maps) and mtime(maps[-1] / &quot;ortho.tif&quot;) &gt; mtime(exports[-1])
++
+     def lod_done(self) -&gt; bool:
+         exports, lods = self.exports(), self.lod_runs()
+         return bool(exports and lods) and max(mtime(run / &quot;lod-meta.json&quot;) for run in lods) &gt; mtime(exports[-1])
+diff --git a/src/gausser/steps.py b/src/gausser/steps.py
+index 3ed4f24..1773520 100644
+--- a/src/gausser/steps.py
++++ b/src/gausser/steps.py
+@@ -14,8 +14,8 @@ from typing import Any
+ 
+ from PIL import Image
+ 
+-from . import keyframes, pano, qoocam
+-from .scene import GausserError, Scene, is_image, is_video, registered_images, remove, replace, require_tool, run_tool
++from . import arkit, geo, keyframes, pano, qoocam
++from .scene import GEO_FILE, GausserError, Scene, is_image, is_video, registered_images, remove, replace, require_tool, run_tool
+ 
+ BRUSH_HINT = &quot;build Brush (cargo build --release) and put `brush` on PATH&quot;
+ COLMAP_HINT = &quot;brew install colmap&quot;
+@@ -28,6 +28,7 @@ DENSE_INIT_POINTS = 500_000  # Brush&#x27;s starting splats from dense/; it grows to
+ def frames(
+     scene: Scene, source: Path, ranges: list[tuple[float, float]] | None = None, *, spacing: str = &quot;medium&quot;,
+     min_frames: int = keyframes.MIN_FRAMES, max_frames: int = keyframes.MAX_FRAMES, every: int | None = None,
++    overlap: float | None = None,
+ ) -&gt; int:
+     &quot;&quot;&quot;Select frames from a video (or a folder of videos) into images/; `ranges` keeps only those seconds.
+ 
+@@ -35,7 +36,12 @@ def frames(
+     extracts the picked frames. A folder of photos is used whole. 360° frames go to panos/ instead,
+     and images/ gets their pinhole views (pano.py): 2:1 equirectangular frames, or a QooCam 8K raw
+     video&#x27;s two fisheye images side by side, with the camera&#x27;s calibration in panos/lenses.json and
+-    the lens-circle masks in masks-exclude/.
++    the lens-circle masks in masks-exclude/. A Stray Scanner LiDAR scan folder (arkit.py) gives frames
++    from its rgb.mp4 plus arkit/ (ARKit poses and LiDAR points of those frames).
++
++    `overlap` (0-1) is for mapping: a frame whenever the view has moved so far that the next one shares
++    only that much of it, however many frames that gives. A DJI video&#x27;s subtitle file (geo.py) gives each
++    frame its GPS position in EXIF, as drone photos have.
+     &quot;&quot;&quot;
+     source = source.expanduser().resolve()
+     if not source.exists():
+@@ -43,13 +49,14 @@ def frames(
+     staging = scene.staging(&quot;frames&quot;)
+     staged = staging / &quot;images&quot;
+     staged.mkdir()
+-    photos = sorted(path for path in source.iterdir() if is_image(path)) if source.is_dir() else []
+-    videos = sorted(path for path in source.iterdir() if is_video(path)) if source.is_dir() else [source]
++    scan = arkit.is_scan(source)
++    photos = sorted(path for path in source.iterdir() if is_image(path)) if source.is_dir() and not scan else []
++    videos = [source / &quot;rgb.mp4&quot;] if scan else sorted(path for path in source.iterdir() if is_video(path)) if source.is_dir() else [source]
+     if ranges and not source.is_file():
+         raise GausserError(&quot;--range needs a video file&quot;)
+     if photos and videos and source.is_dir():
+         raise GausserError(f&quot;{source} has both photos and videos; use a folder of one kind&quot;)
+-    rig = qoocam.calibration(photos[0] if photos else videos[0]) if photos or videos else None
++    rig = qoocam.calibration(photos[0] if photos else videos[0]) if (photos or videos) and not scan else None
+     if photos:
+         for photo in photos:
+             if rig:
+@@ -57,7 +64,9 @@ def frames(
+             else:
+                 shutil.copy2(photo, staged / photo.name)
+     elif videos:
+-        _select_frames(videos, ranges, staging, staged, rig, spacing, min_frames, max_frames, every)
++        items = _select_frames(videos, ranges, staging, staged, rig, spacing, min_frames, max_frames, every, overlap)
++        if scan:
++            arkit.import_scan(source, staged, items, staging / &quot;arkit&quot;)
+     count = sum(1 for path in staged.iterdir() if is_image(path))
+     if count == 0:
+         raise GausserError(f&quot;No photos or videos in {source}&quot;)
+@@ -77,9 +86,12 @@ def frames(
+     else:
+         replace(staged, scene.images)
+         remove(scene.panos)
+-    remove(scene.masks, scene.masks_exclude, scene.colmap_masks, scene.database, scene.sparse, scene.dense)  # built from the old images
++    # built from the old images
++    remove(scene.masks, scene.masks_exclude, scene.colmap_masks, scene.database, scene.sparse, scene.dense, scene.arkit)
+     if keep.is_dir():
+         replace(keep, scene.masks_exclude)
++    if scan:
++        replace(staging / &quot;arkit&quot;, scene.arkit)
+     remove(staging)
+     print(f&quot;{count} frames in {scene.panos if scene.is_pano() else scene.images}&quot;)
+     return count
+@@ -87,9 +99,12 @@ def frames(
+ 
+ def _select_frames(
+     videos: list[Path], ranges: list[tuple[float, float]] | None, staging: Path, staged: Path, rig: dict[str, Any] | None,
+-    spacing: str, min_frames: int, max_frames: int, every: int | None,
+-) -&gt; None:
+-    &quot;&quot;&quot;Analyse every part (video or range), choose one level for all of them, extract into `staged` with frames.json.&quot;&quot;&quot;
++    spacing: str, min_frames: int, max_frames: int, every: int | None, overlap: float | None,
++) -&gt; list[dict[str, Any]]:
++    &quot;&quot;&quot;Analyse every part (video or range), choose one level for all of them, extract into `staged` with frames.json.
++
++    With `overlap`, each part has one level, the threshold for that overlap, and the frame count is not limited.
++    &quot;&quot;&quot;
+     ffmpeg, ffprobe = require_tool(&quot;ffmpeg&quot;, FFMPEG_HINT), require_tool(&quot;ffprobe&quot;, FFMPEG_HINT)
+     spans = ranges or [None]  # type: ignore[list-item]
+     parts = [(video, span) for video in videos for span in spans]
+@@ -97,16 +112,27 @@ def _select_frames(
+     for number, (video, span) in enumerate(parts, start=1):
+         print(f&quot;== {video.name}&quot; + (f&quot; {span[0]:g}-{span[1]:g} s&quot; if span else &quot;&quot;) + f&quot; ({number}/{len(parts)})&quot;, flush=True)
+         infos.append(keyframes.probe(ffprobe, video, span))
+-        analysed.append(keyframes.analyse(ffmpeg, video, infos[-1], span, every))
++        levels = (keyframes.overlap_level(infos[-1], overlap),) if overlap else keyframes.LEVELS
++        analysed.append(keyframes.analyse(ffmpeg, video, infos[-1], span, every, levels))
+     counts = [sum(len(part[level]) for part in analysed) for level in range(len(analysed[0]))]
+-    level = keyframes.choose(counts, keyframes.SPACINGS[spacing], min_frames, max_frames) if not every else 0
+-    note = f&quot;every {every} frames&quot; if every else f&quot;level {level} of {len(counts) - 1} (spacing {spacing}); frames per level {counts}&quot;
++    fixed = every or overlap
++    level = 0 if fixed else keyframes.choose(counts, keyframes.SPACINGS[spacing], min_frames, max_frames)
++    note = (
++        f&quot;every {every} frames&quot; if every else f&quot;{overlap:.0%} overlap&quot; if overlap
++        else f&quot;level {level} of {len(counts) - 1} (spacing {spacing}); frames per level {counts}&quot;
++    )
+     print(f&quot;Selecting {counts[level]} frames: {note}&quot;, flush=True)
+-    if counts[level] &lt; min_frames and not every:
++    if counts[level] &lt; min_frames and not fixed:
+         print(f&quot;warning: fewer than --min-frames {min_frames}; the video is short or hardly moves&quot;, flush=True)
+     items = []
+-    for number, ((video, span), info, levels) in enumerate(zip(parts, infos, analysed, strict=True), start=1):
+-        picks = levels[level]
++    tracks = {video: geo.track(video) for video in videos}
++    for found in filter(None, tracks.values()):
++        print(f&quot;GPS from {found.source.name}: {len(found.times)} positions&quot;, flush=True)
++    if overlap and not any(tracks.values()):
++        print(&quot;warning: no GPS for these frames, so maps will not be georeferenced. &quot;
++              &quot;Turn on Video Subtitles in DJI Fly; the drone then writes a .SRT next to each video&quot;, flush=True)
++    for number, ((video, span), info, picked) in enumerate(zip(parts, infos, analysed, strict=True), start=1):
++        picks = picked[level]
+         if not picks:
+             continue
+         print(f&quot;Extracting {len(picks)} frames from {video.name}&quot;, flush=True)
+@@ -115,12 +141,17 @@ def _select_frames(
+         for path, pick in zip(paths, picks, strict=True):
+             name = f&quot;{prefix}frame_{pick.frame:06d}.jpg&quot;
+             path.rename(staged / name)
++            time = (span[0] if span else 0) + pick.frame / info.fps
+             items.append({
+-                &quot;name&quot;: name, &quot;source&quot;: video.name, &quot;frame&quot;: pick.frame, &quot;time&quot;: round((span[0] if span else 0) + pick.frame / info.fps, 3),
++                &quot;name&quot;: name, &quot;source&quot;: video.name, &quot;frame&quot;: pick.frame, &quot;time&quot;: round(time, 3),
+                 &quot;motion&quot;: round(pick.motion, 4), &quot;sharpness&quot;: round(pick.sharpness, 1),
+             })
+-    record = {&quot;method&quot;: f&quot;every {every}&quot; if every else &quot;motion&quot;, &quot;level&quot;: level, &quot;per_level&quot;: counts, &quot;analysed&quot;: sum(i.frames for i in infos), &quot;total_selected&quot;: len(items), &quot;items&quot;: items}
++            if (track := tracks[video]) is not None:
++                geo.add_gps(staged / name, *track.at(time))
++    method = f&quot;every {every}&quot; if every else f&quot;overlap {overlap:g}&quot; if overlap else &quot;motion&quot;
++    record = {&quot;method&quot;: method, &quot;level&quot;: level, &quot;per_level&quot;: counts, &quot;analysed&quot;: sum(i.frames for i in infos), &quot;total_selected&quot;: len(items), &quot;items&quot;: items}
+     (staged / &quot;frames.json&quot;).write_text(json.dumps(record, indent=1))
++    return items
+ 
+ 
+ def _write_keep_masks(views: Path, out: Path, keep: list[Any]) -&gt; None:
+@@ -266,9 +297,13 @@ def solve(scene: Scene, matcher: str = &quot;auto&quot;, no_masks: bool = False) -&gt; None:
+     &quot;&quot;&quot;
+     colmap = require_tool(&quot;colmap&quot;, COLMAP_HINT)
+     images = scene.require_images()
++    rig = scene.is_pano()
++    positions = {} if rig else geo.image_positions(images)  # drone photos and DJI video frames carry GPS
+     if matcher == &quot;auto&quot;:
+-        # Exhaustive matching is quadratic; it takes hours on hundreds of images.
+-        matcher = &quot;exhaustive&quot; if len(images) &lt;= 200 else &quot;sequential&quot;
++        # With GPS (drone photos and frames), COLMAP pairs each image with its neighbours on the ground,
++        # which also links the strips of a mapping flight. Exhaustive matching is quadratic; it takes hours
++        # on hundreds of images.
++        matcher = &quot;spatial&quot; if len(positions) * 2 &gt; len(images) else &quot;exhaustive&quot; if len(images) &lt;= 200 else &quot;sequential&quot;
+     gpu = &quot;0&quot; if sys.platform == &quot;darwin&quot; else &quot;1&quot;  # Homebrew COLMAP on macOS has no CUDA.
+ 
+     staged = scene.staging(&quot;solve&quot;)
+@@ -285,7 +320,6 @@ def solve(scene: Scene, matcher: str = &quot;auto&quot;, no_masks: bool = False) -&gt; None:
+         &quot;--ImageReader.single_camera&quot;, &quot;1&quot;,
+         &quot;--FeatureExtraction.use_gpu&quot;, gpu,
+     ]
+-    rig = scene.is_pano()
+     lenses = pano.lenses(scene.panos) if rig else None
+     if rig:
+         masks = staged / &quot;masks&quot;
+@@ -299,6 +333,9 @@ def solve(scene: Scene, matcher: str = &quot;auto&quot;, no_masks: bool = False) -&gt; None:
+         ]
+     elif scene.colmap_masks.is_dir() and not no_masks:
+         extract += [&quot;--ImageReader.mask_path&quot;, str(scene.colmap_masks)]
++    poses = None if rig else scene.arkit_poses()
++    if poses:  # ARKit&#x27;s focal length is a better start than COLMAP&#x27;s guess; bundle adjustment refines it
++        extract += [&quot;--ImageReader.camera_model&quot;, &quot;SIMPLE_RADIAL&quot;, &quot;--ImageReader.camera_params&quot;, arkit.camera_params(poses)]
+     run_tool(extract, cwd=staged)
+     match = [colmap, f&quot;{matcher}_matcher&quot;, &quot;--database_path&quot;, str(database), &quot;--FeatureMatching.use_gpu&quot;, gpu]
+     mapper = [colmap, &quot;mapper&quot;, &quot;--database_path&quot;, str(database), &quot;--image_path&quot;, str(scene.images), &quot;--output_path&quot;, str(sparse)]
+@@ -322,12 +359,17 @@ def solve(scene: Scene, matcher: str = &quot;auto&quot;, no_masks: bool = False) -&gt; None:
+         match += [&quot;--SequentialMatching.loop_detection&quot;, &quot;1&quot;]
+     run_tool(match, cwd=staged)
+     sparse.mkdir()
+-    # Snapshots of the growing model, about 20 per solve, for `gausser monitor`.
+-    (staged / &quot;snapshots&quot;).mkdir()
+-    mapper += [
+-        &quot;--Mapper.snapshot_path&quot;, str(staged / &quot;snapshots&quot;),
+-        &quot;--Mapper.snapshot_frames_freq&quot;, str(max(5, len(images) // (pano.VIEWS if rig else 1) // 20)),
+-    ]
++    if positions:
++        # A nadir mapping flight is close to a plane seen from one side; on one, the incremental mapper placed
++        # 41 of 81 frames in 10 min and the global mapper (GLOMAP) all 81 in 1.5 min, 0.3 m RMS from their GPS.
++        mapper[1] = &quot;global_mapper&quot;
++    else:
++        # Snapshots of the growing model, about 20 per solve, for `gausser monitor`.
++        (staged / &quot;snapshots&quot;).mkdir()
++        mapper += [
++            &quot;--Mapper.snapshot_path&quot;, str(staged / &quot;snapshots&quot;),
++            &quot;--Mapper.snapshot_frames_freq&quot;, str(max(5, len(images) // (pano.VIEWS if rig else 1) // 20)),
++        ]
+     run_tool(mapper, cwd=staged)
+ 
+     # COLMAP can split the scene into several models; keep the largest as sparse/0.
+@@ -338,16 +380,34 @@ def solve(scene: Scene, matcher: str = &quot;auto&quot;, no_masks: bool = False) -&gt; None:
+     final = staged / &quot;final&quot;
+     final.mkdir()
+     best.rename(final / &quot;0&quot;)
+-    if rig:  # COLMAP&#x27;s frame is arbitrary (for fisheyes, a lens&#x27;s); turn the model so gravity is +y
+-        transform = staged / &quot;level.txt&quot;
+-        transform.write_text(pano.level_transform(final / &quot;0&quot; / &quot;images.bin&quot;, lenses))
+-        (staged / &quot;level&quot;).mkdir()
++    model = final / &quot;0&quot;
++
++    def transform(text: str) -&gt; None:
++        &quot;&quot;&quot;Move the model by a similarity, &quot;scale qw qx qy qz tx ty tz&quot; (x&#x27; = s·R·x + t).&quot;&quot;&quot;
++        (staged / &quot;transform.txt&quot;).write_text(text)
++        moved = staged / &quot;moved&quot;
++        moved.mkdir()
+         run_tool(
+-            [colmap, &quot;model_transformer&quot;, &quot;--input_path&quot;, str(final / &quot;0&quot;), &quot;--output_path&quot;, str(staged / &quot;level&quot;),
+-             &quot;--transform_path&quot;, str(transform)],
++            [colmap, &quot;model_transformer&quot;, &quot;--input_path&quot;, str(model), &quot;--output_path&quot;, str(moved),
++             &quot;--transform_path&quot;, str(staged / &quot;transform.txt&quot;)],
+             cwd=staged,
+         )
+-        replace(staged / &quot;level&quot;, final / &quot;0&quot;)
++        replace(moved, model)
++
++    if rig:  # COLMAP&#x27;s frame is arbitrary (for fisheyes, a lens&#x27;s); turn the model so gravity is +y
++        transform(pano.level_transform(model / &quot;images.bin&quot;, lenses))
++    if poses:  # an iPhone LiDAR scan: move the model onto ARKit&#x27;s cameras (metres, gravity +y, the LiDAR points&#x27; frame)
++        text, note = arkit.snap_transform(model, scene.arkit, poses)
++        transform(text)
++        error = arkit.snap_error(model / &quot;images.bin&quot;, poses)
++        print(f&quot;Snapped to ARKit: {note}; camera centres within {error * 100:.1f} cm RMS of ARKit&#x27;s&quot;)
++        if error &gt; 0.1:
++            print(&quot;warning: COLMAP and ARKit disagree by more than 10 cm; check the model before training&quot;, flush=True)
++    elif len(positions) &gt;= 3:  # drone GPS: move the model into a map projection (geo.py)
++        text, record, note = geo.georeference(model / &quot;images.bin&quot;, positions)
++        transform(text)
++        (final / GEO_FILE).write_text(json.dumps(record, indent=1))
++        print(f&quot;Georeferenced: {note}&quot;)
+     if no_masks:
+         (final / NO_MASKS).touch()
+     replace(database, scene.database)
+@@ -382,8 +442,8 @@ def train_brush(
+ 
+     `no_masks` leaves masks/ out of Brush&#x27;s folder, so it trains on whole images.
+     `exclude_masks` gives Brush masks-exclude/ as its masks (a context run without transient objects).
+-    `init` picks Brush&#x27;s starting points: dense = thinned dense/ cloud, sparse = COLMAP&#x27;s points,
+-    auto = dense when dense/ exists.
++    `init` picks Brush&#x27;s starting points: dense = thinned dense/ cloud, lidar = an iPhone scan&#x27;s LiDAR points
++    (arkit/), sparse = COLMAP&#x27;s points; auto = dense, else lidar, when there is one and Brush gets no masks.
+     &quot;&quot;&quot;
+     brush = require_tool(&quot;brush&quot;, BRUSH_HINT)
+     scene.require_model()
+@@ -400,28 +460,33 @@ def train_brush(
+     if not no_masks and not scene.masks.is_dir() and pano.lenses(scene.panos):
+         exclude_masks = True  # fisheye views are black outside the lens circle; never train on that
+     brush_masks = None if no_masks else scene.masks_exclude if exclude_masks else scene.masks
+-    dense = scene.dense_cloud()
+-    if init == &quot;dense&quot; and dense is None:
++    clouds = {&quot;dense&quot;: scene.dense_cloud(), &quot;lidar&quot;: scene.lidar_cloud()}
++    if init == &quot;dense&quot; and clouds[&quot;dense&quot;] is None:
+         raise GausserError(&quot;No dense point cloud; run `gausser dense` first&quot;)
+-    # The dense cloud ignores masks: a masked run starting from it would keep background splats (see composite).
++    if init == &quot;lidar&quot; and clouds[&quot;lidar&quot;] is None:
++        raise GausserError(&quot;No LiDAR points; they come from `gausser frames` on an iPhone LiDAR scan folder&quot;)
++    # The clouds ignore masks: a masked run starting from one would keep background splats (see composite).
+     masked = brush_masks is not None and brush_masks.is_dir()
+-    init = &quot;dense&quot; if init == &quot;dense&quot; or (init == &quot;auto&quot; and dense and not masked) else &quot;sparse&quot;
++    if init == &quot;auto&quot;:
++        init = next((kind for kind, cloud in clouds.items() if cloud and not masked), &quot;sparse&quot;)
+     for name, source in ((&quot;images&quot;, scene.images), (&quot;sparse&quot;, scene.sparse), (&quot;masks&quot;, brush_masks)):
+-        if name == &quot;sparse&quot; and init == &quot;dense&quot;:
++        if name == &quot;sparse&quot; and init != &quot;sparse&quot;:
+             continue
+         if source and source.is_dir():
+             (dataset / name).symlink_to(source)
+-    if init == &quot;dense&quot; and dense:
+-        # Brush starts from a COLMAP model&#x27;s points3D.bin, so give it the cameras with dense points.
++    cloud = clouds.get(init)
++    if cloud:
++        # Brush starts from a COLMAP model&#x27;s points3D.bin, so give it the cameras with the cloud&#x27;s points.
+         model = dataset / &quot;sparse&quot; / &quot;0&quot;
+         model.mkdir(parents=True)
+         for path in scene.require_model().iterdir():
+             if path.name != &quot;points3D.bin&quot;:
+                 (model / path.name).symlink_to(path)
+-        print(f&quot;Reading {dense.relative_to(scene.root)} ({ply_count(dense):,} points; about 1 s per 8 million)&quot;, flush=True)
+-        xyz, rgb = read_dense_cloud(dense, DENSE_INIT_POINTS)
++        print(f&quot;Reading {cloud.relative_to(scene.root)} ({ply_count(cloud):,} points)&quot;, flush=True)
++        read = read_dense_cloud if init == &quot;dense&quot; else arkit.read_points
++        xyz, rgb = read(cloud, DENSE_INIT_POINTS)
+         write_points3d(model / &quot;points3D.bin&quot;, xyz, rgb)
+-        print(f&quot;Starting from {len(xyz):,} points of the dense cloud ({dense.relative_to(scene.root)})&quot;)
++        print(f&quot;Starting from {len(xyz):,} points of {cloud.relative_to(scene.root)}&quot;)
+     command = [
+         brush, str(dataset),
+         &quot;--total-train-iters&quot;, str(iterations),
+</pre></details>
+
+<h2>Checks</h2>
+<ul>
+  <li><code>pytest</code>: all pass (113, incl. new geo, mapping and GPS solve tests); <code>ruff</code> and <code>mypy</code> clean.</li>
+  <li>Real run: <code>gausser frames … --overlap 80</code> → <code>gausser run --from solve --dense --map --max-resolution 3840</code> on the flight above.</li>
+  <li>Not done: DTM/contours/LAZ, markers, monitor map tab (planned tasks); orthophoto checked by eye against satellite imagery, not against survey points.</li>
+</ul>
+</main>
+<script>
+const bounds = [[61.52162783843167, 23.68845405568186], [61.52265130020887, 23.690685672200868]], track = [[61.5220421, 23.688751], [61.522042, 23.6887513], [61.5220415, 23.6887518], [61.5220414, 23.6887523], [61.5220414, 23.6887529], [61.5220418, 23.6887531], [61.522042, 23.688753], [61.5220418, 23.6887542], [61.5220384, 23.6887634], [61.522033, 23.6887751], [61.522026, 23.6887871], [61.5220197, 23.6887966], [61.522017, 23.6887988], [61.522016, 23.6888004], [61.5220148, 23.688803], [61.5220141, 23.688805], [61.5220136, 23.6888072], [61.5220133, 23.6888101], [61.5220128, 23.6888121], [61.5220124, 23.6888145], [61.5220122, 23.6888185], [61.5220144, 23.6888226], [61.5220185, 23.6888324], [61.5220269, 23.6888516], [61.5220328, 23.6888642], [61.5220404, 23.6888815], [61.5220475, 23.6888992], [61.5220527, 23.6889118], [61.5220588, 23.6889266], [61.5220664, 23.6889439], [61.5220742, 23.6889611], [61.5220804, 23.6889748], [61.5220882, 23.688991], [61.5220942, 23.6890032], [61.5220996, 23.6890148], [61.5221068, 23.6890307], [61.5221119, 23.6890422], [61.522118, 23.6890551], [61.5221262, 23.6890732], [61.5221319, 23.6890867], [61.5221371, 23.6890988], [61.5221451, 23.6891161], [61.5221498, 23.6891264], [61.5221556, 23.6891388], [61.5221631, 23.6891552], [61.5221688, 23.6891671], [61.5221742, 23.6891793], [61.5221821, 23.6891971], [61.5221874, 23.6892103], [61.5221933, 23.6892235], [61.5222006, 23.6892402], [61.5222063, 23.6892517], [61.5222115, 23.689263], [61.522219, 23.6892797], [61.5222241, 23.6892921], [61.52223, 23.6893046], [61.5222378, 23.6893202], [61.5222432, 23.6893325], [61.5222487, 23.6893447], [61.5222564, 23.6893612], [61.5222617, 23.6893727], [61.522268, 23.6893856], [61.5222756, 23.6894024], [61.5222811, 23.6894153], [61.5222865, 23.6894275], [61.5222945, 23.689445], [61.5222998, 23.6894567], [61.5223057, 23.6894697], [61.5223128, 23.6894862], [61.5223178, 23.6894995], [61.5223228, 23.6895119], [61.52233, 23.6895302], [61.5223347, 23.6895428], [61.5223418, 23.689561], [61.5223471, 23.6895752], [61.5223519, 23.6895899], [61.5223565, 23.689604], [61.5223629, 23.6896231], [61.5223704, 23.6896474], [61.5223747, 23.6896618], [61.5223817, 23.6896873], [61.522387, 23.6897072], [61.5223922, 23.6897278], [61.5223961, 23.6897428], [61.5223997, 23.6897582], [61.522405, 23.6897789], [61.5224091, 23.6897935], [61.5224145, 23.6898137], [61.5224205, 23.689832], [61.5224257, 23.6898477], [61.5224304, 23.6898636], [61.5224342, 23.6898859], [61.5224358, 23.6899036], [61.5224362, 23.6899221], [61.522435, 23.6899459], [61.522433, 23.6899649], [61.5224296, 23.6899831], [61.5224234, 23.6900042], [61.5224192, 23.6900164], [61.522416, 23.6900261], [61.5224124, 23.6900337], [61.5224112, 23.690037], [61.5224091, 23.6900404], [61.5224019, 23.690046], [61.5223941, 23.6900506], [61.5223843, 23.6900553], [61.5223722, 23.6900603], [61.5223632, 23.6900642], [61.5223539, 23.6900678], [61.5223428, 23.6900724], [61.5223354, 23.6900757], [61.52233, 23.6900784], [61.5223252, 23.6900809], [61.5223228, 23.6900829], [61.522321, 23.6900848], [61.5223156, 23.6900834], [61.5223098, 23.6900796], [61.5223025, 23.690073], [61.5222937, 23.6900618], [61.5222867, 23.690051], [61.52228, 23.6900393], [61.5222717, 23.6900225], [61.5222662, 23.6900089], [61.5222606, 23.6899956], [61.5222538, 23.6899793], [61.522249, 23.6899665], [61.5222447, 23.6899527], [61.52224, 23.6899338], [61.5222375, 23.6899179], [61.5222349, 23.6899018], [61.5222315, 23.6898807], [61.5222296, 23.6898642], [61.5222279, 23.6898477], [61.5222256, 23.6898266], [61.5222244, 23.6898111], [61.522223, 23.689795], [61.5222204, 23.6897743], [61.5222186, 23.6897584], [61.5222168, 23.6897424], [61.5222145, 23.6897223], [61.5222131, 23.6897056], [61.5222119, 23.6896896], [61.52221, 23.689669], [61.5222087, 23.6896525], [61.5222072, 23.689636], [61.522205, 23.6896147], [61.5222038, 23.6895986], [61.5222024, 23.6895817], [61.5222001, 23.6895599], [61.5221989, 23.6895434], [61.5221975, 23.6895263], [61.5221954, 23.6895047], [61.5221934, 23.6894886], [61.5221885, 23.6894629], [61.5221838, 23.6894412], [61.5221806, 23.6894246], [61.5221777, 23.6894084], [61.5221738, 23.6893882], [61.5221707, 23.6893729], [61.5221676, 23.6893576], [61.5221636, 23.6893371], [61.5221607, 23.6893218], [61.5221579, 23.6893067], [61.522154, 23.6892862], [61.5221509, 23.6892708], [61.5221482, 23.6892566], [61.5221447, 23.6892377], [61.522142, 23.6892235], [61.5221383, 23.6892048], [61.5221351, 23.6891913], [61.5221319, 23.6891772], [61.5221291, 23.6891631], [61.5221253, 23.6891438], [61.5221224, 23.6891289], [61.5221188, 23.6891097], [61.5221158, 23.6890957], [61.5221126, 23.6890815], [61.5221062, 23.6890633], [61.5221005, 23.6890502], [61.5220947, 23.6890375], [61.522087, 23.6890212], [61.5220815, 23.6890097], [61.5220759, 23.6889984], [61.5220681, 23.6889865], [61.5220636, 23.6889824], [61.5220617, 23.6889833], [61.5220611, 23.6889855], [61.5220601, 23.6889858], [61.5220535, 23.6889868], [61.5220407, 23.6889919], [61.5220318, 23.6890003], [61.5220234, 23.6890109], [61.5220129, 23.6890267], [61.5220059, 23.6890411], [61.5219998, 23.6890572], [61.5219937, 23.6890787], [61.52199, 23.6890963], [61.5219875, 23.6891135], [61.5219857, 23.6891371], [61.5219856, 23.6891544], [61.5219864, 23.689172], [61.5219878, 23.689194], [61.5219891, 23.689211], [61.5219906, 23.6892281], [61.5219923, 23.6892498], [61.5219936, 23.6892667], [61.5219952, 23.6892841], [61.5219972, 23.6893066], [61.5219985, 23.6893236], [61.522, 23.6893404], [61.5220024, 23.6893628], [61.522004, 23.6893794], [61.5220053, 23.6893956], [61.5220071, 23.6894178], [61.5220089, 23.6894383], [61.5220102, 23.6894553], [61.5220117, 23.6894781], [61.5220134, 23.6895018], [61.5220153, 23.689524], [61.5220175, 23.6895477], [61.5220194, 23.6895653], [61.5220222, 23.6895946], [61.5220237, 23.6896164], [61.5220252, 23.6896328], [61.5220265, 23.68965], [61.5220284, 23.6896738], [61.52203, 23.6896907], [61.5220317, 23.6897085], [61.5220345, 23.6897364], [61.5220364, 23.6897591], [61.5220377, 23.6897758], [61.5220396, 23.6897988], [61.522041, 23.6898144], [61.5220431, 23.6898368], [61.5220455, 23.6898645], [61.5220471, 23.6898822], [61.5220487, 23.6898982], [61.5220505, 23.6899208], [61.5220518, 23.6899425], [61.5220532, 23.6899596], [61.5220553, 23.689982], [61.5220568, 23.6899994], [61.5220581, 23.6900163], [61.5220606, 23.6900447], [61.5220619, 23.6900619], [61.5220635, 23.6900792], [61.5220661, 23.6901071], [61.5220682, 23.6901289], [61.52207, 23.6901464], [61.5220718, 23.6901677], [61.5220731, 23.6901845], [61.5220744, 23.6901987], [61.5220752, 23.6902115], [61.5220751, 23.6902152], [61.5220748, 23.6902169], [61.5220723, 23.6902274], [61.5220685, 23.6902415], [61.5220632, 23.6902565], [61.5220545, 23.6902737], [61.5220473, 23.6902841], [61.5220396, 23.6902938], [61.5220307, 23.6903019], [61.5220263, 23.6903056], [61.5220234, 23.6903069], [61.5220226, 23.6903064], [61.5220221, 23.690306], [61.522022, 23.6903063], [61.5220221, 23.6903064], [61.5220208, 23.6903048], [61.5220169, 23.6902977], [61.5220131, 23.6902879], [61.5220089, 23.690274], [61.5220031, 23.6902544], [61.5219979, 23.6902396], [61.5219929, 23.6902252], [61.521986, 23.6902066], [61.521981, 23.6901926], [61.5219764, 23.6901785], [61.5219716, 23.6901583], [61.5219685, 23.6901429], [61.5219656, 23.6901277], [61.5219617, 23.6901074], [61.5219588, 23.6900923], [61.5219555, 23.690076], [61.5219515, 23.6900553], [61.5219486, 23.6900394], [61.5219458, 23.6900234], [61.5219417, 23.6900024], [61.5219387, 23.6899867], [61.5219359, 23.6899723], [61.5219323, 23.6899516], [61.5219294, 23.6899362], [61.5219251, 23.6899157], [61.5219208, 23.6898958], [61.5219174, 23.6898811], [61.5219141, 23.689866], [61.5219104, 23.689846], [61.5219076, 23.6898315], [61.5219048, 23.6898162], [61.5219005, 23.689796], [61.5218972, 23.6897808], [61.5218939, 23.6897649], [61.5218898, 23.6897444], [61.5218869, 23.6897293], [61.5218836, 23.6897142], [61.5218787, 23.6896946], [61.5218754, 23.6896802], [61.5218722, 23.6896655], [61.5218684, 23.6896444], [61.5218657, 23.6896304], [61.521863, 23.689616], [61.5218594, 23.6895971], [61.5218565, 23.6895821], [61.5218532, 23.6895665], [61.5218499, 23.6895471], [61.5218489, 23.6895328], [61.5218492, 23.6895181], [61.5218509, 23.6895001], [61.5218522, 23.6894935], [61.5218528, 23.689493], [61.5218531, 23.6894966]], picked = [[61.522035, 23.688771], [61.522018, 23.688798], [61.522015, 23.688802], [61.522014, 23.68880502777778], [61.522013, 23.68881], [61.522012, 23.688814], [61.522029027777776, 23.688855055555557], [61.522072027777774, 23.68895708333333], [61.522105, 23.689027], [61.522152, 23.68913], [61.522187, 23.68921], [61.522219, 23.68928], [61.52225, 23.689348], [61.52228705555556, 23.68942813888889], [61.522333, 23.689538], [61.522364, 23.689628], [61.52239208333334, 23.689728166666665], [61.522421, 23.689832], [61.522429, 23.689858], [61.522436, 23.689904], [61.522436, 23.689928166666668], [61.522431, 23.689977], [61.52242197222222, 23.690009055555556], [61.522413, 23.690032], [61.522411, 23.690038], [61.522362944444446, 23.690064027777776], [61.522334, 23.690077], [61.522324, 23.690082], [61.522319, 23.690085], [61.522305, 23.690076], [61.522278, 23.690035], [61.522252, 23.689975944444445], [61.522234, 23.689897], [61.522226, 23.689827], [61.522212, 23.689694888888887], [61.522202, 23.689582], [61.52219597222222, 23.689509833333332], [61.522176, 23.689398], [61.522155, 23.689291], [61.522140972222225, 23.689217888888887], [61.522119, 23.68911], [61.522111, 23.689076], [61.522083, 23.689013], [61.522068, 23.688987], [61.522061, 23.688985], [61.522055888888886, 23.688986027777776], [61.522035, 23.688997], [61.52201794444444, 23.689019083333335], [61.522002, 23.689052], [61.521991972222224, 23.689084194444444], [61.521986, 23.68912611111111], [61.521986, 23.68915422222222], [61.521995, 23.689277], [61.522004, 23.689379], [61.522013, 23.689496], [61.522023, 23.689606], [61.522034, 23.689731], [61.522045, 23.689859], [61.522055, 23.689982], [61.522064, 23.690079], [61.522074, 23.690194], [61.522075, 23.690214], [61.522074, 23.690221], [61.522067, 23.690247], [61.52205488888889, 23.690274111111112], [61.52203494444444, 23.690299027777776], [61.52202497222222, 23.690306027777776], [61.522022972222224, 23.690306], [61.522022, 23.690306], [61.52202, 23.690304], [61.52199597222222, 23.69023486111111], [61.52197397222222, 23.690167805555557], [61.521957, 23.690081], [61.52193097222222, 23.689945944444446], [61.521909, 23.689837], [61.521887, 23.689729], [61.521864972222225, 23.68962586111111], [61.521851, 23.689553], [61.521849, 23.689518], [61.521852, 23.689494], [61.521853, 23.689494]];
+const map = L.map("map", {maxZoom: 23});
+const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  {maxNativeZoom: 19, maxZoom: 23, attribution: "Esri World Imagery"});
+const osm = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxNativeZoom: 19, maxZoom: 23, attribution: "© OpenStreetMap"}).addTo(map);
+const ortho = L.imageOverlay("2026-11-14-drone-mapping/ortho-web.webp", bounds).addTo(map);
+const path = L.polyline(track, {color: "#fede5d", weight: 2, opacity: 0.9});
+const frames = L.layerGroup(picked.map(c => L.circleMarker(c, {radius: 3, color: "#ff7edb", weight: 1, fillOpacity: 0.8})));
+L.control.layers({"OpenStreetMap": osm, "Satellite": sat}, {"Orthophoto": ortho, "Flight track": path, "Picked frames": frames}).addTo(map);
+map.fitBounds(bounds);
+document.getElementById("op").oninput = e => ortho.setOpacity(+e.target.value);
+</script>
+</body>
+</html>

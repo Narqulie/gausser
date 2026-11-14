@@ -3,11 +3,11 @@
 Photos or video in, Gaussian splats out. One command wraps the steps:
 
 ```
-frames → mask → solve → [dense] → train → lod   [mesh]
-(video)  (SAM3)  (COLMAP) (OpenMVS) (Brush/Msplat) (splat-transform) (OpenMVS)
+frames → mask → solve → [dense] → train → lod   [mesh] [map]
+(video)  (SAM3)  (COLMAP) (OpenMVS) (Brush/Msplat) (splat-transform) (OpenMVS) (orthophoto)
 ```
 
-`dense` and `mesh` are optional (`run --dense`, `run --mesh`).
+`dense`, `mesh` and `map` are optional (`run --dense`, `run --mesh`, `run --map`).
 
 ## Quick start
 
@@ -62,13 +62,14 @@ Without `--prompt`, no new masks are made, but existing masks are still used. Ad
 
 | Command | Does | Writes |
 |---|---|---|
-| `gausser frames SOURCE [--range START-END] [--spacing low\|medium\|high] [--min-frames N] [--max-frames N] [--every N]` | Picks sharp frames from a video wherever the camera has moved on; 360° frames (equirect, or a QooCam 8K raw video) become 14 views each | `images/` (and `panos/`, `frames.json`) |
+| `gausser frames SOURCE [--range START-END] [--spacing low\|medium\|high] [--min-frames N] [--max-frames N] [--every N] [--overlap PERCENT]` | Picks sharp frames from a video wherever the camera has moved on; 360° frames (equirect, or a QooCam 8K raw video) become 14 views each; an iPhone LiDAR scan folder adds ARKit poses and LiDAR points; a DJI video's `.SRT` gives each frame its GPS | `images/` (and `panos/`, `arkit/`, `frames.json`) |
 | `gausser mask PROMPT [--miss drop]` | SAM3 masks the subject | `masks/`, `colmap/masks/` |
 | `gausser mask PROMPT --exclude [--dilation N]` | SAM3 blacks out every instance of PROMPT (e.g. people), except inside `masks/` | `masks-exclude/` |
-| `gausser solve [--no-masks]` | COLMAP finds the camera poses | `database.db`, `sparse/0/` |
+| `gausser solve [--no-masks]` | COLMAP finds the camera poses; images with GPS put the model in a map projection | `database.db`, `sparse/0/` (and `sparse/geo.json`) |
 | `gausser dense [--resolution-level N]` | OpenMVS estimates a depth map per image (on the GPU) and fuses them into a dense point cloud | `dense/` |
 | `gausser train [--no-masks \| --exclude-masks] [--init auto\|dense\|sparse] [-- args]` | Brush (default) or `--trainer msplat` trains splats; Brush starts from `dense/` when it exists; args after `--` go to Brush | `runs/brush/<time>/exports/*.ply` |
 | `gausser mesh [--faces N] [--no-refine] [--texture-size N]` | OpenMVS meshes, refines and textures the dense cloud | `runs/mesh/<time>/mesh.glb` |
+| `gausser map [PLY] [--resolution M]` | Renders the splat straight down into an orthophoto and a surface model (DSM) in the scene's CRS, and a web map with the orthophoto over it | `runs/map/<time>/{ortho.tif,dsm.tif,map.html}` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
 | `gausser subset PATTERN… -o NEW_SCENE` | Copies the images (and masks) whose file names match the globs into a new scene, with the COLMAP model filtered to them | `NEW_SCENE/{images,masks,colmap/masks,sparse/0,database.db}` |
 | `gausser composite [--statue PLY] [--context PLY] [--radius N] [--column R [--floor F]] [--cells N] [--slack N] [--grow N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` or `--exclude-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
@@ -119,6 +120,37 @@ while it renders.
 `--background` takes `#rrggbb`, `jutaka` (the public-art viewer's sky gradient) or your own
 `linear-gradient(to bottom, rgb(r,g,b) P%, …)`. A gradient renders the orbit over black and over white, then ffmpeg
 recovers the splat's alpha and blends it over the gradient (h264, crf 16).
+
+## Drone mapping
+
+A straight-down (nadir) drone flight gives an orthophoto and a surface model:
+
+```bash
+mkdir field && cd field
+gausser frames ~/Desktop/DJI_0003.MP4 --overlap 80   # or put drone photos in images/
+gausser run --map                                    # solve (georeferenced) → train → map
+open runs/map/*/map.html
+```
+
+- **GPS.** Drone photos carry GPS in EXIF. For video, turn on *Video Subtitles* in DJI Fly: the drone then
+  writes `DJI_xxxx.SRT` next to each `.MP4`, one position per frame. `frames` reads it and writes each picked
+  frame's position into the frame's EXIF, so frames and photos look the same to the rest of the pipeline.
+- **`--overlap 80`** picks a frame whenever the ground has moved 20% of the frame's short side since the last
+  one, so consecutive frames share at least 80%, however long the flight. It replaces `--spacing` and the
+  frame-count limits.
+- **solve** matches each image with its GPS neighbours (`spatial` matching) and then fits a similarity from
+  the COLMAP cameras onto their GPS positions. The model is moved into EPSG:3067 (ETRS-TM35FIN) in Finland,
+  else the WGS 84 UTM zone, with gausser's axes kept: x east, y down, z north, in metres from the origin in
+  `sparse/geo.json`. Splats trained afterwards are in that frame too. The log and `gausser status` give the
+  cameras' RMS distance from their GPS; a consumer drone's GPS is good to a metre or two, and heights are
+  the drone's GPS altitude, not survey heights.
+- **map** renders the newest splat with an orthographic camera looking down: every Gaussian projects onto
+  the ground as a 2D Gaussian and is blended top first, on a grid of `--resolution` metres (3 cm by
+  default). The DSM is the height where each cell becomes half covered. Both are Cloud Optimized GeoTIFFs;
+  `map.html` lays the orthophoto over satellite imagery or OpenStreetMap with the camera positions.
+- **Flying.** Fly parallel lines with 70% side overlap, at a steady height and speed, camera at −90°, shutter
+  1/500 s or faster. Nadir-only flights let the model bend into a shallow bowl; a crosshatch or a −45° pass
+  holds it flat. Snow, water and shadows give COLMAP little texture to match.
 
 ## Subject plus context from one solve
 
@@ -194,6 +226,25 @@ same way: every photo is kept. Stand still for each shot, about 20 cm apart.
 ```bash
 gausser frames /Volumes/QooCam\ 8K/PHOTO/Kitchen
 ```
+
+## iPhone LiDAR scans
+
+The Camera app keeps no depth. Record with [Stray Scanner](https://apps.apple.com/app/stray-scanner/id1557051662)
+on an iPhone or iPad with LiDAR, then AirDrop the scan folder (`rgb.mp4`, `odometry.csv`, `depth/`,
+`confidence/`) to the Mac and give `frames` the folder:
+
+```bash
+gausser frames ~/Downloads/a9aca2e1bd       # frames from rgb.mp4, plus arkit/
+gausser solve                               # snapped to ARKit: metres, gravity +y
+gausser train                               # Brush starts from the LiDAR points
+```
+
+`frames` selects frames from `rgb.mp4` as for any video (1920×1440, lower than 4K video) and writes
+`arkit/`: each frame's ARKit pose, its LiDAR depth map (high-confidence pixels) and `points.ply`, the
+LiDAR points of all of them at one per 1 cm voxel. `solve` runs COLMAP as usual, starting from ARKit's
+focal length, then moves the model onto ARKit's frame and scales it by the LiDAR depths, and prints how
+well the two agree. `train --init auto` then starts Brush from the LiDAR points unless it gets masks
+(`--init lidar|sparse` chooses).
 
 ## Mixing captures
 

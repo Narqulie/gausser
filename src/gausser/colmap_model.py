@@ -1,0 +1,104 @@
+"""Readers for binary COLMAP models (cameras.bin, images.bin, points3D.bin)."""
+
+from __future__ import annotations
+
+import struct
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+# Parameters per camera model id; the models listed in SINGLE_FOCAL have one focal length (f, cx, cy, …).
+PARAM_COUNTS = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 8, 6: 12, 7: 5, 8: 4, 9: 5, 10: 12, 11: 16}
+SINGLE_FOCAL = {0, 2, 3, 8, 9}
+
+
+@dataclass
+class Camera:
+    model: int
+    width: int
+    height: int
+    params: tuple[float, ...]
+
+    @property
+    def intrinsics(self) -> tuple[float, float, float, float]:
+        """fx, fy, cx, cy."""
+        p = self.params
+        return (p[0], p[0], p[1], p[2]) if self.model in SINGLE_FOCAL else (p[0], p[1], p[2], p[3])
+
+
+@dataclass
+class Image:
+    name: str
+    camera_id: int
+    rotation: Any  # cam_from_world R (3×3)
+    translation: Any  # cam_from_world t
+    observations: Any  # (N, 3): x, y, point id (-1 = none); empty unless asked for
+
+    @property
+    def centre(self) -> Any:
+        return -self.rotation.T @ self.translation
+
+
+def quaternion_matrix(qw: float, qx: float, qy: float, qz: float) -> Any:
+    import numpy as np
+
+    return np.array([
+        [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+        [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+        [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+    ])
+
+
+def read_cameras(model: Path) -> dict[int, Camera]:
+    data = (model / "cameras.bin").read_bytes()
+    cameras = {}
+    (count,), at = struct.unpack_from("<Q", data), 8
+    for _ in range(count):
+        camera_id, kind, width, height = struct.unpack_from("<iiQQ", data, at)
+        params = struct.unpack_from(f"<{PARAM_COUNTS[kind]}d", data, at + 24)
+        at += 24 + 8 * PARAM_COUNTS[kind]
+        cameras[camera_id] = Camera(kind, width, height, params)
+    return cameras
+
+
+def read_images(model: Path, observations: bool = False) -> list[Image]:
+    import numpy as np
+
+    data = (model / "images.bin").read_bytes()
+    images = []
+    (count,), at = struct.unpack_from("<Q", data), 8
+    for _ in range(count):
+        _id, qw, qx, qy, qz, tx, ty, tz, camera_id = struct.unpack_from("<idddddddi", data, at)
+        end = data.index(b"\0", at + 64)
+        (points,) = struct.unpack_from("<Q", data, end + 1)
+        rows = np.empty((0, 3))
+        if observations and points:
+            rows = np.frombuffer(data, dtype="<f8", count=points * 3, offset=end + 9).reshape(-1, 3).copy()
+            rows[:, 2] = np.frombuffer(data, dtype="<i8", count=points * 3, offset=end + 9)[2::3]
+        name = data[at + 64:end].decode(errors="replace")
+        images.append(Image(name, camera_id, quaternion_matrix(qw, qx, qy, qz), np.array([tx, ty, tz]), rows))
+        at = end + 9 + points * 24
+    return images
+
+
+@dataclass
+class Points:
+    ids: Any  # (N,) uint64
+    xyz: Any  # (N, 3)
+    rgb: Any  # (N, 3) uint8
+    errors: Any  # (N,) reprojection error, px
+    tracks: Any  # (N,) number of images that see each point
+
+
+def read_points(model: Path) -> Points:
+    import numpy as np
+
+    data = (model / "points3D.bin").read_bytes()
+    (count,), at = struct.unpack_from("<Q", data), 8
+    ids, tracks = np.empty(count, dtype=np.uint64), np.empty(count, dtype=np.int64)
+    xyz, rgb, errors = np.empty((count, 3)), np.empty((count, 3), dtype=np.uint8), np.empty(count)
+    for i in range(count):
+        ids[i], *xyz[i], r, g, b, errors[i], tracks[i] = struct.unpack_from("<QdddBBBdQ", data, at)
+        rgb[i] = r, g, b
+        at += 51 + int(tracks[i]) * 8
+    return Points(ids, xyz, rgb, errors, tracks)

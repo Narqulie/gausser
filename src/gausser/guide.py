@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import geo
 from .scene import VIDEO_EXTENSIONS, GausserError, Scene, registered_images
 
 
@@ -47,6 +48,8 @@ def summary(scene: Scene) -> str:
         parts.append("not trained")
     if scene.lod_runs():
         parts.append("LOD ✓" if scene.lod_done() else "LOD out of date")
+    if scene.geo():
+        parts.append(("map ✓" if scene.map_done() else "map out of date") if scene.map_runs() else "georeferenced, no map")
     return " · ".join(parts)
 
 
@@ -61,13 +64,14 @@ def menu(scene: Scene, video: Path | None) -> list[tuple[str, str]]:
         "solve": "Solve cameras (COLMAP)" if images else None,
         "train": "Train splats" if scene.model() else None,
         "lod": "Build a streamed LOD set" if exports else None,
+        "map": "Make an orthophoto and DSM (GeoTIFF + web map)" if exports and scene.geo() else None,
         "view": "View the newest splat (SuperSplat)" if exports else None,
         "status": "Show full status and installed tools",
     }
     if not images:
         recommended = "run" if video else "frames"
     elif scene.solve_done(images) and scene.train_done():
-        recommended = "view"
+        recommended = "map" if available["map"] and not scene.map_done() else "view"
     else:
         recommended = "run"
     choices = [(f"{available[recommended]}  ← next", recommended)]
@@ -114,6 +118,11 @@ def guided(scene: Scene, video: Path | None) -> list[str]:
     if choice == "frames" or (choice == "run" and not images):
         source = str(video) if video else questionary.path("Video file:", validate=_video_file).unsafe_ask().strip()
         argv += [source] if choice == "frames" else ["--video", source]
+        if geo.track(Path(source).expanduser()) and questionary.confirm(
+            "It has a DJI GPS track (.SRT). Is it a straight-down mapping flight? (frames by 80% overlap, then a map)",
+            default=True,
+        ).unsafe_ask():
+            argv += ["--overlap", "80"] + (["--map"] if choice == "run" else [])
     if choice == "mask":
         argv.append(questionary.text('Subject to keep, e.g. "statue":', validate=lambda t: bool(t.strip()) or "Required").unsafe_ask())
     if choice == "run":

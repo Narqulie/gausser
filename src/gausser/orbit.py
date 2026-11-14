@@ -10,10 +10,10 @@ import json
 import os
 import re
 import shutil
-import struct
 from pathlib import Path
 from typing import Any
 
+from .colmap_model import read_images
 from .scene import GausserError, Scene, replace, require_tool, run_tool
 from .view import resolve_splat, serve
 
@@ -40,26 +40,15 @@ def read_cameras(images_bin: Path) -> tuple[Any, Any, Any, list[str]]:
     """Centres, viewing directions, right/down axes and names of the registered cameras in a binary images.bin."""
     import numpy as np
 
-    centres, directions, axes, names = [], [], [], []
-    with images_bin.open("rb") as f:
-        (count,) = struct.unpack("<Q", f.read(8))
-        for _ in range(count):
-            _id, qw, qx, qy, qz, tx, ty, tz, _camera = struct.unpack("<idddddddi", f.read(64))
-            name = b""
-            while (char := f.read(1)) not in (b"\0", b""):
-                name += char
-            names.append(name.decode())
-            (points,) = struct.unpack("<Q", f.read(8))
-            f.seek(points * 24, 1)
-            r = np.array([
-                [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
-                [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
-                [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
-            ])
-            centres.append(-r.T @ np.array([tx, ty, tz]))
-            directions.append(r.T @ np.array([0, 0, 1.0]))
-            axes.append(r[:2])  # camera right and image-down axes in world coordinates
-    return np.array(centres), np.array(directions), np.array(axes), names
+    images = read_images(images_bin.parent)
+    if not images:
+        return np.empty((0, 3)), np.empty((0, 3)), np.empty((0, 2, 3)), []
+    return (
+        np.array([image.centre for image in images]),
+        np.array([image.rotation[2] for image in images]),  # the camera's z (forward) axis in world coordinates
+        np.array([image.rotation[:2] for image in images]),  # camera right and image-down axes in world coordinates
+        [image.name for image in images],
+    )
 
 
 def camera_up(images_bin: Path) -> Any:

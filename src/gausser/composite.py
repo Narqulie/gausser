@@ -10,42 +10,17 @@ statue is appended.
 from __future__ import annotations
 
 import shutil
-import struct
 from pathlib import Path
 from typing import Any
 
+from .colmap_model import read_cameras, read_images
 from .scene import GausserError, Scene, replace
 
 
 def read_colmap(model: Path) -> tuple[tuple[float, float, float, float], list[tuple[str, Any, Any]]]:
     """(fx, fy, cx, cy) of the single camera and [(image name, R, t)] from a binary COLMAP model."""
-    import numpy as np
-
-    with (model / "cameras.bin").open("rb") as f:
-        f.read(8)
-        _id, camera, _w, _h = struct.unpack("<iiQQ", f.read(24))
-        count = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8}.get(camera)  # SIMPLE_PINHOLE, PINHOLE, SIMPLE_RADIAL, RADIAL, OPENCV
-        if count is None:
-            raise GausserError(f"Unsupported COLMAP camera model {camera}")
-        p = struct.unpack(f"<{count}d", f.read(8 * count))
-        intrinsics = (p[0], p[0], p[1], p[2]) if camera in (0, 2, 3) else (p[0], p[1], p[2], p[3])
-    images = []
-    with (model / "images.bin").open("rb") as f:
-        (n,) = struct.unpack("<Q", f.read(8))
-        for _ in range(n):
-            _i, qw, qx, qy, qz, tx, ty, tz, _c = struct.unpack("<idddddddi", f.read(64))
-            name = b""
-            while (ch := f.read(1)) not in (b"\0", b""):
-                name += ch
-            (points,) = struct.unpack("<Q", f.read(8))
-            f.seek(points * 24, 1)
-            r = np.array([
-                [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
-                [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
-                [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
-            ])
-            images.append((name.decode(), r, np.array([tx, ty, tz])))
-    return intrinsics, images
+    camera = next(iter(read_cameras(model).values()))
+    return camera.intrinsics, [(image.name, image.rotation, image.translation) for image in read_images(model)]
 
 
 def hull_keep(
@@ -66,7 +41,7 @@ def hull_keep(
         mask_path = scene.masks / f"{Path(name).stem}.png"
         if not mask_path.is_file():
             continue
-        small = Image.open(mask_path).convert("L").reduce(scale).point(lambda v: 255 if v > 127 else 0)
+        small = Image.open(mask_path).convert("L").reduce(scale).point([0] * 128 + [255] * 128)
         if not small.getextrema()[1]:
             continue
         mask = np.asarray(small.filter(ImageFilter.MaxFilter(2 * slack + 1))) > 127
@@ -226,8 +201,11 @@ def composite(
     if out:
         out = out.expanduser().resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(staged / "composite.ply", out)  # not replace(): -o may be on another filesystem than the scene
-        shutil.rmtree(staged)
+        try:
+            shutil.move(staged / "composite.ply", out)  # not replace(): -o may be on another filesystem than the scene
+        except OSError as exc:
+            raise GausserError(f"Cannot write {out}: {exc}; the composite is kept in {staged}") from exc
+        shutil.rmtree(staged, ignore_errors=True)
     else:
         run = scene.new_run("composite")
         replace(staged, run)

@@ -14,8 +14,14 @@ from PIL import Image
 
 import gausser.scene
 
-from gausser import cli, keyframes, monitor, msplat, pano, qoocam, steps
+from gausser import arkit, cli, keyframes, monitor, msplat, pano, qoocam, steps
 from gausser.scene import GausserError, Scene, registered_images, run_tool
+
+
+def record(calls: list, call: object, result: object) -> object:
+    """For fakes: note the call and return what the real function would."""
+    calls.append(call)
+    return result
 
 
 def make_scene(root: Path, images: int = 3) -> Scene:
@@ -37,7 +43,7 @@ def write_rig_model(model: Path, rig: dict | None, rig_from_world: list, centres
     np = pytest.importorskip("numpy")
     rotation_type = pytest.importorskip("scipy.spatial.transform").Rotation
     model.mkdir(parents=True)
-    records = []
+    records: list[bytes] = []
     for index, (rig_rotation, centre) in enumerate(zip(rig_from_world, centres, strict=True)):
         for view, (cam_from_rig, translation, _) in enumerate(pano.layout(rig)):
             r = cam_from_rig @ rig_rotation
@@ -517,7 +523,7 @@ def own_index(monkeypatch, tmp_path_factory):
 def fake_steps(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(steps, "solve", lambda scene, matcher, no_masks: calls.append("solve"))
-    monkeypatch.setattr(steps, "train_brush", lambda scene, **kwargs: calls.append("train") or scene.runs / "brush" / "x")
+    monkeypatch.setattr(steps, "train_brush", lambda scene, **kwargs: record(calls, "train", scene.runs / "brush" / "x"))
     return calls
 
 
@@ -594,7 +600,7 @@ def test_run_passes_no_masks_to_solve_and_train(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(steps, "solve", lambda scene, matcher, no_masks: seen.append(("solve", no_masks)))
     monkeypatch.setattr(
-        steps, "train_brush", lambda scene, **kwargs: seen.append(("train", kwargs["no_masks"])) or scene.runs / "brush" / "x",
+        steps, "train_brush", lambda scene, **kwargs: record(seen, ("train", kwargs["no_masks"]), scene.runs / "brush" / "x"),
     )
 
     assert cli.main(["run", "-s", str(tmp_path), "--no-masks"]) == 0
@@ -676,9 +682,9 @@ def test_gausser_video_opens_the_guide_on_a_scene_next_to_the_video(tmp_path, mo
 
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"")
-    seen = []
+    seen: list[tuple[Path, Path]] = []
     monkeypatch.setattr(cli, "interactive", lambda: True)
-    monkeypatch.setattr(guide, "guided", lambda scene, video: seen.append((scene.root, video)) or ["status", "-s", str(scene.root)])
+    monkeypatch.setattr(guide, "guided", lambda scene, video: record(seen, (scene.root, video), ["status", "-s", str(scene.root)]))
 
     assert cli.main([str(video)]) == 0
     assert seen == [((tmp_path / "clip").resolve(), video.resolve())]
@@ -1179,6 +1185,35 @@ def test_brush_starts_from_the_dense_cloud_when_there_is_one(tmp_path, tools):
     assert (run / "init-sparse").is_file() and seen["sparse"]
 
 
+@pytest.mark.parametrize("masked", [False, True])
+def test_brush_starts_from_the_lidar_points_unless_it_gets_masks(tmp_path, tools, masked):
+    np = pytest.importorskip("numpy")
+    scene = Scene(tmp_path)
+    scene.images.mkdir()
+    model = scene.sparse / "0"
+    model.mkdir(parents=True)
+    for name in ("cameras.bin", "images.bin", "points3D.bin"):
+        (model / name).write_bytes(b"")
+    scene.arkit.mkdir()
+    arkit.write_points(scene.arkit / "points.ply", np.array([[0.0, 1, 2], [3, 4, 5]]), np.array([[9, 8, 7], [6, 5, 4]]))
+    if masked:
+        scene.masks.mkdir()
+    seen = {}
+
+    def brush(command):
+        data = (Path(command[1]) / "sparse" / "0" / "points3D.bin").read_bytes()
+        seen["first"] = struct.unpack_from("<Q3d3B", data, 8) if data else 0  # sparse: the empty test model
+        export = Path(command[command.index("--export-path") + 1]) / "export_10.ply"
+        export.parent.mkdir(parents=True)
+        export.write_bytes(b"ply")
+
+    tools.on_run(brush)
+    run = steps.train_brush(scene, iterations=10)
+
+    assert (run / ("init-sparse" if masked else "init-lidar")).is_file()
+    assert seen["first"] == (0 if masked else (1, 0.0, 1.0, 2.0, 9, 8, 7))
+
+
 def test_mesh_reconstructs_refines_decimates_and_textures_into_a_run(tmp_path, tools):
     scene = dense_scene(tmp_path)
 
@@ -1204,8 +1239,29 @@ def test_run_mesh_builds_the_dense_cloud_before_training_and_meshes_last(tmp_pat
     scene = solved_and_trained(tmp_path)
     order = []
     monkeypatch.setattr(steps, "dense", lambda scene, level: order.append("dense"))
-    monkeypatch.setattr(steps, "train_brush", lambda scene, **kw: order.append(f"train-{kw['init']}") or scene.runs / "brush" / "y")
-    monkeypatch.setattr(steps, "mesh", lambda scene, **kw: order.append("mesh") or scene.runs / "mesh" / "z")
+    monkeypatch.setattr(steps, "train_brush", lambda scene, **kw: record(order, f"train-{kw['init']}", scene.runs / "brush" / "y"))
+    monkeypatch.setattr(steps, "mesh", lambda scene, **kw: record(order, "mesh", scene.runs / "mesh" / "z"))
 
     assert cli.main(["run", "-s", str(scene.root), "--mesh"]) == 0
     assert order == ["dense", "train-auto", "mesh"]
+
+
+def test_solve_with_gps_matches_spatially_maps_globally_and_georeferences(tmp_path, tools, monkeypatch):
+    scene = make_scene(tmp_path)
+    positions = {f"img{i}.jpg": (61.52 + i * 1e-4, 23.69 + (i % 2) * 2e-4, 350.0) for i in range(3)}
+    monkeypatch.setattr(steps.geo, "image_positions", lambda images: positions)
+    monkeypatch.setattr(steps.geo, "georeference", lambda images_bin, found: ("1 1 0 0 0 0 0 0\n", {"crs": "EPSG:3067"}, "ok"))
+
+    def fake_colmap(command):
+        if command[1] == "feature_extractor":
+            Path(command[command.index("--database_path") + 1]).write_bytes(b"db")
+        if command[1] == "global_mapper":
+            write_model(Path(command[command.index("--output_path") + 1]) / "0", 3)
+        if command[1] == "model_transformer":
+            copy_model(command)
+
+    tools.on_run(fake_colmap)
+    steps.solve(scene)
+
+    assert [command[1] for command in tools.commands] == ["feature_extractor", "spatial_matcher", "global_mapper", "model_transformer"]
+    assert scene.geo() == {"crs": "EPSG:3067"}

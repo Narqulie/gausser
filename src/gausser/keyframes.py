@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -189,10 +190,20 @@ def input_options(span: tuple[float, float] | None, video: Path) -> list[str]:
     return [*seek, "-i", str(video)]
 
 
+def overlap_level(info: VideoInfo, overlap: float) -> float:
+    """The threshold at which consecutive frames still share `overlap` (0-1) of the view, whichever way the camera moves.
+
+    For mapping: a nadir drone video moves the ground across the frame, so a frame whenever the ground
+    has moved (1 - overlap) of the short edge keeps at least that overlap.
+    """
+    return (1 - overlap) * min(info.width, info.height) / max(info.width, info.height)
+
+
 def analyse(
     ffmpeg: str, video: Path, info: VideoInfo, span: tuple[float, float] | None, every: int | None,
+    levels: tuple[float, ...] = LEVELS,
 ) -> list[list[Pick]]:
-    """The picks of each level of LEVELS (one level when `every` is set: the sharpest of each `every` frames)."""
+    """The picks of each threshold in `levels` (one level when `every` is set: the sharpest of each `every` frames)."""
     import cv2
     import numpy as np
 
@@ -205,7 +216,7 @@ def analyse(
         "-vf", f"scale={width}:{height},format=gray", "-fps_mode", "passthrough", "-f", "rawvideo", "-",
     ]
     print("$ " + " ".join(command), flush=True)
-    ladder = None if every else Ladder(*flow_size, LEVELS, max(MIN_GAP_FRAMES, round(MAX_GAP_SECONDS * info.fps)))
+    ladder = None if every else Ladder(*flow_size, levels, max(MIN_GAP_FRAMES, round(MAX_GAP_SECONDS * info.fps)))
     flow_engine = cv2.DISOpticalFlow.create(cv2.DISOPTICAL_FLOW_PRESET_ULTRAFAST)
     flow_engine.setPatchSize(8)
     flow_engine.setPatchStride(8)
@@ -214,8 +225,11 @@ def analyse(
     sharps: list[float] = []
     previous = None
     shown = time.monotonic()
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    stdout, stderr = cast(BinaryIO, process.stdout), cast(BinaryIO, process.stderr)
+    # stderr goes to a file: ffmpeg can log a line per frame (iPhone clips: "non monotonically increasing
+    # dts"), and an undrained pipe fills at 64 KB and blocks ffmpeg while we wait for the next frame.
+    log = tempfile.TemporaryFile()
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log)
+    stdout = cast(BinaryIO, process.stdout)
     size = width * height
     while len(data := stdout.read(size)) == size:
         grey = np.frombuffer(data, dtype=np.uint8).reshape(height, width)
@@ -230,8 +244,11 @@ def analyse(
             shown = time.monotonic()
             print(f"analysed {len(sharps)}/{max(info.frames, len(sharps))} frames", flush=True)
     stdout.close()
-    error = stderr.read().decode(errors="replace").strip()
-    if process.wait() != 0 or not sharps:
+    returncode = process.wait()
+    log.seek(0)
+    error = log.read().decode(errors="replace").strip()
+    log.close()
+    if returncode != 0 or not sharps:
         raise GausserError(f"ffmpeg could not decode {video.name}: {error[-500:] or 'no frames'}")
     print(f"analysed {len(sharps)}/{len(sharps)} frames", flush=True)
     return [windows(sharps, every)] if every else ladder.finish()  # type: ignore[union-attr]

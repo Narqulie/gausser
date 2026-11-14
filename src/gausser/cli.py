@@ -11,10 +11,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import keyframes, pano, steps
+from . import keyframes, mapping, pano, steps
 from .scene import GausserError, Scene, is_image, registered_images
 
-STEPS = ("frames", "mask", "solve", "dense", "train", "lod", "mesh")
+STEPS = ("frames", "mask", "solve", "dense", "train", "lod", "mesh", "map")
 COMMANDS = ("run", *STEPS, "subset", "composite", "align", "view", "orbit", "status", "monitor")
 QUICK_START = """\
 quick start:
@@ -54,8 +54,9 @@ def _add_no_masks_option(parser: argparse.ArgumentParser) -> None:
 def _add_solve_options(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("solve (COLMAP)")
     group.add_argument(
-        "--matcher", choices=("auto", "exhaustive", "sequential", "vocab_tree"), default="auto",
-        help="auto = exhaustive up to 200 images, else sequential with loop detection; "
+        "--matcher", choices=("auto", "exhaustive", "sequential", "spatial", "vocab_tree"), default="auto",
+        help="auto = spatial (GPS neighbours) when most images have GPS, else exhaustive up to 200 images, "
+        "else sequential with loop detection; "
         "vocab_tree suits large unordered photo sets",
     )
 
@@ -72,8 +73,9 @@ def _add_train_options(parser: argparse.ArgumentParser) -> None:
         help="Brush: hold out every Nth image and report PSNR/SSIM on it every 1000 steps",
     )
     group.add_argument(
-        "--init", choices=("auto", "dense", "sparse"), default="auto",
-        help="Brush: start from the dense cloud (dense/) or COLMAP's points; auto = dense when dense/ exists and Brush gets no masks",
+        "--init", choices=("auto", "dense", "lidar", "sparse"), default="auto",
+        help="Brush: start from the dense cloud (dense/), an iPhone scan's LiDAR points (arkit/) or COLMAP's points; "
+        "auto = dense, else lidar, when there is one and Brush gets no masks",
     )
     group.add_argument("--downscale", type=float, default=4.0, help="Msplat: load images at 1/N size (default 4)")
     group.add_argument("--checkpoint-every", type=int, default=1000, help="Msplat: checkpoint every N steps")
@@ -101,6 +103,11 @@ def _add_mesh_options(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--texture-size", type=int, default=8192, help="largest texture image side (default 8192)")
 
 
+def _add_map_options(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("map")
+    group.add_argument("--resolution", type=float, default=0.03, metavar="M", help="orthophoto and DSM cell size in metres (default 0.03)")
+
+
 def _add_frames_options(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("frames")
     group.add_argument(
@@ -110,6 +117,11 @@ def _add_frames_options(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--min-frames", type=int, default=keyframes.MIN_FRAMES, help="use closer spacing if fewer frames result (default %(default)s)")
     group.add_argument("--max-frames", type=int, default=keyframes.MAX_FRAMES, help="use wider spacing if more frames result (default %(default)s)")
     group.add_argument("--every", type=int, metavar="N", help="instead of by motion: the sharpest of every N video frames")
+    group.add_argument(
+        "--overlap", type=int, metavar="PERCENT",
+        help="mapping (straight-down drone video): a frame whenever the next one would share only PERCENT of the view, "
+        "e.g. 80; no frame count limits. A DJI video's .SRT subtitle file gives the frames GPS",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -140,10 +152,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--dense", action="store_true", help="also build a dense point cloud before training; Brush then starts from it")
     run.add_argument("--lod", action="store_true", help="also build a streamed LOD set")
     run.add_argument("--mesh", action="store_true", help="also build a textured mesh (implies --dense)")
+    run.add_argument("--map", action="store_true", help="also make an orthophoto and DSM (needs images with GPS)")
     run.add_argument("--from", dest="from_step", choices=STEPS, help="redo this step and every step after it")
     for add in (
         _add_frames_options, _add_mask_options, _add_solve_options, _add_dense_options, _add_train_options,
-        _add_lod_options, _add_mesh_options,
+        _add_lod_options, _add_mesh_options, _add_map_options,
     ):
         add(run)
     _add_no_masks_option(run)
@@ -153,7 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Select sharp frames into images/: one is picked wherever the camera has moved on, "
         "so a walk-around gives enough overlapping frames without tuning. A folder of photos is used whole.",
     )
-    frames.add_argument("source", type=Path, help="video file, or folder of videos or images")
+    frames.add_argument("source", type=Path, help="video file, folder of videos or images, or an iPhone LiDAR scan folder (Stray Scanner app)")
     frames.add_argument(
         "--range", dest="ranges", action="append", type=_time_range, metavar="START-END",
         help="keep only this part of the video, in seconds or m:ss (repeatable), e.g. --range 1.5-32.5 --range 0:57-1:20",
@@ -185,6 +198,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Reconstruct, refine and texture a mesh from dense/ into runs/mesh/<time>/mesh.glb.",
     )
     _add_mesh_options(mesh)
+
+    map_ = commands.add_parser(
+        "map", parents=[working], help="orthophoto and DSM GeoTIFFs from the trained splat",
+        description="Render the newest splat straight down into runs/map/<time>/: ortho.tif and dsm.tif in the scene's CRS "
+        "and map.html, the orthophoto over a web map. Needs a model georeferenced from GPS (drone photos, or DJI video "
+        "frames with a .SRT subtitle file).",
+    )
+    map_.add_argument("source", nargs="?", type=Path, help="splat .ply (default: the newest export)")
+    _add_map_options(map_)
 
     train = commands.add_parser(
         "train", parents=[working], help="train splats with Brush or Msplat",
@@ -325,7 +347,7 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
         raise GausserError("--from frames needs --video")
     if args.from_step == "mask" and not args.prompt:
         raise GausserError("--from mask needs --prompt")
-    if args.from_step in ("dense", "lod", "mesh"):
+    if args.from_step in ("dense", "lod", "mesh", "map"):
         setattr(args, args.from_step, True)
     if args.mesh:
         args.dense = True
@@ -372,6 +394,10 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
     if args.mesh and due("mesh", scene.mesh_done()):
         with scene.step("mesh") as made:
             made["run"] = str(_mesh(scene, args).relative_to(scene.root))
+        ran("mesh")
+    if args.map and due("map", scene.map_done()):
+        with scene.step("map") as made:
+            made["run"] = str(mapping.make(scene, resolution=args.resolution).relative_to(scene.root))
 
 
 def status(scene: Scene) -> None:
@@ -396,11 +422,17 @@ def status(scene: Scene) -> None:
     if model:
         solved = f"{registered_images(model)}/{len(images)} images registered"
         print(f"model   {solved}{'' if scene.solve_done(images) else stale}")
+        geo = scene.geo()
+        if geo:
+            print(f"        georeferenced: {geo['crs']}, cameras within {geo['rms_horizontal_m']} m of their GPS (RMS)")
     else:
         print("model   -")
     cloud = scene.dense_cloud()
     if cloud:
         print(f"dense   {steps.ply_count(cloud):,} points{'' if scene.dense_done() else stale}")
+    lidar = scene.lidar_cloud()
+    if lidar:
+        print(f"lidar   {steps.ply_count(lidar):,} points, ARKit poses (iPhone scan)")
     exports = scene.exports()
     for export in exports[-5:]:
         print(f"export  {export.relative_to(scene.root)}")
@@ -410,6 +442,8 @@ def status(scene: Scene) -> None:
         print(f"lod     {run.relative_to(scene.root)}")
     for run in scene.mesh_runs()[-3:]:
         print(f"mesh    {(run / 'mesh.glb').relative_to(scene.root)}")
+    for run in scene.map_runs()[-3:]:
+        print(f"map     {(run / 'map.html').relative_to(scene.root)}")
     if scene.tmp.is_dir():
         size = sum(path.stat().st_size for path in scene.tmp.rglob("*") if path.is_file() and not path.is_symlink())
         if size:
@@ -573,7 +607,14 @@ def _time_range(text: str) -> tuple[float, float]:
 def _frames(scene: Scene, source: Path, ranges: list[tuple[float, float]] | None, args: argparse.Namespace) -> None:
     if args.min_frames > args.max_frames or (args.every is not None and args.every < 1):
         raise GausserError("--min-frames must not exceed --max-frames, and --every must be at least 1")
-    steps.frames(scene, source, ranges, spacing=args.spacing, min_frames=args.min_frames, max_frames=args.max_frames, every=args.every)
+    if args.overlap is not None and not 30 <= args.overlap <= 95:
+        raise GausserError("--overlap is a percentage from 30 to 95")
+    if args.overlap is not None and args.every is not None:
+        raise GausserError("--overlap and --every cannot be combined")
+    steps.frames(
+        scene, source, ranges, spacing=args.spacing, min_frames=args.min_frames, max_frames=args.max_frames, every=args.every,
+        overlap=args.overlap / 100 if args.overlap is not None else None,
+    )
 
 
 def dispatch(scene: Scene, args: argparse.Namespace) -> None:
@@ -604,6 +645,9 @@ def dispatch(scene: Scene, args: argparse.Namespace) -> None:
     elif args.command == "mesh":
         with scene.step("mesh") as made:
             made["run"] = str(_mesh(scene, args).relative_to(scene.root))
+    elif args.command == "map":
+        with scene.step("map") as made:
+            made["run"] = str(mapping.make(scene, args.source, args.resolution).relative_to(scene.root))
     elif args.command == "lod":
         with scene.step("lod") as made:
             made["run"] = str(_lod(scene, args.source, args).relative_to(scene.root))

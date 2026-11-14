@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 import cv2
@@ -110,3 +111,21 @@ def test_an_hdr_video_is_converted_to_sdr_by_the_lut(tmp_path):
     paths = keyframes.extract("ffmpeg", video, info, None, [0, 3], out, fisheyes=False)
     white, mid = (np.asarray(Image.open(p).convert("L"))[32, 32] for p in paths)
     assert white > 240 and 130 < mid < 175
+
+
+def test_analysis_survives_ffmpeg_logging_more_than_a_pipe_holds(tmp_path):
+    # IMG_8783: ffmpeg logs a "non monotonically increasing dts" line per frame; with stderr on an
+    # undrained pipe it blocked after ~900 frames and the analysis waited forever.
+    fake = tmp_path / "ffmpeg"
+    fake.write_text(
+        "#!/usr/bin/env python3\nimport sys\n"
+        "sys.stderr.write('x' * 300_000); sys.stderr.flush()\n"
+        "sys.stdout.buffer.write(bytes(64 * 36) * 10)\n"
+    )
+    fake.chmod(0o755)
+    info = keyframes.VideoInfo(width=64, height=36, fps=30.0, frames=10, transfer="bt709")
+    result: list = []
+    worker = threading.Thread(target=lambda: result.append(keyframes.analyse(str(fake), tmp_path / "v.mov", info, None, 5)), daemon=True)
+    worker.start()
+    worker.join(30)
+    assert result and [pick.frame for pick in result[0][0]] == [0, 5]

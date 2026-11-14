@@ -81,10 +81,10 @@ class Matcher:
     """Residuals of REFERENCE points against a moving cloud under x' = s·R·x + t, in reference units."""
 
     def __init__(self, moving: Any, reference: Any, cap: float, with_scale: bool, reach: float = math.inf) -> None:
-        from scipy.spatial import cKDTree
+        from scipy.spatial import KDTree
 
         self.moving, self.reference, self.cap, self.with_scale, self.reach = moving, reference, cap, with_scale, reach
-        self.tree = cKDTree(moving, leafsize=64, balanced_tree=False, compact_nodes=False)  # builds fast, queries ~4x faster here
+        self.tree = KDTree(moving, leafsize=64, balanced_tree=False, compact_nodes=False)  # builds fast, queries ~4x faster here
 
     def residuals(self, s: float, r: Any, t: Any) -> tuple[Any, Any]:
         # (q - t) @ R = Rᵀ(q - t). Far-away queries are slow, so ``reach`` caps the search; misses are inf.

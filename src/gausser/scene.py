@@ -80,6 +80,20 @@ class _Tee:
 _log: BinaryIO | None = None  # the running step's log; run_tool copies tool output into it
 
 
+GEO_FILE = "geo.json"  # in sparse/: the CRS and origin of a georeferenced model (geo.py)
+
+
+def read_json(path: Path) -> dict[str, Any] | None:
+    """A JSON object, or None if the file does not exist."""
+    if not path.is_file():
+        return None
+    try:
+        record: dict[str, Any] = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise GausserError(f"Cannot read {path}: {exc}") from exc
+    return record
+
+
 class Scene:
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root).expanduser().resolve()
@@ -93,6 +107,7 @@ class Scene:
         self.database = self.root / "database.db"
         self.sparse = self.root / "sparse"
         self.dense = self.root / "dense"  # OpenMVS: undistorted images/, scene_dense.mvs and .ply
+        self.arkit = self.root / "arkit"  # iPhone LiDAR scans: poses.json and points.ply (arkit.py)
         self.runs = self.root / "runs"
         self.tmp = self.root / ".gausser" / "tmp"
         # Read only by `gausser monitor`; no step depends on them.
@@ -157,6 +172,17 @@ class Scene:
         """The dense point cloud from `gausser dense`, if there is one."""
         cloud = self.dense / "scene_dense.ply"
         return cloud if cloud.is_file() and (self.dense / "scene_dense.mvs").is_file() else None
+
+    def arkit_poses(self) -> dict[str, Any] | None:
+        return read_json(self.arkit / "poses.json")
+
+    def geo(self) -> dict[str, Any] | None:
+        """The CRS and origin of a georeferenced model (sparse/geo.json, written by `solve` from GPS)."""
+        return read_json(self.sparse / GEO_FILE)
+
+    def lidar_cloud(self) -> Path | None:
+        cloud = self.arkit / "points.ply"
+        return cloud if cloud.is_file() else None
 
     @contextmanager
     def lock(self, argv: list[str] | None = None) -> Iterator[None]:
@@ -236,6 +262,13 @@ class Scene:
 
     def mesh_runs(self) -> list[Path]:
         return sorted((path.parent for path in self.runs.glob("mesh/*/mesh.glb")), key=lambda run: mtime(run / "mesh.glb"))
+
+    def map_runs(self) -> list[Path]:
+        return sorted(path.parent for path in self.runs.glob("map/*/map.html"))
+
+    def map_done(self) -> bool:
+        exports, maps = self.exports(), self.map_runs()
+        return bool(exports and maps) and mtime(maps[-1] / "ortho.tif") > mtime(exports[-1])
 
     def lod_done(self) -> bool:
         exports, lods = self.exports(), self.lod_runs()

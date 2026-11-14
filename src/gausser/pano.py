@@ -28,7 +28,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from .scene import GausserError
+from .scene import GausserError, read_json
 
 YAW_STEPS = 4
 PITCHES = (-35.0, 0.0, 35.0)
@@ -48,14 +48,7 @@ def is_pano(path: Path) -> bool:
 
 
 def lenses(panos: Path) -> dict[str, Any] | None:
-    path = panos / LENSES
-    if not path.is_file():
-        return None
-    try:
-        rig: dict[str, Any] = json.loads(path.read_text())
-    except (OSError, ValueError) as exc:
-        raise GausserError(f"Cannot read {path}: {exc}") from exc
-    return rig
+    return read_json(panos / LENSES)
 
 
 def view_name(view: int, pano: Path) -> str:

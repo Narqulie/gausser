@@ -20,7 +20,7 @@ step "Python environment ($ROOT/.venv)"
 if [ ! -x "$ROOT/.venv/bin/python" ]; then
   "$(brew --prefix python@3.13)/bin/python3.13" -m venv "$ROOT/.venv"
 fi
-"$ROOT/.venv/bin/pip" install -e "$ROOT[sam,msplat,dev]" \
+"$ROOT/.venv/bin/pip" install -e "${ROOT}[sam,msplat,map,dev]" \
   "git+https://github.com/facebookresearch/sam3.git@$SAM3_REV"
 
 step "SAM3 macOS patch"
