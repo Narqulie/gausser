@@ -1,0 +1,60 @@
+<!-- title: gausser: photos or video in, Gaussian splats out -->
+<p class="lead">gausser is one command-line tool that turns photos or video into Gaussian splats. It wraps
+ffmpeg, SAM3, COLMAP, OpenMVS, Brush, Msplat and splat-transform behind a few steps, keeps all its state as
+plain files in the scene folder, and shows every run in a read-only web monitor.</p>
+
+<!-- gen:pipeline-chart -->
+<p class="small">Solid boxes always run in <code>gausser run</code>; dashed boxes are optional
+(<code>--prompt</code>, <code>--dense</code>, <code>--lod</code>, <code>--map</code>, <code>--mesh</code>).
+Colours are the monitor's step colours.</p>
+
+<h2>Start here</h2>
+<pre><span class="c"># guided: reads the scene, recommends the next step, prints the command it runs</span>
+gausser clip.mp4                 <span class="c"># makes clip/ next to the video</span>
+gausser ~/photos/statue          <span class="c"># a folder of photos</span>
+
+<span class="c"># direct: for scripts and overnight runs</span>
+mkdir -p statue/images &amp;&amp; cp ~/photos/statue/*.jpg statue/images/ &amp;&amp; cd statue
+gausser run --prompt statue --monitor   <span class="c"># mask → solve → train, watched in the browser</span>
+gausser view                            <span class="c"># the result in SuperSplat</span></pre>
+
+<p><code>gausser</code> alone (or <code>gausser FOLDER</code>, <code>gausser VIDEO</code>) opens the guided menu
+in a terminal. It never does anything the CLI cannot: it prints <code>→ gausser …</code> and runs exactly that.
+<code>gausser run</code> is the unattended way: it skips every step that is already up to date, so rerun it after a
+failure or after adding photos, and use <code>--from STEP</code> to redo a step and everything after it.
+<code>gausser status</code> shows what the scene has, what is out of date and which tools are installed.</p>
+
+<h2>What to use when</h2>
+<!-- gen:decision-chart -->
+<table>
+<tr><th>you want</th><th>use</th><th>why</th></tr>
+<tr><td>a splat of an object you walked around</td><td><code>gausser run --video clip.mp4 --prompt "statue"</code></td><td>frames picks sharp frames by camera motion; the masks keep training on the subject</td></tr>
+<tr><td>a whole room or street</td><td><code>gausser run --video clip.mp4 --dense</code></td><td>no masks; Brush starts from the dense cloud, which removed large floaters in tests (PSNR 27.8 → 28.7 dB)</td></tr>
+<tr><td>a textured mesh</td><td><code>gausser run --mesh</code></td><td>OpenMVS meshes the dense cloud; better PSNR than meshes extracted from splats</td></tr>
+<tr><td>an orthophoto and height model</td><td><code>gausser run --map</code></td><td>drone GPS georeferences the model; the splat is rendered straight down</td></tr>
+<tr><td>a web-ready streamed splat</td><td><code>gausser lod</code></td><td>splat-transform chunks and decimates for PlayCanvas streaming</td></tr>
+<tr><td>a shareable video</td><td><code>gausser orbit</code></td><td>SuperSplat's own renderer circles the subject the cameras looked at</td></tr>
+<tr><td>to replace a published splat</td><td><code>gausser align</code></td><td>camera presets stay valid in the published coordinates</td></tr>
+<tr><td>to keep people out</td><td><code>gausser mask person --exclude</code> + <code>train --exclude-masks</code></td><td>transient pixels are ignored, the subject masks stay</td></tr>
+</table>
+
+<h2>The site</h2>
+<div class="cards">
+<a class="card" href="pipeline.html"><b>Pipeline steps</b><span>frames, mask, solve, dense, train, lod, mesh, map: what each does, its options and when to use them</span></a>
+<a class="card" href="captures.html"><b>Capture types</b><span>phone video, photos, 360° equirect, QooCam 8K, iPhone LiDAR, DJI drone, and how to shoot them</span></a>
+<a class="card" href="state.html"><b>Scene and state</b><span>the folder layout, what is up to date, what a change deletes, the lock and the logs</span></a>
+<a class="card" href="tools.html"><b>View, orbit, align, crop</b><span>looking at results, videos, moving splats into a published frame, cropping</span></a>
+<a class="card" href="monitor.html"><b>Monitor</b><span>the web page: steps, logs, stats, images, cameras, splats, meshes, evals</span></a>
+<a class="card" href="commands.html"><b>Command reference</b><span>every command and option, generated from the CLI</span></a>
+<a class="card" href="architecture.html"><b>Architecture</b><span>modules, import graph, external tools, install, development checks</span></a>
+<a class="card" href="troubleshooting.html"><b>Troubleshooting</b><span>the things that cost time to learn</span></a>
+</div>
+
+<h2>Principles</h2>
+<ul>
+<li><b>Files are the state.</b> No manifest or database of its own: a step stages in <code>.gausser/tmp/</code> and moves its output into place only after it succeeded.</li>
+<li><b>Changing an input deletes what was built from it</b>, so nothing stale is reused (<a href="state.html">Scene and state</a>).</li>
+<li><b>One command at a time per scene.</b> A second one fails at once instead of overwriting the first one's work.</li>
+<li><b>Tools are run as they are.</b> Their output goes straight to the terminal and the step log; the monitor parses the logs.</li>
+<li><b>Small on purpose.</b> General tools only; use-case specific workflows stay out of the code.</li>
+</ul>

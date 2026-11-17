@@ -206,7 +206,25 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLT
 .venv/bin/ruff check src tests
 .venv/bin/mypy src
 (cd web && npm run build)   # type-checks and builds the monitor page into src/gausser/web/
+.venv/bin/python scripts/build_docs.py   # the documentation site, docs/*.html
 ```
+
+## Documentation (mandatory)
+
+The documentation site is `docs/index.html` and its pages. Keep it current in the same change as the code:
+
+- Edit the page sources in `docs/src/*.html`, never the built `docs/*.html`; then run
+  `.venv/bin/python scripts/build_docs.py` and commit sources and output together.
+- Any change to a command, option, default, step, module, scene path, external tool, invalidation rule or
+  user-visible behaviour updates the page that explains it (pipeline, captures, state, tools, monitor,
+  troubleshooting) in that change. A new hard-won constraint also gets a troubleshooting row.
+- The command reference, module table, import graph, tool table and scene layout are generated from the code.
+  The build fails when a command is not explained on a hand-written page, a step is missing from the pipeline
+  chart, a module is not placed in the layers on `architecture.html` or has no docstring, a `Scene` path has no
+  description in `scripts/build_docs.py`, or a link or image is broken. Fix the docs; never weaken the checks.
+- The invalidation table (`INVALIDATION_ROWS` in `scripts/build_docs.py`) mirrors the `remove()` calls in `steps.py`
+  and `Scene.*_done`; change it with them.
+- Screenshots in `docs/img/` are real captures of the monitor; retake one when the page it shows changes.
 
 `cd web && npm run dev` serves the page with hot reload; point its `/api` proxy (vite.config.ts) at the running monitor.
 

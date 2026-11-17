@@ -1,6 +1,10 @@
 # gausser
 
-Photos or video in, Gaussian splats out. One command wraps the steps:
+Photos or video in, Gaussian splats out.
+
+**Full documentation:** [`docs/index.html`](docs/index.html): pipeline, capture types, scene state, monitor, command reference, architecture, troubleshooting.
+
+One command wraps the steps:
 
 ```
 frames → mask → solve → [dense] → train → lod   [mesh] [map]

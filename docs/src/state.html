@@ -1,0 +1,52 @@
+<!-- title: Scene and state -->
+<p class="lead">A scene is a folder. The files in it are the only state: there is no manifest and no database of
+gausser's own. Knowing which file means what explains every decision <code>gausser run</code> makes.</p>
+
+<h2 id="layout">Folder layout</h2>
+<!-- gen:scene-tree -->
+<p class="small">Generated from the <code>Scene</code> class (<code>scene.py</code>). Relative to the scene folder.</p>
+
+<h2 id="atomic">How a step writes</h2>
+<ol>
+<li>The step takes the scene lock (<code>.gausser/lock</code>, an flock). A second command fails at once: <i>Another gausser command is already working on …</i></li>
+<li>It works in <code>.gausser/tmp/&lt;step&gt;-&lt;time&gt;/</code>.</li>
+<li>On success it <code>replace()</code>s the staged folder into place (remove the old, rename the new) and deletes what was built from the old output.</li>
+<li>On failure the staging folder stays for inspection; the previous output is untouched. <code>gausser status</code> shows how much <code>.gausser/tmp/</code> holds; delete it when nothing runs.</li>
+</ol>
+<p><code>status</code>, <code>view</code>, <code>orbit</code>, <code>monitor</code> and <code>align</code> take no lock: they only read, or only add
+a new run folder. The lock file names its holder (pid, command line, start time), which the monitor reads.</p>
+
+<h2 id="invalidation">What a change deletes</h2>
+<!-- gen:invalidation -->
+<p><span style="color:var(--red)">✕</span> deleted · <span style="color:var(--frames)">○</span> out of date (rebuilt by the next <code>run</code>) · <span style="color:var(--lod)">new</span> written.
+¹ not when the model was solved with <code>--no-masks</code> (<code>sparse/no-masks</code>). ² only in a 360° scene, where the operator mask also masks COLMAP's features.
+A new solve also drops the crop box, which lives in <code>sparse/</code>. <code>runs/</code> is never deleted.</p>
+<div class="why">Why delete instead of mark: a stale COLMAP model or dense cloud that silently survives a frame change
+gives a wrong splat that looks plausible. Deleting makes the next <code>run</code> rebuild it.</div>
+
+<h2 id="up-to-date">When a step is up to date</h2>
+<table>
+<tr><th>step</th><th>up to date when</th><th>checked by</th></tr>
+<tr><td class="step-frames">frames</td><td><code>images/</code> holds images (<code>run --video</code> only)</td><td><code>Scene.image_files</code></td></tr>
+<tr><td class="step-mask">mask</td><td>every image has <code>masks/&lt;stem&gt;.png</code></td><td><code>Scene.masks_done</code></td></tr>
+<tr><td class="step-solve">solve</td><td><code>sparse/0</code> exists and <code>database.db</code> lists exactly the current images</td><td><code>Scene.solve_done</code></td></tr>
+<tr><td>dense</td><td><code>dense/scene_dense.ply</code> is newer than the model</td><td><code>Scene.dense_done</code></td></tr>
+<tr><td class="step-train">train</td><td>the newest export is newer than the model and the crop</td><td><code>Scene.train_done</code></td></tr>
+<tr><td class="step-lod">lod</td><td>a LOD set is newer than the newest export</td><td><code>Scene.lod_done</code></td></tr>
+<tr><td>mesh</td><td>the newest mesh is newer than the dense cloud and the crop</td><td><code>Scene.mesh_done</code></td></tr>
+<tr><td>map</td><td>the newest orthophoto is newer than the newest export</td><td><code>Scene.map_done</code></td></tr>
+</table>
+<p>Folder modification times are never used: Finder's <code>.DS_Store</code> writes change them.</p>
+
+<h2 id="history">History, logs and the scene index</h2>
+<p>Every locked step runs inside <code>Scene.step()</code>. It appends a start and an end record (ok, error or
+interrupted, and the run folder it made) to <code>.gausser/history.jsonl</code>, and copies everything printed, tool
+output included, into <code>.gausser/logs/&lt;time&gt;-&lt;step&gt;.log</code>. On a terminal, tools run in a
+pseudo-terminal so their progress bars still draw. Nothing in the pipeline reads these files; the
+<a href="monitor.html">monitor</a> does.</p>
+<p>Each record also goes to the index of all scenes, <code>~/.local/share/gausser/history.jsonl</code>
+(<code>GAUSSER_HOME</code> moves it), which is how one monitor serves every scene.</p>
+
+<h2 id="awake">Keeping the Mac awake</h2>
+<p>Locked commands start <code>caffeinate -i -s -w PID</code>, so a sleeping Mac does not pause training. Closing a
+laptop's lid still sleeps it unless an external display is attached.</p>

@@ -1,0 +1,55 @@
+<!-- title: View, orbit, align, crop -->
+<p class="lead">The commands around the pipeline: look at a result, render a video, move a splat into a published
+coordinate frame, keep work to a box, and check what a scene has.</p>
+
+<h2 id="status">gausser status</h2>
+<pre>gausser status</pre>
+<p>What the scene has (images, 360° frames, masks, model with its registered count and georeference, dense and LiDAR
+points, the newest exports, LOD, mesh and map runs), what is out of date, how much <code>.gausser/tmp/</code> holds, and
+whether every external tool is installed, SAM3 included (patched or not). Run it first when something looks wrong.</p>
+
+<h2 id="view">gausser view [PLY]</h2>
+<p>Serves a local SuperSplat build plus one splat (the newest export by default) on 127.0.0.1 and opens it. Use it to
+inspect, clean or crop a splat by hand. SuperSplat comes from <code>~/Developer/supersplat/dist</code>
+(<code>GAUSSER_SUPERSPLAT</code> overrides); <code>scripts/install-macos.sh</code> builds it.</p>
+
+<h2 id="orbit">gausser orbit [PLY]</h2>
+<pre>gausser orbit --seconds 12 --background jutaka
+gausser orbit --target 0.1 -0.4 2.0 --radius 3 --height 1 -o statue.mp4</pre>
+<p>Renders a 360° orbit video with SuperSplat's own video renderer, in a visible Chromium window driven by Playwright
+(<code>orbit.mjs</code>); leave the window alone while it renders. The path comes from the COLMAP model: the camera
+circles the point nearest all viewing axes, at the median camera distance × <code>--zoom</code>, aimed
+<code>--drop</code> below it, with "up" normal to the cameras' level right axes (Brush's own up guess can be far off on
+drone sets). <code>--background</code> takes <code>#rrggbb</code>, <code>jutaka</code> or a CSS
+<code>linear-gradient(…)</code>; a gradient renders twice (over black and white) and ffmpeg recovers alpha to blend it.
+Output: <code>runs/orbit/&lt;time&gt;/orbit.mp4</code>.</p>
+
+<h2 id="align">gausser align MOVING --to REFERENCE… -o OUT</h2>
+<pre>gausser align runs/brush/&lt;time&gt;/exports/export_30000.ply \
+    --to public/splats/artwork-lod/0_0/meta.json public/splats/artwork-lod/0_1/meta.json -o artwork-aligned.ply</pre>
+<p>Use it when a re-trained splat replaces a published one: camera presets and placed geometry are in the published
+splat's coordinates, but a new solve lands at an arbitrary position, rotation and scale. align fits a similarity to the
+opaque splat centres (many starting rotations and scales, trimmed ICP from each, then refinement), lets
+splat-transform apply it (quaternions and spherical harmonics rotate along), reads the output back and checks it
+against the plan. <code>--to</code> takes anything splat-transform reads (.ply, .sog, LOD <code>meta.json</code>); the
+reference may be a cropped part of the new splat. Check the printed trimmed RMS (far below the splat size) and inliers
+(~100%). <code>--no-scale</code> fits rotation and translation only. Needs no scene.</p>
+
+<h2 id="crop">gausser crop</h2>
+<pre>gausser crop --box=-1.2,-0.3,-1.1,1.4,2.1,1.0 --up=0.02,-0.99,0.11
+gausser crop            <span class="c"># show it</span>
+gausser crop --clear</pre>
+<p>Keeps <code>train</code> and <code>mesh</code> to a box around the subject (<code>sparse/crop.json</code>). Brush
+starts only from points inside it, the exports keep only splats whose centres are inside (Brush still trains on whole
+images), and <code>mesh</code> cuts the surface before refining. The box is axis-aligned in the model's level frame
+(cameras' up turned onto +y). Draw it in the monitor's 3D tab and paste the command it shows; the monitor never writes.
+Write negative numbers with <code>=</code>. A new crop makes train and mesh out of date; a new solve removes it.</p>
+<figure><div class="pair"><img src="reports/2026-11-14-crop-adaptive/crop-editor.jpg" alt="Monitor crop editor">
+<img src="reports/2026-11-14-crop-adaptive/crop-stored.jpg" alt="Stored crop box over the splat"></div>
+<figcaption>Left: drawing the box in the monitor, with the command to copy. Right: the stored box over the splat.</figcaption></figure>
+
+<h2 id="guide">gausser (guided menu)</h2>
+<p><code>gausser</code>, <code>gausser FOLDER</code> or <code>gausser VIDEO</code> opens a menu that summarises the
+scene, recommends the next step and asks only what that step needs. A video gets a scene folder next to it (removed
+again if you cancel before anything is written). The menu returns a command line, prints it and runs it like typed
+input. Without a terminal it refuses (exit 2).</p>

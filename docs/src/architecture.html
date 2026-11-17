@@ -1,0 +1,57 @@
+<!-- title: Architecture -->
+<p class="lead">One Python package, <code>src/gausser/</code>, with one entry point (<code>gausser = gausser.cli:main</code>),
+a React page for the monitor in <code>web/</code>, and external tools found on PATH. The tables and the graph on this
+page are generated from the source.</p>
+
+<h2 id="layers">How the code is layered</h2>
+<ul>
+<li><code>cli.py</code> parses arguments and is the only place that maps a command to step functions (<code>run_step</code>). <code>guide.py</code> builds a command line for it and adds no behaviour.</li>
+<li><code>steps.py</code> holds the pipeline steps; capture-specific work lives in <code>keyframes.py</code>, <code>pano.py</code>, <code>qoocam.py</code>, <code>arkit.py</code>, <code>geo.py</code>; training with Msplat in <code>msplat.py</code>, SAM3 in <code>sam.py</code> (the only module that imports torch).</li>
+<li><code>scene.py</code> is the bottom layer: folder layout, the lock, step history and logs, <code>run_tool</code>/<code>require_tool</code>, atomic <code>replace</code>. <code>colmap_model.py</code> and <code>ply.py</code> are the only readers and writers of COLMAP models and PLY files.</li>
+<li>Commands around the pipeline each have one module: <code>view.py</code> (SuperSplat server, shared with orbit), <code>orbit.py</code>, <code>align.py</code>, <code>crop.py</code>, <code>mapping.py</code> (map).</li>
+<li><code>monitor.py</code> only reads; it never takes the lock.</li>
+<li>Heavy imports (numpy, PIL, cv2, torch) happen inside functions, so every command starts fast.</li>
+</ul>
+
+<h2 id="graph">Import graph</h2>
+<!-- gen:module-graph -->
+<p class="small">A module sits above every module it imports. Edges out of <code>cli</code> and into <code>scene</code> are left out: <code>cli</code> imports nearly every module, and nearly every module imports <code>scene</code>. Highlighted: entry (<span class="step-train">cli, guide</span>),
+steps (<span class="step-frames">steps</span>), base (<span class="step-solve">scene</span>), viewer (<span class="step-lod">monitor</span>).</p>
+
+<h2 id="modules">Modules</h2>
+<!-- gen:modules -->
+
+<h2 id="tools">External tools</h2>
+<!-- gen:tools -->
+<p>Also used: SAM3 (Python, pinned commit <code>f6e51f5</code>, patched for macOS by <code>patches/sam3-macos.patch</code>),
+Msplat (<code>msplat==1.1.4</code>), SuperSplat (for view and orbit), Playwright with its Chromium (orbit), rasterio (map).
+Brush is pinned in <code>scripts/install-macos.sh</code> (1.0.0 @1388f74c), OpenMVS in <code>scripts/install-openmvs.sh</code>.</p>
+
+<h2 id="monitor-web">The monitor page</h2>
+<p><code>web/</code> is Vite + React with three.js/React Three Fiber, Spark for splats, GLTFLoader for meshes and
+recharts. <code>cd web &amp;&amp; npm run build</code> type-checks it and writes <code>src/gausser/web/</code> (gitignored),
+which <code>monitor.py</code> serves next to its JSON API. All log parsing lives in <code>web/src/parse.ts</code>; the
+CLI passes tool output through unparsed.</p>
+
+<h2 id="install">Install</h2>
+<pre>scripts/install-macos.sh     <span class="c"># safe to rerun; ends with gausser status</span></pre>
+<p>Installs COLMAP, ffmpeg ≥ 7, Python 3.13, Node and Rust (Homebrew); splat-transform (npm); a <code>.venv</code> with
+gausser, patched SAM3 and Msplat; Brush (cargo, pinned); OpenMVS (<code>scripts/install-openmvs.sh</code>, about an
+hour the first time); SuperSplat and Playwright; the monitor page; and <code>~/.local/bin/gausser</code>. Python 3.12+
+is required because Msplat ships only cp312/cp313 wheels.</p>
+
+<h2 id="dev">Development</h2>
+<pre>.venv/bin/python -m pytest -q
+.venv/bin/ruff check src tests
+.venv/bin/mypy src
+(cd web &amp;&amp; npm run build)
+.venv/bin/python scripts/build_docs.py    <span class="c"># this site</span></pre>
+<p>Tests stub external tools through <code>require_tool</code>/<code>run_tool</code>, so they never need COLMAP, Brush
+or SAM3. There is no CI. <code>AGENTS.md</code> holds the rules and hard-won constraints for anyone changing the code.</p>
+
+<h2 id="docs">This documentation</h2>
+<p>Pages are written in <code>docs/src/*.html</code>; <code>scripts/build_docs.py</code> wraps them in the layout,
+inserts the generated sections (command reference, module table, import graph, tool table, scene layout, charts) and
+writes <code>docs/*.html</code>. The build fails when a command is not explained on a hand-written page, a step is
+missing from the pipeline chart, a module is not placed in the layers or lacks a docstring, a <code>Scene</code> path has no description, or a link or
+image is broken. Rebuild it with every change that touches commands, options, modules, steps or behaviour.</p>

@@ -1,0 +1,131 @@
+<!-- title: Pipeline steps -->
+<p class="lead">Each step reads the scene folder, stages its work in <code>.gausser/tmp/</code>, and replaces its
+output only after it succeeded. Run them one by one (<code>gausser STEP</code>) or let <code>gausser run</code>
+run every step that is missing or out of date.</p>
+<nav class="toc"><a href="#run">run</a><a href="#frames">frames</a><a href="#mask">mask</a><a href="#solve">solve</a>
+<a href="#dense">dense</a><a href="#train">train</a><a href="#lod">lod</a><a href="#mesh">mesh</a><a href="#map">map</a></nav>
+
+<!-- gen:pipeline-chart -->
+
+<h2 id="run">gausser run</h2>
+<p>Runs <span class="step-frames">frames</span> (with <code>--video</code>), <span class="step-mask">mask</span>
+(with <code>--prompt</code>), <span class="step-solve">solve</span>, dense (with <code>--dense</code>),
+<span class="step-train">train</span>, <span class="step-lod">lod</span> (<code>--lod</code>), mesh (<code>--mesh</code>,
+implies <code>--dense</code>) and map (<code>--map</code>), in that order. Every step's options are accepted.</p>
+<ul>
+<li>A step is skipped when its output is up to date (rules on <a href="state.html#up-to-date">Scene and state</a>). Once one step runs, every later step runs too.</li>
+<li><code>--from STEP</code> redoes that step and everything after it, e.g. <code>gausser run --from solve --matcher sequential</code>.</li>
+<li><code>--import</code> first moves photos lying in the scene folder into <code>images/</code>.</li>
+<li>If COLMAP places fewer than half the images, <code>solve</code> raises and <code>run</code> stops before a wasted training run.</li>
+<li>Without <code>--prompt</code>, no new masks are made but existing masks are still used; <code>--no-masks</code> ignores them.</li>
+</ul>
+<div class="why">Why one unattended command: an overnight run can fail at any step. Rerunning <code>gausser run</code> continues
+where it stopped, because finished outputs are files that are up to date.</div>
+
+<h2 id="frames"><span class="step-frames">gausser frames SOURCE</span></h2>
+<p>Picks the frames to train on. <code>SOURCE</code> is a video, a folder of videos, a folder of photos (copied whole),
+a QooCam 8K <code>.MOV</code> or photo folder, or an iPhone LiDAR scan folder. Output: <code>images/</code> plus
+<code>frames.json</code> (every pick with its time, motion and sharpness score).</p>
+<h3>How it chooses</h3>
+<ol>
+<li><b>Analysis pass.</b> ffmpeg decodes the video once to grey 1280 px frames. Each frame gets a focus score
+(variance of the Laplacian) and OpenCV DIS optical flow tracks a point grid.</li>
+<li><b>Motion ladder.</b> Ten displacement thresholds are tracked at once. Each threshold cuts the video into
+windows where the camera has moved that far; the sharpest frame of each window is the pick.</li>
+<li><b>Level.</b> <code>--spacing low|medium|high</code> picks a starting level; the level moves finer or coarser
+until the count lies between <code>--min-frames</code> (150) and <code>--max-frames</code> (600). Still stretches still
+give a frame every 3 s.</li>
+<li><b>Extraction pass.</b> ffmpeg writes only the picked frames at full size, with the same input options so frame
+numbers match (a test checks this against pixel content).</li>
+</ol>
+<p>Options: <code>--range 1.5-32.5</code> (repeatable, seconds or m:ss) keeps parts of one video; <code>--every N</code>
+takes the sharpest of every N frames instead; <code>--overlap 80</code> is for straight-down drone video: a frame
+whenever the next would share only 80% of the view, without frame-count limits. HDR (HLG/PQ) video is mapped to SDR.</p>
+<figure><img src="reports/2026-11-14-drone-mapping/frames.jpg" alt="12 frames picked from a drone video">
+<figcaption>Frames picked from a DJI mapping video with <code>--overlap 80</code> (drone mapping report).</figcaption></figure>
+<p>360°, QooCam, LiDAR and drone sources add their own outputs (<code>panos/</code>, <code>arkit/</code>, GPS in EXIF):
+see <a href="captures.html">Capture types</a>. New frames delete everything built from the old ones.</p>
+<div class="why">Why own keyframe selection: a walk-around video at 30 fps has thousands of near-identical frames.
+Picking by camera motion gives enough overlap for COLMAP without tuning a frame rate per clip.</div>
+
+<h2 id="mask"><span class="step-mask">gausser mask PROMPT</span></h2>
+<p>SAM3 finds the prompted subject in every image and writes two mask sets: <code>masks/&lt;stem&gt;.png</code> for
+Brush (white = train) and <code>colmap/masks/&lt;name&gt;&lt;ext&gt;.png</code> for COLMAP (the double extension is required).</p>
+<table>
+<tr><th>option</th><th>use it when</th></tr>
+<tr><td><code>--threshold 0.3</code></td><td>many images report no hit (default 0.5)</td></tr>
+<tr><td><code>--all-instances</code></td><td>the prompt has several instances and all should stay</td></tr>
+<tr><td><code>--miss drop</code></td><td>a whole-image fallback would train people, water or sky into the subject; missed images get a black Brush mask (ignored) and a white COLMAP mask (still registered)</td></tr>
+<tr><td><code>--dilation N</code> / <code>--feather N</code></td><td>grow (or with negative N, shrink) or blur the Brush masks; <code>-2</code> drops edge pixels mixed with background</td></tr>
+<tr><td><code>--exclude</code></td><td>masking people or a 360° operator: writes only <code>masks-exclude/</code> (black = every instance), for <code>train --exclude-masks</code>; see <a href="captures.html#people">Leaving people out</a></td></tr>
+</table>
+<p>New subject masks delete the COLMAP model and <code>dense/</code>, since COLMAP's features depend on them, unless
+the model was solved with <code>--no-masks</code>. SAM3 runs on MPS with <code>PYTORCH_ENABLE_MPS_FALLBACK=1</code>;
+gausser sets it.</p>
+
+<h2 id="solve"><span class="step-solve">gausser solve</span></h2>
+<p>COLMAP structure-from-motion: <code>feature_extractor</code> (one shared camera, the image list, masks),
+a matcher, then the mapper. The largest model becomes <code>sparse/0</code>; <code>database.db</code> records which images it used.</p>
+<table>
+<tr><th>--matcher</th><th>chosen by auto when</th><th>notes</th></tr>
+<tr><td><code>spatial</code></td><td>most images have GPS (drone)</td><td>pairs images with their GPS neighbours; the global mapper (GLOMAP) is used</td></tr>
+<tr><td><code>exhaustive</code></td><td>≤ 200 images</td><td>every pair; hours on 500+ images</td></tr>
+<tr><td><code>sequential</code></td><td>&gt; 200 images</td><td>neighbours in order plus vocabulary-tree loop detection</td></tr>
+<tr><td><code>vocab_tree</code></td><td>never</td><td>large unordered photo sets</td></tr>
+</table>
+<p>After mapping, <code>solve</code> moves the model when it knows better: 360° models are levelled (gravity +y),
+iPhone scans are snapped to ARKit (metres), and drone models are georeferenced into EPSG:3067 or UTM
+(<code>sparse/geo.json</code>). The mapper writes about 20 snapshots, which the <a href="monitor.html">monitor</a>
+shows as the model grows. <code>--no-masks</code> solves on whole images and marks the model <code>sparse/no-masks</code>.</p>
+<div class="why">Why the half-registered stop: training on a fraction of the cameras gives a partial, smeared splat
+after an hour. More frames (<code>--spacing high</code>) or another matcher is the fix.</div>
+
+<h2 id="dense">gausser dense</h2>
+<p>OpenMVS: <code>colmap image_undistorter</code>, <code>InterfaceCOLMAP</code>, then <code>DensifyPointCloud</code>
+(patch-match stereo on Metal) fuses a depth map per image into <code>dense/scene_dense.ply</code>.
+<code>--resolution-level 1</code> (default) works on half-size images, about 4× faster than 0. Example: 350 iPhone 4K
+frames gave 32M points in 4 min. Depth maps are deleted after fusion.</p>
+<p>Use it for scenes without masks (rooms, streets) and before <code>mesh</code>. <code>train --init auto</code> then
+starts Brush from 500,000 random dense points.</p>
+
+<h2 id="train"><span class="step-train">gausser train</span></h2>
+<p>Trains splats into <code>runs/brush/&lt;time&gt;/exports/export_&lt;step&gt;.ply</code>. Brush gets a staging
+folder that links only <code>images</code>, <code>sparse</code> and <code>masks</code>, because it scans everything it
+is given and would pick up stale models.</p>
+<table>
+<tr><th>option</th><th>does</th></tr>
+<tr><td><code>--iterations</code> 30000, <code>--export-every</code> 5000</td><td>steps and how often a .ply is written (the monitor shows each)</td></tr>
+<tr><td><code>--max-splats</code> 1.5M</td><td>ceiling; unbounded growth stalls Metal on Apple Silicon</td></tr>
+<tr><td><code>--init auto|dense|lidar|sparse</code></td><td>start points: auto = the dense cloud, else LiDAR points, only for unmasked runs (the clouds ignore masks)</td></tr>
+<tr><td><code>--eval-split N</code></td><td>holds out every Nth image; Brush reports PSNR/SSIM and saves the held-out renders (Renders tab)</td></tr>
+<tr><td><code>--adaptive</code></td><td>after <code>--iterations</code>, 5000 more steps at a time while held-out PSNR gains ≥ 0.1 dB, up to <code>--max-iterations</code></td></tr>
+<tr><td><code>--no-masks</code> / <code>--exclude-masks</code></td><td>whole images / <code>masks-exclude/</code> as the masks</td></tr>
+<tr><td><code>-- ARGS</code></td><td>passed to Brush as is, e.g. <code>-- --alpha-mode transparent</code></td></tr>
+<tr><td><code>--trainer msplat</code></td><td>experimental Msplat: no mask input (masked images are composited onto black), checkpoints, <code>--resume RUN</code></td></tr>
+</table>
+<p>A crop box (<code>gausser crop</code>) keeps the start points and the exports to the box. Each run gets marker files:
+<code>masked</code>/<code>unmasked</code>/<code>excluded</code> and <code>init-…</code>.</p>
+<figure><img src="reports/2026-11-14-crop-adaptive/splat-wide-ab.jpg" alt="Splat before and after crop and adaptive training">
+<figcaption>Before: 30000 steps, uncropped. After: cropped and continued adaptively to 35000 steps (crop + adaptive report).</figcaption></figure>
+
+<h2 id="lod"><span class="step-lod">gausser lod [PLY]</span></h2>
+<p>splat-transform decimates the newest export to each <code>--levels</code> percentage (100,50,25) and bundles a
+streamed PlayCanvas LOD set into <code>runs/lod/&lt;time&gt;/lod-meta.json</code>, in chunks of
+<code>--chunk-count</code> thousand splats and <code>--chunk-extent</code> metres. Use it for web viewers that stream large splats.</p>
+
+<h2 id="mesh">gausser mesh</h2>
+<p>OpenMVS <code>ReconstructMesh</code> (Delaunay and a graph cut on what the cameras see through), <code>RefineMesh</code>
+(moves the surface until the photos agree; CPU only, slow, <code>--no-refine</code> skips it) and <code>TextureMesh</code>
+(a photo per triangle) into <code>runs/mesh/&lt;time&gt;/mesh.glb</code>. <code>--faces 30000</code> decimates before
+texturing. Needs <code>dense/</code>. A crop cuts the surface before refining.</p>
+<figure><img src="reports/2026-11-14-crop-adaptive/mesh-ab.jpg" alt="Mesh before and after cropping">
+<figcaption>Left: full mesh with ragged edges. Right: the same scene cut to the crop box before refining.</figcaption></figure>
+
+<h2 id="map">gausser map [PLY]</h2>
+<p>Renders the newest splat straight down, without a browser or GPU: every Gaussian projects to a 2D Gaussian on the
+ground and is blended top first on a grid of <code>--resolution</code> metres (0.03). Writes
+<code>ortho.tif</code> and <code>dsm.tif</code> (Cloud Optimized GeoTIFFs in the scene's CRS) and <code>map.html</code>,
+the orthophoto over satellite imagery or OpenStreetMap. Needs a georeferenced model (drone GPS).</p>
+<figure><div class="pair"><img src="reports/2026-11-14-drone-mapping/ortho-web.webp" alt="Orthophoto">
+<img src="reports/2026-11-14-drone-mapping/dsm.webp" alt="DSM hillshade"></div>
+<figcaption>Orthophoto and DSM hillshade from 81 frames of a DJI Mini 4 Pro flight.</figcaption></figure>

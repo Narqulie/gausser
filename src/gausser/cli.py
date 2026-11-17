@@ -65,8 +65,8 @@ def _add_solve_options(parser: argparse.ArgumentParser) -> None:
 
 def _add_train_options(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("train")
-    group.add_argument("--trainer", choices=("brush", "msplat"), default="brush")
-    group.add_argument("--iterations", type=int, default=30000)
+    group.add_argument("--trainer", choices=("brush", "msplat"), default="brush", help="Brush (default) or the experimental Msplat")
+    group.add_argument("--iterations", type=int, default=30000, help="training steps (default 30000)")
     group.add_argument("--export-every", type=int, default=5000, help="Brush: write a .ply every N steps")
     group.add_argument("--max-splats", type=int, default=1_500_000, help="Brush: splat ceiling (default 1.5M)")
     group.add_argument("--max-resolution", type=int, help="Brush: cap the longest image side")
