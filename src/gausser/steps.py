@@ -13,7 +13,9 @@ from typing import Any
 from PIL import Image
 
 from . import arkit, colmap_model, crop as cropping, geo, keyframes, pano, ply, qoocam
-from .scene import GEO_FILE, GausserError, Scene, is_image, is_video, registered_images, remove, replace, require_tool, run_tool
+from .scene import (
+    GEO_FILE, GausserError, Scene, is_image, is_video, read_json, registered_images, remove, replace, require_tool, run_tool,
+)
 
 DENSE_INIT_POINTS = 500_000  # Brush's starting splats from dense/; it grows to --max-splats from there
 # `train --adaptive`: after --iterations, train this many more steps at a time while held-out PSNR gains this much.
@@ -48,7 +50,8 @@ def frames(
     staged.mkdir()
     scan = arkit.is_scan(source)
     photos = sorted(path for path in source.iterdir() if is_image(path)) if source.is_dir() and not scan else []
-    videos = [source / "rgb.mp4"] if scan else sorted(path for path in source.iterdir() if is_video(path)) if source.is_dir() else [source]
+    # A folder's videos include its subfolders' (one per contributor, say).
+    videos = [source / "rgb.mp4"] if scan else sorted(path for path in source.rglob("*") if is_video(path)) if source.is_dir() else [source]
     if ranges and not source.is_file():
         raise GausserError("--range needs a video file")
     if photos and videos and source.is_dir():
@@ -284,6 +287,12 @@ def _exclude(
     print(f"Excluded {prompt!r} in {hits}/{len(images)} images, mean {share / len(images):.1%} of each image")
 
 
+def _frame_sources(scene: Scene) -> dict[str, str]:
+    """Image name → the video `frames` took it from (images/frames.json), for the images still there."""
+    items = (read_json(scene.images / "frames.json") or {}).get("items", [])
+    return {item["name"]: item["source"] for item in items if (scene.images / item["name"]).is_file()}
+
+
 def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     """Run COLMAP structure-from-motion into database.db and sparse/0; `no_masks` ignores colmap/masks/.
 
@@ -332,10 +341,16 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     if poses:  # ARKit's focal length is a better start than COLMAP's guess; bundle adjustment refines it
         extract += ["--ImageReader.camera_model", "SIMPLE_RADIAL", "--ImageReader.camera_params", arkit.camera_params(poses)]
     run_tool(extract, cwd=staged)
+    sources = {} if rig else _frame_sources(scene)
+    if len(set(sources.values())) > 1:
+        # Frames of different videos get their own camera: a crowd capture mixes phones, and a phone
+        # switches lenses between clips. Photos added by hand share the first camera.
+        videos = sorted(set(sources.values()))
+        colmap_model.split_cameras(database, lambda name: videos.index(sources[name]) if name in sources else 0)
     match = [colmap, f"{matcher}_matcher", "--database_path", str(database), "--FeatureMatching.use_gpu", gpu]
     mapper = [colmap, "mapper", "--database_path", str(database), "--image_path", str(scene.images), "--output_path", str(sparse)]
     if rig:
-        pano.split_cameras(database)
+        colmap_model.split_cameras(database, pano.view_index)  # a rig sensor is a camera
         pano.write_rig(staged / "rig.json", lenses)
         run_tool(
             [colmap, "rig_configurator", "--database_path", str(database), "--rig_config_path", str(staged / "rig.json")],

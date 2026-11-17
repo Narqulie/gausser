@@ -169,6 +169,34 @@ def test_solve_gives_colmap_only_the_real_images_not_appledouble_sidecars(tmp_pa
     assert listed == ["img0.jpg", "img1.jpg", "img2.jpg"]
 
 
+def test_solve_gives_each_source_video_its_own_camera(tmp_path, tools):
+    """A crowd capture mixes phones; one shared camera model blurred every multi-contributor scene."""
+    scene = make_scene(tmp_path, images=4)
+    sources = {"img0.jpg": "anna.mp4", "img1.jpg": "anna.mp4", "img2.jpg": "bert.mp4"}  # img3 added by hand
+    (scene.images / "frames.json").write_text(json.dumps({"items": [{"name": n, "source": s} for n, s in sources.items()]}))
+    cameras: dict[str, int] = {}
+
+    def fake_colmap(command):
+        database = command[command.index("--database_path") + 1]
+        if command[1] == "feature_extractor":
+            with sqlite3.connect(database) as db:
+                db.execute("CREATE TABLE cameras (camera_id, model, width, height, params, prior_focal_length)")
+                db.execute("INSERT INTO cameras VALUES (1, 2, 16, 16, x'00', 0)")
+                db.execute("CREATE TABLE images (image_id, name, camera_id)")
+                db.executemany("INSERT INTO images VALUES (?, ?, 1)", enumerate(sorted(p.name for p in scene.image_files())))
+        if command[1] == "exhaustive_matcher":
+            with sqlite3.connect(database) as db:
+                cameras.update(db.execute("SELECT name, camera_id FROM images").fetchall())
+                assert db.execute("SELECT count(*) FROM cameras").fetchone() == (2,)
+        if command[1] == "mapper":
+            write_model(Path(command[command.index("--output_path") + 1]) / "0", 4)
+
+    tools.on_run(fake_colmap)
+    steps.solve(scene)
+
+    assert cameras == {"img0.jpg": 1, "img1.jpg": 1, "img2.jpg": 2, "img3.jpg": 1}
+
+
 def test_solve_stops_the_pipeline_when_most_images_are_not_placed(tmp_path, tools):
     scene = make_scene(tmp_path, images=5)
 

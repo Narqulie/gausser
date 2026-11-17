@@ -1,8 +1,11 @@
-"""Read binary COLMAP models (cameras.bin, images.bin, points3D.bin)."""
+"""Read binary COLMAP models (cameras.bin, images.bin, points3D.bin); split database.db's camera."""
 
 from __future__ import annotations
 
+import sqlite3
 import struct
+from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -115,3 +118,19 @@ def write_points3d(path: Path, xyz: Any, rgb: Any) -> None:
     with path.open("wb") as stream:
         stream.write(np.uint64(len(xyz)).tobytes())
         stream.write(points.tobytes())
+
+
+def split_cameras(database: Path, group: Callable[[str], int]) -> None:
+    """Give each group of images (by name; group 0 keeps it) its own copy of the one camera
+    `feature_extractor --ImageReader.single_camera 1` made; bundle adjustment then refines each."""
+    with closing(sqlite3.connect(database)) as db:
+        ((camera,),) = db.execute("SELECT camera_id FROM cameras").fetchall()
+        groups = {name: group(name) for (name,) in db.execute("SELECT name FROM images")}
+        for index in sorted(set(groups.values()) - {0}):
+            db.execute(
+                "INSERT INTO cameras (camera_id, model, width, height, params, prior_focal_length) "
+                "SELECT ?, model, width, height, params, prior_focal_length FROM cameras WHERE camera_id = ?",
+                (camera + index, camera),
+            )
+        db.executemany("UPDATE images SET camera_id = ? WHERE name = ?", [(camera + i, name) for name, i in groups.items()])
+        db.commit()

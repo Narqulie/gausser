@@ -146,7 +146,8 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLT
 - COLMAP: `feature_extractor` gets `--image_list_path` (the filtered image names), because exFAT drives
   add `._*` AppleDouble sidecars that COLMAP would otherwise try to read as images (hundreds of
   `BITMAP_ERROR`s). The mapper needs no list: it reads only what is in the database.
-  `ImageReader.single_camera=1`, GPU off on macOS (Homebrew has no CUDA),
+  `ImageReader.single_camera=1`, then `colmap_model.split_cameras` gives each source video in images/frames.json its own
+  camera (crowd captures mix phones; one shared model blurred them). GPU off on macOS (Homebrew has no CUDA),
   largest sub-model chosen by the `images.bin` header becomes `sparse/0`.
   `auto` = spatial when most images have EXIF GPS (COLMAP's feature_extractor stores it as pose priors),
   else exhaustive up to 200 images (it takes hours on more), else sequential.
@@ -162,7 +163,7 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLT
   x' = s·R·x + t. `align` re-reads its output and checks it against numpy, so a CLI change fails loudly.
 - 360° scenes (`panos/` exists): views are `images/cNN_<frame>.jpg`; COLMAP's rig groups a frame's views by
   stripping the `cNN_` image prefix. `rig_configurator` needs one camera per prefix, so `solve` extracts with one
-  shared SIMPLE_PINHOLE camera and `pano.split_cameras` copies it per view index before configuring. Feature
+  shared SIMPLE_PINHOLE camera and `colmap_model.split_cameras` copies it per view index before configuring. Feature
   masks = the view's partition (each pano pixel in one view, as pycolmap does) AND colmap/masks AND masks-exclude.
   `pano.py` uses einsum, not `@`: numpy 1.26's Accelerate matmul emits spurious divide-by-zero warnings on macOS.
 - QooCam 8K calibration (kfix `LENS`, also `LENS=` in photo JPEG headers): x_cam = R·X + t, t in cm. The camera

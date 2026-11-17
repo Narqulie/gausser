@@ -22,9 +22,7 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -275,21 +273,6 @@ def feature_masks(images: list[Path], out: Path, masks: list[Path], rig: dict[st
                         keep &= np.asarray(mask.convert("L")) > 127
                     break
         Image.fromarray(keep.astype(np.uint8) * 255, mode="L").save(out / f"{image.name}.png")
-
-
-def split_cameras(database: Path) -> None:
-    """Give each view index its own copy of the one extracted camera; a rig sensor is a camera."""
-    with closing(sqlite3.connect(database)) as db:
-        ((camera,),) = db.execute("SELECT camera_id FROM cameras").fetchall()
-        for index in range(VIEWS):
-            if index:
-                db.execute(
-                    "INSERT INTO cameras (camera_id, model, width, height, params, prior_focal_length) "
-                    "SELECT ?, model, width, height, params, prior_focal_length FROM cameras WHERE camera_id = ?",
-                    (camera + index, camera),
-                )
-            db.execute("UPDATE images SET camera_id = ? WHERE substr(name, 1, 4) = ?", (camera + index, f"c{index:02d}_"))
-        db.commit()
 
 
 def level_transform(images_bin: Path, rig: dict[str, Any] | None = None) -> str:

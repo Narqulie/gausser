@@ -90,7 +90,7 @@ once, so the result is moved to a finer or wider spacing if it would be under `-
 `--max-frames` (600); `--spacing low|medium|high` moves the starting point. A second pass writes only the picked
 frames, full size, as `images/frame_<number>.jpg`, with `frames.json` listing each one. Still stretches give a frame
 every 3 s. HDR (HLG/PQ) video is converted to SDR. `--every N` takes the sharpest of every N video frames instead.
-A folder of photos is copied whole; a folder of videos is processed video by video (`p01_`, `p02_` … prefixes).
+A folder of photos is copied whole; a folder of videos (subfolders included) is processed video by video (`p01_`, `p02_` … prefixes).
 
 `gausser dense` undistorts the images (`colmap image_undistorter`) into `dense/images/`, then OpenMVS
 (`InterfaceCOLMAP`, `DensifyPointCloud`) estimates a depth map per image by patch-match stereo (Metal on Apple
@@ -296,8 +296,9 @@ The files are the state. There is no database or manifest.
   alike, so a walk that ends where it started, or a set of unordered photos, still
   connects. COLMAP downloads the vocabulary tree it needs once, into `~/.cache/colmap`.
   For large unordered photo sets, `--matcher vocab_tree` is the dedicated option.
-- **COLMAP on macOS.** Homebrew COLMAP has no CUDA, so GPU is off on macOS. All
-  images share one camera (`single_camera=1`). If COLMAP splits the scene, the
+- **COLMAP on macOS.** Homebrew COLMAP has no CUDA, so GPU is off on macOS. Frames
+  of one video share one camera; each source video in `frames.json` gets its own, since
+  crowd captures mix phones and lenses. Photos share one camera. If COLMAP splits the scene, the
   largest model becomes `sparse/0`.
 - **Brush.** `--max-splats` defaults to 1.5M, because unbounded growth stalls
   Metal on Apple Silicon. Brush exports at the final step too: 5000 iterations with

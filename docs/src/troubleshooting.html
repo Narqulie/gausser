@@ -9,6 +9,7 @@ log, the COLMAP cameras and the splat. Failed attempts stay in <code>.gausser/tm
 <table>
 <tr><th>symptom</th><th>cause</th><th>fix</th></tr>
 <tr><td>splat is soft or hazy everywhere</td><td>the input lacks detail (resolution, motion blur, extraction scale)</td><td>check the frames first; reshoot at 4K or as photos; do not train longer</td></tr>
+<tr><td>splat from several people's videos is blurred or doubled</td><td>one shared camera model for different phones (before 2026-11-17)</td><td>re-run <code>solve</code>: frames of each video now get their own camera</td></tr>
 <tr><td>frames: fewer than <code>--min-frames</code></td><td>short clip or little movement</td><td><code>--spacing high</code>, or <code>--every N</code></td></tr>
 <tr><td>frames fails on the filter graph</td><td>ffmpeg older than 7 (<code>-/filter_complex</code>)</td><td><code>brew upgrade ffmpeg</code></td></tr>
 <tr><td>360°/QooCam splat is mirrored</td><td>the stored lens images are mirrored</td><td><code>frames</code> flips them on ingest; re-run frames with this version</td></tr>
