@@ -73,8 +73,6 @@ Without `--prompt`, no new masks are made, but existing masks are still used. Ad
 | `gausser mesh [--faces N] [--no-refine] [--texture-size N]` | OpenMVS meshes, refines and textures the dense cloud | `runs/mesh/<time>/mesh.glb` |
 | `gausser map [PLY] [--resolution M]` | Renders the splat straight down into an orthophoto and a surface model (DSM) in the scene's CRS, and a web map with the orthophoto over it | `runs/map/<time>/{ortho.tif,dsm.tif,map.html}` |
 | `gausser lod [PLY]` | splat-transform builds streamed LOD (newest export by default) | `runs/lod/<time>/` |
-| `gausser subset PATTERN… -o NEW_SCENE` | Copies the images (and masks) whose file names match the globs into a new scene, with the COLMAP model filtered to them | `NEW_SCENE/{images,masks,colmap/masks,sparse/0,database.db}` |
-| `gausser composite [--statue PLY] [--context PLY] [--radius N] [--column R [--floor F]] [--cells N] [--slack N] [--grow N] [-o OUT]` | Puts a masked statue splat into its `--no-masks` or `--exclude-masks` context splat (newest runs by default) | `runs/composite/<time>/composite.ply` |
 | `gausser align MOVING.ply --to REF… -o OUT.ply [--no-scale]` | Moves a re-trained splat into the coordinate frame of a published one (scale, rotation, translation fitted to the splat centres) | `OUT.ply` |
 | `gausser view [PLY]` | Opens a splat (newest export by default) in a local SuperSplat | — |
 | `gausser orbit [PLY] [--seconds 12] [--size 1920x1080] [--background jutaka] [--target X Y Z --radius R --height H] [-o OUT.mp4]` | SuperSplat renders a 360° orbit video (newest export by default) | `runs/orbit/<time>/orbit.mp4` |
@@ -110,8 +108,8 @@ scored 21.0 dB PSNR against the photos, better than meshes made from the splat.
 
 Every command takes `-s/--scene DIR` (default: current folder) and `--help`.
 Only one command at a time can change a scene; a second one stops with an error
-instead of overwriting the first one's work. `align` needs no scene at all. `status`, `view`, `orbit`, `monitor`, `composite` and `subset` always run
-(`orbit` and `composite` only add a new run folder; `subset` only reads the source scene).
+instead of overwriting the first one's work. `align` needs no scene at all. `status`, `view`, `orbit` and `monitor` always run
+(`orbit` only adds a new run folder).
 
 `gausser orbit` needs `sparse/0` and a Brush export. The camera circles the point nearest all
 camera viewing axes, at the median camera distance times `--zoom` (1.3) and aimed `--drop` (0.35, splat
@@ -154,42 +152,25 @@ open runs/map/*/map.html
   1/500 s or faster. Nadir-only flights let the model bend into a shallow bowl; a crosshatch or a −45° pass
   holds it flat. Snow, water and shadows give COLMAP little texture to match.
 
-## Subject plus context from one solve
+## Leaving people out
 
-Mask the subject, but solve COLMAP on the whole images: masks that restrict COLMAP
-to the subject lose registrations and leave no background points. Then train twice on
-that one model, so the two splats share coordinates and can be merged later:
+`mask --exclude` masks transient things (passers-by, the operator of a 360° camera) without touching the
+subject masks or the COLMAP model:
 
 ```bash
-gausser mask statue --miss drop --dilation -2   # frames SAM3 misses are ignored by Brush, not trained whole
-gausser solve --no-masks          # COLMAP sees the whole image
-gausser mask person --exclude --dilation 8      # optional: people to leave out of the context (needs masks/)
-gausser train --exclude-masks     # context splat without them (or `train --no-masks` to keep everything)
-gausser train                     # statue splat: masked
-gausser composite                 # statue into context, as one splat
-gausser composite --column 0.35   # statue + plinth only (cylinder of 0.35 statue heights, 0.3 below the feet)
+gausser mask person --exclude --dilation 8   # masks-exclude/: black = every person, grown by 8 px
+gausser train --exclude-masks                # Brush ignores those pixels
 ```
 
-`mask --exclude` writes `masks-exclude/<stem>.png` (black = every instance of the prompt grown by
-`--dilation` px, white elsewhere and wherever the subject mask in `masks/` is white, since SAM3 may call a
-bronze statue a "person"). Use 8 px: people's edges and shadows smear. It leaves `masks/` and COLMAP alone.
-`train --exclude-masks` gives Brush those masks, and leaves an `excluded` marker that `composite` also accepts
-for the context run (newest `unmasked` or `excluded` run).
+`masks-exclude/<stem>.png` is black over every instance of the prompt grown by `--dilation` px and white
+elsewhere and wherever the subject mask in `masks/` is white, since SAM3 may call a bronze statue a
+"person". Use 8 px: people's edges and shadows smear. In a 360° scene `solve` also masks those pixels'
+features, since the operator moves with the camera.
 
-`gausser composite` finds the two runs itself: `train` leaves an empty `masked` or `unmasked`
-file in each Brush run folder (older runs have none; pass `--statue` and `--context`). The
-masked run starts from the whole scene's COLMAP points, so it also keeps opaque background splats.
-Composite first keeps only statue splats that fall inside the masks in at least 80% of the views
-that see them (a visual hull; frames dropped with `--miss drop` don't vote), then removes the context
-splats inside the statue's volume and appends the statue. `--cells N` (default 256) sets the carve voxels along the statue's longest side; raise it for
-spread-out statues on a big scene. `--slack N` (default 2) grows the masks by N px at 1/4 size before the hull
-filter, and `--grow N` (default 2) carves N voxels beyond the statue's hull; lower them if the statue loses
-edges, raise them if a soft shell of the statue remains in the context. The output keeps the context's PLY header,
-so `gausser orbit` still works. For cleaner edges, mask with `--dilation -2`: it shrinks the Brush
-masks by 2 px, so edge pixels mixed with background are not trained (COLMAP masks are unchanged).
-
-`gausser run --prompt statue --no-masks` makes the masks and then solves and trains
-without them (the first two steps of the recipe, minus `--miss drop`).
+A masked run on an unmasked solve (`mask --miss drop`, `solve --no-masks`, `train`) starts from the whole
+scene's COLMAP points and keeps opaque background splats that the masked loss never removes. For cleaner
+subject edges, mask with `--dilation -2`: it shrinks the Brush masks by 2 px, so edge pixels mixed with
+background are not trained (COLMAP masks are unchanged).
 
 ## 360° video
 
@@ -247,25 +228,6 @@ LiDAR points of all of them at one per 1 cm voxel. `solve` runs COLMAP as usual,
 focal length, then moves the model onto ARKit's frame and scales it by the LiDAR depths, and prints how
 well the two agree. `train --init auto` then starts Brush from the LiDAR points unless it gets masks
 (`--init lidar|sparse` chooses).
-
-## Mixing captures
-
-Photos from several captures (say sunny drone frames `frame_*.jpg` and iPhone frames from another
-day, `iphone_*.jpg`) go into one `images/` and get one joint solve, so every camera shares one
-coordinate frame. Train each lighting on its own, then composite the splats:
-
-```bash
-gausser solve --no-masks
-gausser subset 'frame_*' -o ../sunny          # copies images and masks, filters sparse/0
-gausser subset 'iphone_*' -o ../overcast
-gausser train -s ../sunny --no-masks
-gausser train -s ../overcast
-gausser composite --statue ../overcast/runs/brush/<time>/exports/export_30000.ply \
-                  --context ../sunny/runs/brush/<time>/exports/export_30000.ply -s ../overcast
-```
-
-`subset` copies (no links: scenes often live on exFAT), keeps all cameras and 3D points, and
-leaves the source untouched. It refuses a new scene that already has `images/`.
 
 ## Re-splatting a published artwork
 

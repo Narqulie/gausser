@@ -17,7 +17,7 @@ from . import keyframes, mapping, pano, ply, steps
 from .scene import TOOLS, GausserError, Scene, is_image, registered_images
 
 STEPS = ("frames", "mask", "solve", "dense", "train", "lod", "mesh", "map")
-COMMANDS = ("run", *STEPS, "crop", "subset", "composite", "align", "view", "orbit", "status", "monitor")
+COMMANDS = ("run", *STEPS, "crop", "align", "view", "orbit", "status", "monitor")
 QUICK_START = """\
 quick start:
   gausser clip.mp4              guided: makes clip/ next to the video and walks you through
@@ -257,22 +257,6 @@ def build_parser() -> argparse.ArgumentParser:
     orbit.add_argument("--height", type=float, help="camera height above the target in splat units (default: the cameras' median)")
     orbit.add_argument("-o", "--output", type=Path, help="write the video here instead of runs/orbit/<time>/orbit.mp4")
 
-    composite = commands.add_parser(
-        "composite", parents=[common], help="put a masked statue splat into its unmasked context splat",
-        description="Merge two splats trained on one COLMAP model: keep the statue splats that lie inside the masks, "
-        "carve the statue's volume out of the context, append the statue. Needs sparse/0 and masks/. "
-        "Defaults: the newest masked and the newest --no-masks Brush run.",
-    )
-    composite.add_argument("--statue", type=Path, help=".ply of the masked run (default: newest masked run)")
-    composite.add_argument("--context", type=Path, help=".ply of the --no-masks run (default: newest unmasked run)")
-    composite.add_argument("--radius", type=float, help="also drop context farther than N statue heights from the statue")
-    composite.add_argument("--column", type=float, help="keep only a vertical column of radius N statue heights around the statue (e.g. 0.35 for statue + plinth)")
-    composite.add_argument("--floor", type=float, default=0.3, help="with --column: reach N statue heights below the statue's feet (default 0.3)")
-    composite.add_argument("--slack", type=int, default=2, help="grow the masks by N px (at 1/4 size) when filtering the statue (default 2)")
-    composite.add_argument("--grow", type=int, default=2, help="carve N voxels beyond the statue's hull (default 2)")
-    composite.add_argument("--cells", type=int, default=256, help="carve voxels along the statue's longest side (default 256)")
-    composite.add_argument("-o", "--output", type=Path, help="write here instead of runs/composite/<time>/composite.ply")
-
     align = commands.add_parser(
         "align", help="move a splat into the coordinate frame of a published one",
         description="Estimate the similarity (scale, rotation, translation) that maps MOVING's opaque splat centres onto "
@@ -284,15 +268,6 @@ def build_parser() -> argparse.ArgumentParser:
     align.add_argument("--to", dest="reference", type=Path, nargs="+", required=True, metavar="REFERENCE", help="published splat(s)")
     align.add_argument("--no-scale", dest="scale", action="store_false", help="estimate rotation and translation only")
     align.add_argument("-o", "--output", type=Path, required=True, help="aligned .ply to write")
-
-    subset = commands.add_parser(
-        "subset", parents=[common], help="make a new scene from the images of a solved scene that match name patterns",
-        description="Copy the images (and their masks) whose file names match PATTERN into a new scene, with the "
-        "COLMAP model filtered to them. Splats trained on different subsets share one coordinate frame, "
-        "so `gausser composite` can merge them.",
-    )
-    subset.add_argument("patterns", nargs="+", metavar="PATTERN", help="glob on image file names, e.g. 'frame_*'")
-    subset.add_argument("-o", "--output", type=Path, required=True, help="new scene folder (must not have images/)")
 
     crop = commands.add_parser(
         "crop", parents=[common], help="keep training and meshing to a box around the subject",
@@ -584,14 +559,6 @@ def main(argv: list[str] | None = None) -> int:
                 zoom=args.zoom, drop=args.drop, out=args.output, background=args.background,
                 target=args.target, radius=args.radius, height=args.height,
             )
-            return 0
-        if args.command == "composite":  # reads existing files and only adds a new output; needs no lock
-            from .composite import composite
-
-            composite(scene, args.statue, args.context, radius=args.radius, out=args.output, cells=args.cells, slack=args.slack, grow=args.grow, column=args.column, floor=args.floor)
-            return 0
-        if args.command == "subset":  # only reads the source scene; the new one is built in place
-            steps.subset(scene, args.patterns, args.output)
             return 0
         if args.command == "monitor":
             from .monitor import monitor

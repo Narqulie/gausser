@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from fnmatch import fnmatchcase
 import json
 import math
 import os
 import shutil
-import sqlite3
 import sys
-from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -492,7 +489,7 @@ def train_brush(
         raise GausserError("No dense point cloud; run `gausser dense` first")
     if init == "lidar" and clouds["lidar"] is None:
         raise GausserError("No LiDAR points; they come from `gausser frames` on an iPhone LiDAR scan folder")
-    # The clouds ignore masks: a masked run starting from one would keep background splats (see composite).
+    # The clouds ignore masks: a masked run starting from one would keep their background points.
     masked = brush_masks is not None and brush_masks.is_dir()
     if init == "auto":
         init = next((kind for kind, cloud in clouds.items() if cloud and not masked), "sparse")
@@ -546,7 +543,7 @@ def train_brush(
         for export in sorted(staged.glob("exports/*.ply")):
             kept, total = cropping.crop_splats(export, crop)
             print(f"Cropped {export.name}: kept {kept:,} of {total:,} splats")
-    # `gausser composite` finds the statue (masked) and context (unmasked, excluded) runs by this marker.
+    # How the run was masked; `gausser monitor` shows it next to the exports.
     marker = "excluded" if exclude_masks else "unmasked" if no_masks or not scene.masks.is_dir() else "masked"
     (staged / marker).touch()
     (staged / f"init-{init}").touch()
@@ -723,86 +720,3 @@ def lod(
     shutil.rmtree(levels, ignore_errors=True)
     print(f"LOD set in {run}")
     return run
-
-
-def subset(scene: Scene, patterns: list[str], out: Path) -> Scene:
-    """Make a new scene from the images of a solved scene whose file names match `patterns`.
-
-    The COLMAP model keeps its cameras, 3D points and coordinates, only the other images are
-    removed, so splats trained on different subsets share one coordinate frame. The source is only read.
-    """
-    colmap = require_tool("colmap")
-    model = scene.require_model()
-    images = scene.image_files()
-    chosen = [image for image in images if any(fnmatchcase(image.name, pattern) for pattern in patterns)]
-    if not chosen:
-        raise GausserError(f"No image in {scene.images} matches {' '.join(patterns)}")
-    out = out.expanduser().resolve()
-    if out.joinpath("images").exists():
-        raise GausserError(f"{out / 'images'} already exists; not overwriting")
-    out.mkdir(parents=True, exist_ok=True)
-    target = Scene(out)
-    keep = {image.name for image in chosen}
-
-    staged = target.staging("subset")
-    (staged / "images").mkdir()
-    for image in chosen:
-        shutil.copy(image, staged / "images" / image.name)
-    # Brush masks are <stem>.png, COLMAP masks <name><ext>.png; copy the ones that exist.
-    for source, folder in ((scene.masks, "masks"), (scene.colmap_masks, "colmap-masks")):
-        if source.is_dir():
-            (staged / folder).mkdir()
-            for image in chosen:
-                mask = source / (f"{image.stem}.png" if source == scene.masks else f"{image.name}.png")
-                if mask.is_file():
-                    shutil.copy(mask, staged / folder / mask.name)
-    # image_deleter takes the names to delete; names it does not know are skipped.
-    names = staged / "delete.txt"
-    names.write_text("".join(f"{image.name}\n" for image in images if image.name not in keep))
-    (staged / "sparse" / "0").mkdir(parents=True)  # image_deleter needs the output folder to exist
-    run_tool(
-        [colmap, "image_deleter", "--input_path", str(model), "--output_path", str(staged / "sparse" / "0"),
-         "--image_names_path", str(names),
-         "--log_severity", "1"],  # else one INFO line per deleted image
-        cwd=staged,
-    )
-    registered = registered_images(staged / "sparse" / "0")
-    if registered == 0:
-        raise GausserError("None of the matching images is registered in the COLMAP model")
-    # The database only records which images the model was built from (`solve_done`); keep it consistent.
-    if scene.database.is_file():
-        shutil.copyfile(scene.database, staged / "database.db")
-        _filter_database(staged / "database.db", keep)
-
-    for folder, destination in (
-        ("images", target.images), ("masks", target.masks), ("colmap-masks", target.colmap_masks),
-        ("sparse", target.sparse), ("database.db", target.database),
-    ):
-        if (staged / folder).exists():
-            replace(staged / folder, destination)
-    shutil.rmtree(staged, ignore_errors=True)
-    masks = sum(1 for _ in target.masks.glob("*.png")) if target.masks.is_dir() else 0
-    print(f"Subset in {out}: {len(chosen)} images, {masks} masks, {registered} registered in the model")
-    if not scene.database.is_file():
-        print("No database.db in the source scene, so `gausser run` would solve the subset again; `gausser train` works")
-    return target
-
-
-def _filter_database(path: Path, keep: set[str]) -> None:
-    """Drop every image not in `keep` (and its features, matches and rig frame) from a COLMAP database."""
-    with closing(sqlite3.connect(path)) as database:
-        database.execute("CREATE TEMP TABLE kept (id INTEGER PRIMARY KEY)")
-        database.executemany("INSERT INTO kept SELECT image_id FROM images WHERE name = ?", [(name,) for name in keep])
-        for table in ("keypoints", "descriptors", "images"):
-            database.execute(f"DELETE FROM {table} WHERE image_id NOT IN (SELECT id FROM kept)")
-        # pair_id = image_id1 * 2147483647 + image_id2
-        for table in ("matches", "two_view_geometries"):
-            database.execute(
-                f"DELETE FROM {table} WHERE pair_id / 2147483647 NOT IN (SELECT id FROM kept) "
-                "OR pair_id % 2147483647 NOT IN (SELECT id FROM kept)"
-            )
-        database.execute("DELETE FROM pose_priors WHERE corr_data_id NOT IN (SELECT id FROM kept)")
-        database.execute("DELETE FROM frame_data WHERE data_id NOT IN (SELECT id FROM kept)")
-        database.execute("DELETE FROM frames WHERE frame_id NOT IN (SELECT frame_id FROM frame_data)")
-        database.commit()
-        database.execute("VACUUM")

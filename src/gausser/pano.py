@@ -13,7 +13,7 @@ Two kinds of frame:
   black in ``masks-exclude/``, so neither COLMAP nor Brush learns from them.
 
 View i of frame P is ``images/cII_P.jpg``, square and 90° wide, so image stems stay unique and every
-later step (masks, Brush, composite, orbit) sees ordinary photos. COLMAP groups the views of one
+later step (masks, Brush, orbit) sees ordinary photos. COLMAP groups the views of one
 frame into a rig frame by stripping the ``cII_`` prefix.
 """
 

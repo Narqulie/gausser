@@ -18,7 +18,7 @@ src/gausser/
 ├── cli.py     argparse subcommands, `run` pipeline, `status`, `gausser [PATH]` routing
 ├── guide.py   scene-aware guided menu: summary, recommended next step, minimal questions
 ├── keyframes.py frames: one ffmpeg analysis pass (focus + DIS optical flow, tracked grid, ladder of thresholds) picks frame numbers, one pass extracts them
-├── steps.py   frames (calls keyframes), mask, solve (COLMAP), dense + mesh (OpenMVS), subset (colmap image_deleter + filtered database), train_brush, lod (splat-transform)
+├── steps.py   frames (calls keyframes), mask, solve (COLMAP), dense + mesh (OpenMVS), train_brush, lod (splat-transform)
 ├── sam.py     SAM3 predictor + mask writers; imported only by `mask` (needs torch)
 ├── pano.py    360° frames: 14 pinhole views per equirect (pycolmap.panorama's 12 + zenith/nadir) or per dual fisheye (7 per lens), partition masks, COLMAP rig
 ├── qoocam.py  QooCam 8K raw .MOV: reads the kfix LENS calibration into panos/lenses.json form
@@ -29,7 +29,6 @@ src/gausser/
 ├── colmap_model.py the one reader of binary COLMAP models (cameras.bin, images.bin, points3D.bin); writes Brush's start points3D.bin
 ├── ply.py     every PLY reader/writer: splat exports (float properties), xyz+rgb clouds (LiDAR), OpenMVS dense clouds
 ├── msplat.py  experimental Msplat trainer with checkpoint resume; masks via black compositing
-├── composite.py `gausser composite`: visual-hull filter of the statue splat, voxel carve of the context, PLY merge
 ├── align.py   `gausser align`: fits a similarity (multi-start trimmed ICP) of a splat onto a published one; splat-transform applies it
 ├── view.py    `gausser view`: serves a SuperSplat build plus one splat on 127.0.0.1 (`serve()` is shared with orbit)
 ├── orbit.py   `gausser orbit`: camera path and up from sparse/0 (cameras' level right axes); runs orbit.mjs with node
@@ -131,10 +130,9 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLT
   without it, SAM3 misses every image on MPS.
 - A masked Brush run on an unmasked solve (`mask --miss drop`, `solve --no-masks`, `train`) starts from
   the whole scene's COLMAP points and keeps ~⅓ of its splats as opaque background garbage that masked loss
-  never removes, so `composite` must filter the statue by `hull_keep` (inside the dilated mask in ≥80% of
-  ≥5 views, black masks skipped) before carving the context. `train_brush` writes an empty `masked` or
-  `unmasked` file into each run for `composite`'s default selection. Negative `--dilation` erodes Brush masks only.
-- `mask P --exclude` writes only `masks-exclude/` (black = P grown by `--dilation`, white inside `masks/`); `train --exclude-masks` links it as Brush's `masks` and marks the run `excluded`, which `composite` accepts as a context run like `unmasked`. `composite` defaults: `--slack 2` (hull dilation, px at 1/4 size), `--grow 2` (carve voxels).
+  never removes. `train_brush` writes an empty `masked`, `unmasked` or `excluded` file into each run (the monitor
+  shows it). Negative `--dilation` erodes Brush masks only.
+- `mask P --exclude` writes only `masks-exclude/` (black = P grown by `--dilation`, white inside `masks/`); `train --exclude-masks` links it as Brush's `masks` and marks the run `excluded`. It is for people and a 360° camera's operator, not a subject.
 - Mask naming: Brush `masks/<stem>.png`, COLMAP `colmap/masks/<name><ext>.png`.
   Image stems must be unique.
 - Brush is pinned in `scripts/install-macos.sh` (`BRUSH_REV`, currently 1.0.0 @1388f74c);

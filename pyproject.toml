@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "Photos or video in, Gaussian splats out"
 readme = "README.md"
 requires-python = ">=3.12"  # msplat ships only cp312/cp313 wheels
-dependencies = ["numpy>=1.26,<2", "opencv-python>=4.10,<4.12", "Pillow>=12.3,<13", "pyproj>=3.7,<4", "questionary>=2,<3", "scipy>=1.13,<2"]  # numpy, Pillow: orbit and composite; scipy: align; opencv: frames; pyproj: georeferencing
+dependencies = ["numpy>=1.26,<2", "opencv-python>=4.10,<4.12", "Pillow>=12.3,<13", "pyproj>=3.7,<4", "questionary>=2,<3", "scipy>=1.13,<2"]  # numpy, Pillow: orbit, map, crop; scipy: align; opencv: frames; pyproj: georeferencing
 
 [project.optional-dependencies]
 # SAM3 itself is installed separately at a pinned commit and patched for macOS (see README).

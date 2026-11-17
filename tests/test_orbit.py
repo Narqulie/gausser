@@ -199,7 +199,12 @@ def test_orbit_solid_background_is_one_render_without_ffmpeg(orbit_scene, monkey
     scene, _ = orbit_scene
     commands = []
     monkeypatch.setattr(orbit, "require_tool", lambda name: pytest.fail("no ffmpeg needed") if name == "ffmpeg" else name)
-    monkeypatch.setattr(orbit, "run_tool", lambda command, *, cwd, env=None: (commands.append(command), Path(command[4]).write_bytes(b"mp4")))
+
+    def run_tool(command, *, cwd, env=None):
+        commands.append(command)
+        Path(command[4]).write_bytes(b"mp4")
+
+    monkeypatch.setattr(orbit, "run_tool", run_tool)
 
     assert cli.main(["orbit", "-s", str(scene.root), "--background", "#102030", "-o", str(tmp_path / "x.mp4")]) == 0
 
