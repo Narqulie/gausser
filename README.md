@@ -172,7 +172,8 @@ elsewhere and wherever the subject mask in `masks/` is white, since SAM3 may cal
 features, since the operator moves with the camera.
 
 A masked run on an unmasked solve (`mask --miss drop`, `solve --no-masks`, `train`) starts from the whole
-scene's COLMAP points and keeps opaque background splats that the masked loss never removes. For cleaner
+scene's COLMAP points and keeps opaque background splats that the masked loss never removes, unless Brush
+trains the outside of the masks transparent: `gausser train -- --alpha-mode transparent`. For cleaner
 subject edges, mask with `--dilation -2`: it shrinks the Brush masks by 2 px, so edge pixels mixed with
 background are not trained (COLMAP masks are unchanged).
 
@@ -285,7 +286,7 @@ The files are the state. There is no database or manifest.
 - **Masks.** Brush reads `masks/<stem>.png`. COLMAP reads `colmap/masks/<name><ext>.png`;
   the double extension is required. If SAM3 finds nothing in an image, that image
   gets a white mask, so it is kept whole and the run continues (`--miss keep`, the
-  default). With `--miss drop` its Brush mask is black, so Brush ignores that image,
+  default). With `--miss drop` its Brush mask is black, so `train` leaves that image out,
   and its COLMAP mask stays white, so it still registers. Use `drop` when a whole-image
   fallback would train people, water or sky into the subject. Try
   `--threshold 0.3` if many images miss. `--no-masks` on `solve` and `train` ignores

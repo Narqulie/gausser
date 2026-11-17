@@ -52,7 +52,9 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLT
   Never delete `runs/`.
 - `--no-masks` (`run`, `solve`, `train`) ignores existing masks: no COLMAP `mask_path`, no `masks` link in
   Brush's staging folder, no Msplat compositing. `mask --miss drop` writes a black Brush mask and a white
-  COLMAP mask for an image SAM3 misses (default `keep`: white in both).
+  COLMAP mask for an image SAM3 misses (default `keep`: white in both). `train_brush` leaves images with an all-black
+  Brush mask out of Brush's staging folder (per-file image links + `colmap image_deleter` copy of the model): under
+  `--alpha-mode transparent` such an image teaches the subject to vanish.
 - `frames` (keyframes.py): the analysis and extraction ffmpeg passes use the same input options (`-ss/-to`, `-i`,
   autorotate, `-fps_mode passthrough`), so the `select` frame numbers match; a test checks this against pixel
   content. Frame names are `frame_<n>.jpg` (n relative to the range start; `pNN_` prefix with several parts).
@@ -130,7 +132,9 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLT
   without it, SAM3 misses every image on MPS.
 - A masked Brush run on an unmasked solve (`mask --miss drop`, `solve --no-masks`, `train`) starts from
   the whole scene's COLMAP points and keeps ~⅓ of its splats as opaque background garbage that masked loss
-  never removes. `train_brush` writes an empty `masked`, `unmasked` or `excluded` file into each run (the monitor
+  never removes; `-- --alpha-mode transparent` trains the outside of the masks transparent and removes it (Hämeensilta
+  A/B 2026-11-17: also the sharpest silhouettes, with `--growth-grad-threshold 0.0008 --growth-select-fraction 0.5
+  --growth-stop-iter 25000`). `train_brush` writes an empty `masked`, `unmasked` or `excluded` file into each run (the monitor
   shows it). Negative `--dilation` erodes Brush masks only.
 - `mask P --exclude` writes only `masks-exclude/` (black = P grown by `--dilation`, white inside `masks/`); `train --exclude-masks` links it as Brush's `masks` and marks the run `excluded`. It is for people and a 360° camera's operator, not a subject.
 - Mask naming: Brush `masks/<stem>.png`, COLMAP `colmap/masks/<name><ext>.png`.

@@ -193,7 +193,9 @@ and white elsewhere and wherever the subject mask in <code>masks/</code> is whit
 scenes (above).</p>
 <p>A masked run on an unmasked solve (<code>mask --miss drop</code>, <code>solve --no-masks</code>, <code>train</code>)
 starts from the whole scene's COLMAP points and keeps opaque background splats that the masked loss never removes;
-crop the result with <code>gausser crop</code>.</p>
+crop the result with <code>gausser crop</code>, or train the outside of the masks transparent with
+<code>gausser train -- --alpha-mode transparent</code>. <code>train</code> leaves images with an all-black mask out,
+since in that mode they would teach the subject to vanish.</p>
 
 </main>
 </body>

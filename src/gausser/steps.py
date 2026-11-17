@@ -514,20 +514,34 @@ def train_brush(
         print(f"--adaptive judges by held-out PSNR: holding out every {eval_split}th image")
     cloud = clouds.get(init)
     own_points = cloud is not None or crop is not None
-    for name, source in (("images", scene.images), ("sparse", scene.sparse), ("masks", brush_masks)):
+    sources = {"images": scene.images, "sparse": scene.sparse, "masks": brush_masks}
+    model = scene.require_model()
+    empty = _empty_masks(scene, brush_masks) if masked and brush_masks else set()
+    usable = staged / "usable"
+    if empty:
+        # An all-black mask (`mask --miss drop`, or SAM3 found nothing) holds nothing to learn, and with
+        # Brush's --alpha-mode transparent it would teach the subject to vanish: leave those images out.
+        print(f"Leaving out {len(empty)} images with an empty mask")
+        (usable / "images").mkdir(parents=True)
+        for image in scene.image_files():
+            if image.name not in empty:
+                (usable / "images" / image.name).symlink_to(image)
+        model = _without_images(model, empty, usable / "sparse" / "0")
+        sources.update(images=usable / "images", sparse=usable / "sparse")
+    for name, source in sources.items():
         if name == "sparse" and own_points:
             continue
         if source and source.is_dir():
             (dataset / name).symlink_to(source)
     if own_points:
         # Brush starts from a COLMAP model's points3D.bin, so give it the cameras with the chosen points.
-        model = dataset / "sparse" / "0"
-        model.mkdir(parents=True)
-        for path in scene.require_model().iterdir():
+        start = dataset / "sparse" / "0"
+        start.mkdir(parents=True)
+        for path in model.iterdir():
             if path.name != "points3D.bin":
-                (model / path.name).symlink_to(path)
+                (start / path.name).symlink_to(path)
         xyz, rgb, source_name = start_points(scene, cloud, init, crop)
-        colmap_model.write_points3d(model / "points3D.bin", xyz, rgb)
+        colmap_model.write_points3d(start / "points3D.bin", xyz, rgb)
         print(f"Starting from {len(xyz):,} points of {source_name}")
     command = [
         brush, str(dataset),
@@ -553,7 +567,7 @@ def train_brush(
         raise GausserError(f"Brush finished without a .ply export; output kept in {staged}")
     if adaptive:
         extend(scene, command, staged / "exports", iterations, max_iterations, env)
-    remove(dataset)
+    remove(dataset, usable)
     if crop is not None:
         for export in sorted(staged.glob("exports/*.ply")):
             kept, total = cropping.crop_splats(export, crop)
@@ -566,6 +580,33 @@ def train_brush(
     replace(staged, run)
     print(f"Exports in {run / 'exports'}")
     return run
+
+
+def _empty_masks(scene: Scene, masks: Path) -> set[str]:
+    """Names of the images whose Brush mask (masks/<stem>.png) is all black."""
+    empty = set()
+    for image in scene.image_files():
+        mask = masks / f"{image.stem}.png"
+        if mask.is_file():
+            with Image.open(mask) as opened:
+                if opened.convert("L").getbbox() is None:
+                    empty.add(image.name)
+    return empty
+
+
+def _without_images(model: Path, names: set[str], out: Path) -> Path:
+    """A copy of the COLMAP model at `out` without the named images (`colmap image_deleter`)."""
+    out.mkdir(parents=True)
+    listed = out.parent / "delete.txt"
+    listed.write_text("".join(f"{name}\n" for name in sorted(names)))
+    run_tool(
+        [require_tool("colmap"), "image_deleter", "--input_path", str(model), "--output_path", str(out),
+         "--image_names_path", str(listed), "--log_severity", "1"],  # else one INFO line per image
+        cwd=out.parent,
+    )
+    if registered_images(out) == 0:
+        raise GausserError("Every registered image has an empty mask; check the mask prompt")
+    return out
 
 
 def psnr(render: Path, photo: Path) -> float:

@@ -604,6 +604,34 @@ def test_brush_only_sees_current_inputs(tmp_path, tools):
     assert sorted(path.name for path in run.iterdir()) == ["exports", "init-sparse", "masked"]
 
 
+def test_brush_leaves_out_images_with_an_empty_mask(tmp_path, tools):
+    """With --alpha-mode transparent, an all-black mask would teach the subject to vanish."""
+    scene = make_scene(tmp_path)
+    write_model(scene.sparse / "0", 3)
+    scene.masks.mkdir()
+    for index, colour in enumerate((255, 0, 255)):
+        Image.new("L", (4, 4), colour).save(scene.masks / f"img{index}.png")
+    seen: list[list[str]] = []
+
+    def fake_tools(command):
+        if command[1] == "image_deleter":
+            assert Path(command[command.index("--image_names_path") + 1]).read_text() == "img1.jpg\n"
+            out = Path(command[command.index("--output_path") + 1])
+            out.rmdir()  # COLMAP needs it to exist; write_model makes it
+            write_model(out, 2)
+            return
+        seen.append(sorted(path.name for path in (Path(command[1]) / "images").iterdir()))
+        export = Path(command[command.index("--export-path") + 1]) / "export_10.ply"
+        export.parent.mkdir(parents=True)
+        export.write_bytes(b"ply")
+
+    tools.on_run(fake_tools)
+    run = steps.train_brush(scene, iterations=10, export_every=5)
+
+    assert seen == [["img0.jpg", "img2.jpg"]]
+    assert sorted(path.name for path in run.iterdir()) == ["exports", "init-sparse", "masked"]
+
+
 def test_brush_no_masks_leaves_masks_out_of_its_folder(tmp_path, tools):
     scene = make_scene(tmp_path)
     write_model(scene.sparse / "0", 3)
