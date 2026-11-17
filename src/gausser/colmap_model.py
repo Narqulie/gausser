@@ -122,15 +122,28 @@ def write_points3d(path: Path, xyz: Any, rgb: Any) -> None:
 
 def split_cameras(database: Path, group: Callable[[str], int]) -> None:
     """Give each group of images (by name; group 0 keeps it) its own copy of the one camera
-    `feature_extractor --ImageReader.single_camera 1` made; bundle adjustment then refines each."""
+    `feature_extractor --ImageReader.single_camera 1` made; bundle adjustment then refines each.
+
+    COLMAP 4 puts every image in a frame of a rig whose sensor is its camera, so each new camera
+    also gets its own single-camera rig, and its images' frames move to it (the mapper checks this).
+    """
     with closing(sqlite3.connect(database)) as db:
         ((camera,),) = db.execute("SELECT camera_id FROM cameras").fetchall()
         groups = {name: group(name) for (name,) in db.execute("SELECT name FROM images")}
+        rigs = {}
         for index in sorted(set(groups.values()) - {0}):
             db.execute(
                 "INSERT INTO cameras (camera_id, model, width, height, params, prior_focal_length) "
                 "SELECT ?, model, width, height, params, prior_focal_length FROM cameras WHERE camera_id = ?",
                 (camera + index, camera),
             )
-        db.executemany("UPDATE images SET camera_id = ? WHERE name = ?", [(camera + i, name) for name, i in groups.items()])
+            rigs[index] = db.execute("INSERT INTO rigs (ref_sensor_id, ref_sensor_type) VALUES (?, 0)", (camera + index,)).lastrowid
+        for name, index in groups.items():
+            if not index:
+                continue
+            db.execute("UPDATE images SET camera_id = ? WHERE name = ?", (camera + index, name))
+            ((image,),) = db.execute("SELECT image_id FROM images WHERE name = ?", (name,)).fetchall()
+            db.execute("UPDATE frames SET rig_id = ? WHERE frame_id IN "
+                       "(SELECT frame_id FROM frame_data WHERE data_id = ? AND sensor_type = 0)", (rigs[index], image))
+            db.execute("UPDATE frame_data SET sensor_id = ? WHERE data_id = ? AND sensor_type = 0", (camera + index, image))
         db.commit()

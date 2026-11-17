@@ -7,6 +7,7 @@ import struct
 import sys
 import time
 import types
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,24 @@ def make_scene(root: Path, images: int = 3) -> Scene:
     for index in range(images):
         (root / "images" / f"img{index}.jpg").write_bytes(b"jpg")
     return Scene(root)
+
+
+def colmap_database(path, scene: Scene, size: int) -> None:
+    """What `colmap feature_extractor --ImageReader.single_camera 1` writes (COLMAP 4): one camera, and
+    each image in its own frame of the one rig whose sensor is that camera."""
+    with closing(sqlite3.connect(path)) as db:
+        db.execute("CREATE TABLE cameras (camera_id, model, width, height, params, prior_focal_length)")
+        db.execute("INSERT INTO cameras VALUES (1, 0, ?, ?, x'00', 1)", (size, size))
+        db.execute("CREATE TABLE images (image_id, name, camera_id)")
+        db.execute("CREATE TABLE rigs (rig_id INTEGER PRIMARY KEY AUTOINCREMENT, ref_sensor_id, ref_sensor_type)")
+        db.execute("CREATE TABLE frames (frame_id, rig_id)")
+        db.execute("CREATE TABLE frame_data (frame_id, data_id, sensor_id, sensor_type)")
+        db.execute("INSERT INTO rigs VALUES (1, 1, 0)")
+        for image_id, name in enumerate(sorted(p.name for p in scene.image_files()), start=1):
+            db.execute("INSERT INTO images VALUES (?, ?, 1)", (image_id, name))
+            db.execute("INSERT INTO frames VALUES (?, 1)", (image_id,))
+            db.execute("INSERT INTO frame_data VALUES (?, ?, 1, 0)", (image_id, image_id))
+        db.commit()
 
 
 def write_model(model: Path, registered: int) -> None:
@@ -179,15 +198,17 @@ def test_solve_gives_each_source_video_its_own_camera(tmp_path, tools):
     def fake_colmap(command):
         database = command[command.index("--database_path") + 1]
         if command[1] == "feature_extractor":
-            with sqlite3.connect(database) as db:
-                db.execute("CREATE TABLE cameras (camera_id, model, width, height, params, prior_focal_length)")
-                db.execute("INSERT INTO cameras VALUES (1, 2, 16, 16, x'00', 0)")
-                db.execute("CREATE TABLE images (image_id, name, camera_id)")
-                db.executemany("INSERT INTO images VALUES (?, ?, 1)", enumerate(sorted(p.name for p in scene.image_files())))
+            colmap_database(database, scene, 16)
         if command[1] == "exhaustive_matcher":
             with sqlite3.connect(database) as db:
                 cameras.update(db.execute("SELECT name, camera_id FROM images").fetchall())
                 assert db.execute("SELECT count(*) FROM cameras").fetchone() == (2,)
+                # COLMAP 4's mapper aborts unless each image's frame belongs to a rig of its own camera
+                rigs = db.execute(
+                    "SELECT DISTINCT i.camera_id, d.sensor_id, r.ref_sensor_id FROM images i JOIN frame_data d ON d.data_id = i.image_id "
+                    "JOIN frames f ON f.frame_id = d.frame_id JOIN rigs r ON r.rig_id = f.rig_id"
+                ).fetchall()
+                assert sorted(rigs) == [(1, 1, 1), (2, 2, 2)]
         if command[1] == "mapper":
             write_model(Path(command[command.index("--output_path") + 1]) / "0", 4)
 
@@ -252,11 +273,7 @@ def test_360_frames_become_rig_views_that_colmap_solves_as_one_rig(tmp_path, too
 
     def fake_tools(command):
         if command[1] == "feature_extractor":
-            with sqlite3.connect(command[command.index("--database_path") + 1]) as db:
-                db.execute("CREATE TABLE cameras (camera_id, model, width, height, params, prior_focal_length)")
-                db.execute("INSERT INTO cameras VALUES (1, 0, 16, 16, x'00', 1)")
-                db.execute("CREATE TABLE images (image_id, name, camera_id)")
-                db.executemany("INSERT INTO images VALUES (?, ?, 1)", enumerate(sorted(p.name for p in scene.image_files())))
+            colmap_database(command[command.index("--database_path") + 1], scene, 16)
         elif command[1] == "rig_configurator":
             with sqlite3.connect(command[command.index("--database_path") + 1]) as db:
                 cameras = db.execute("SELECT camera_id, group_concat(substr(name, 5)) FROM images GROUP BY camera_id").fetchall()
@@ -349,11 +366,7 @@ def test_qoocam_video_becomes_per_lens_views_solved_as_a_calibrated_two_lens_rig
 
     def fake_tools(command):
         if command[1] == "feature_extractor":
-            with sqlite3.connect(command[command.index("--database_path") + 1]) as db:
-                db.execute("CREATE TABLE cameras (camera_id, model, width, height, params, prior_focal_length)")
-                db.execute("INSERT INTO cameras VALUES (1, 0, 32, 32, x'00', 1)")
-                db.execute("CREATE TABLE images (image_id, name, camera_id)")
-                db.executemany("INSERT INTO images VALUES (?, ?, 1)", enumerate(sorted(p.name for p in scene.image_files())))
+            colmap_database(command[command.index("--database_path") + 1], scene, 32)
         elif command[1] == "rig_configurator":
             rig_config.extend(json.loads(Path(command[command.index("--rig_config_path") + 1]).read_text())[0]["cameras"])
         elif command[1] == "mapper":
