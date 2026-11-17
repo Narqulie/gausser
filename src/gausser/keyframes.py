@@ -308,7 +308,7 @@ def extract(
         "-map", "[out]", "-fps_mode", "passthrough", "-q:v", "2", "-start_number", "0", "%07d.jpg",
     ]
     run_tool(command, cwd=out)
-    paths = sorted(out.glob("*.jpg"))
+    paths = sorted(path for path in out.glob("*.jpg") if not path.name.startswith("._"))  # exFAT AppleDouble sidecars
     if len(paths) != len(frames):
         raise GausserError(f"ffmpeg wrote {len(paths)} frames of {video.name}, expected {len(frames)}")
     return paths

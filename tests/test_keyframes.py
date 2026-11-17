@@ -12,7 +12,7 @@ from PIL import Image
 
 from gausser import keyframes, steps
 from gausser.keyframes import Ladder, Pick
-from gausser.scene import Scene
+from gausser.scene import Scene, run_tool
 
 WIDTH, HEIGHT = 320, 180
 THRESHOLDS = (0.2, 0.1, 0.05)
@@ -93,6 +93,24 @@ def test_extracted_files_are_exactly_the_frames_the_analysis_picked(tmp_path, sp
             pixels = np.asarray(image.convert("L"), dtype=float)
         errors = {n: abs(pixels - source[n]).mean() for n in (offset + number - 1, offset + number, offset + number + 1) if 0 <= n < len(source)}
         assert min(errors, key=errors.__getitem__) == offset + number and errors[offset + number] < 8, name
+
+
+@needs_ffmpeg
+def test_extract_ignores_appledouble_sidecars_on_exfat(tmp_path, monkeypatch):
+    """On an exFAT scene macOS writes a ._ file next to each JPEG; counting them doubled the frames."""
+    video = tmp_path / "pan.mkv"
+    panning_video(video, 10)
+
+    def run_with_sidecars(command, **kwargs):
+        run_tool(command, **kwargs)
+        for jpeg in Path(kwargs["cwd"]).glob("*.jpg"):
+            (jpeg.parent / f"._{jpeg.name}").write_bytes(b"junk")
+
+    monkeypatch.setattr(keyframes, "run_tool", run_with_sidecars)
+    info = keyframes.probe("ffprobe", video, None)
+    paths = keyframes.extract("ffmpeg", video, info, None, [2, 5], tmp_path / "out", False)
+
+    assert [path.name for path in paths] == ["0000000.jpg", "0000001.jpg"]
 
 
 @needs_ffmpeg

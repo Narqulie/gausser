@@ -569,7 +569,7 @@ def train_brush(
         extend(scene, command, staged / "exports", iterations, max_iterations, env)
     remove(dataset, usable)
     if crop is not None:
-        for export in sorted(staged.glob("exports/*.ply")):
+        for export in sorted(p for p in staged.glob("exports/*.ply") if not p.name.startswith("._")):
             kept, total = cropping.crop_splats(export, crop)
             print(f"Cropped {export.name}: kept {kept:,} of {total:,} splats")
     # How the run was masked; `gausser monitor` shows it next to the exports.
