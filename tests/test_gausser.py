@@ -1116,6 +1116,7 @@ def test_read_dense_cloud_walks_the_variable_length_view_lists(tmp_path):
 
 def test_brush_starts_from_the_dense_cloud_when_there_is_one(tmp_path, tools):
     scene = dense_scene(tmp_path)
+    (scene.sparse / "0" / "._cameras.bin").write_bytes(b"exFAT sidecar")  # must not be linked
     seen = {}
 
     def fake_brush(command):

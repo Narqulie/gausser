@@ -538,7 +538,7 @@ def train_brush(
         start = dataset / "sparse" / "0"
         start.mkdir(parents=True)
         for path in model.iterdir():
-            if path.name != "points3D.bin":
+            if path.name != "points3D.bin" and not path.name.startswith("._"):  # exFAT sidecars
                 (start / path.name).symlink_to(path)
         xyz, rgb, source_name = start_points(scene, cloud, init, crop)
         colmap_model.write_points3d(start / "points3D.bin", xyz, rgb)
