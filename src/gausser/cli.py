@@ -11,9 +11,10 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
-from . import keyframes, mapping, pano, steps
-from .scene import GausserError, Scene, is_image, registered_images
+from . import keyframes, mapping, pano, ply, steps
+from .scene import TOOLS, GausserError, Scene, is_image, registered_images
 
 STEPS = ("frames", "mask", "solve", "dense", "train", "lod", "mesh", "map")
 COMMANDS = ("run", *STEPS, "crop", "subset", "composite", "align", "view", "orbit", "status", "monitor")
@@ -167,6 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         add(run)
     _add_no_masks_option(run)
+    run.set_defaults(ranges=None, exclude=False, exclude_masks=False, resume=None, extra=[])  # run_step reads them
 
     frames = commands.add_parser(
         "frames", parents=[working], help="select sharp video frames into images/",
@@ -336,41 +338,88 @@ def _levels(raw: str) -> tuple[int, ...]:
         raise GausserError(f"--levels must be comma-separated integers, got {raw!r}") from exc
 
 
-def _mask(scene: Scene, prompt: str, args: argparse.Namespace, exclude: bool = False) -> None:
-    steps.mask(
-        scene, prompt, threshold=args.threshold, all_instances=args.all_instances, dilation=args.dilation,
-        feather=args.feather, device=args.device, checkpoint=args.sam_checkpoint, miss=args.miss, exclude=exclude,
-    )
+def _check(name: str, args: argparse.Namespace) -> None:
+    """Refuse option combinations a step cannot honour, before it is recorded as started."""
+    if name == "frames":
+        if args.min_frames > args.max_frames or (args.every is not None and args.every < 1):
+            raise GausserError("--min-frames must not exceed --max-frames, and --every must be at least 1")
+        if args.overlap is not None and not 30 <= args.overlap <= 95:
+            raise GausserError("--overlap is a percentage from 30 to 95")
+        if args.overlap is not None and args.every is not None:
+            raise GausserError("--overlap and --every cannot be combined")
+    elif name == "train":
+        if args.resume:
+            args.trainer = "msplat"  # only Msplat runs can be resumed
+        if args.extra[:1] == ["--"]:
+            args.extra = args.extra[1:]
+        if args.extra and args.trainer != "brush":
+            raise GausserError("Arguments after -- go to Brush; Msplat takes none")
+        if args.exclude_masks and (args.trainer != "brush" or args.no_masks):
+            raise GausserError("--exclude-masks is for Brush and cannot be combined with --no-masks")
+        if args.adaptive and args.trainer != "brush":
+            raise GausserError("--adaptive is for Brush")
 
 
-def _train(scene: Scene, args: argparse.Namespace, resume: str | None = None, extra: list[str] | None = None) -> Path:
+def run_step(scene: Scene, name: str, args: argparse.Namespace, source: Path | None = None) -> None:
+    """Run one step inside `scene.step()` (history and log); a run folder it makes goes into the end record."""
+    _check(name, args)
+    info: dict[str, Any] = {}  # what the history records about the step
+    if name == "frames":
+        info = {"source": str(source)}
+    elif name == "mask":
+        info = {"prompt": args.prompt, "exclude": args.exclude}
+    elif name == "solve":
+        info = {"matcher": args.matcher}
+    elif name == "train":
+        info = {"trainer": args.trainer, "iterations": args.iterations}
+    with scene.step(name, **info) as made:
+        run = None
+        if name == "frames":
+            assert source is not None
+            steps.frames(
+                scene, source, args.ranges, spacing=args.spacing, min_frames=args.min_frames, max_frames=args.max_frames,
+                every=args.every, overlap=args.overlap / 100 if args.overlap is not None else None,
+            )
+        elif name == "mask":
+            steps.mask(
+                scene, args.prompt, threshold=args.threshold, all_instances=args.all_instances, dilation=args.dilation,
+                feather=args.feather, device=args.device, checkpoint=args.sam_checkpoint, miss=args.miss, exclude=args.exclude,
+            )
+        elif name == "solve":
+            steps.solve(scene, args.matcher, args.no_masks)
+        elif name == "dense":
+            steps.dense(scene, args.resolution_level)
+        elif name == "train":
+            run = _train(scene, args)
+        elif name == "lod":
+            run = steps.lod(
+                scene, source, chunk_count=args.chunk_count, chunk_extent=args.chunk_extent, percentages=_levels(args.levels),
+            )
+        elif name == "mesh":
+            run = steps.mesh(scene, faces=args.faces, refine=args.refine, texture_size=args.texture_size)
+        elif name == "map":
+            run = mapping.make(scene, source, args.resolution)
+        if run is not None:
+            made["run"] = str(run.relative_to(scene.root))
+
+
+def _train(scene: Scene, args: argparse.Namespace) -> Path:
     """Train and return the run folder."""
     if args.trainer == "msplat":
         from . import msplat
 
-        if args.adaptive:
-            raise GausserError("--adaptive is for Brush")
-
         export = msplat.train(
             scene, iterations=args.iterations, downscale_factor=args.downscale,
-            checkpoint_every=args.checkpoint_every, resume=resume, no_masks=args.no_masks,
+            checkpoint_every=args.checkpoint_every, resume=args.resume, no_masks=args.no_masks,
         )
         print(f"Export: {export}")
         return export.parent.parent
     return steps.train_brush(
-            scene, iterations=args.iterations, export_every=args.export_every,
-            max_splats=args.max_splats, max_resolution=args.max_resolution, eval_split=args.eval_split,
-            extra=extra or [], no_masks=args.no_masks, exclude_masks=getattr(args, "exclude_masks", False),
-            init=args.init, adaptive=args.adaptive, max_iterations=args.max_iterations,
-        )
-
-
-def _mesh(scene: Scene, args: argparse.Namespace) -> Path:
-    return steps.mesh(scene, faces=args.faces, refine=args.refine, texture_size=args.texture_size)
-
-
-def _lod(scene: Scene, source: Path | None, args: argparse.Namespace) -> Path:
-    return steps.lod(scene, source, chunk_count=args.chunk_count, chunk_extent=args.chunk_extent, percentages=_levels(args.levels))
+        scene, iterations=args.iterations, export_every=args.export_every,
+        max_splats=args.max_splats, max_resolution=args.max_resolution, eval_split=args.eval_split,
+        extra=args.extra, no_masks=args.no_masks, exclude_masks=args.exclude_masks,
+        init=args.init, adaptive=args.adaptive, max_iterations=args.max_iterations,
+    )
 
 
 def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
@@ -399,37 +448,25 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
     if args.import_photos:
         scene.import_loose_photos()
     if args.video and due("frames", bool(scene.image_files())):
-        with scene.step("frames", source=str(args.video)):
-            _frames(scene, args.video, None, args)
+        run_step(scene, "frames", args, args.video)
         ran("frames")
     images = scene.require_images()
     if args.prompt and due("mask", scene.masks_done(images)):
-        with scene.step("mask", prompt=args.prompt):
-            _mask(scene, args.prompt, args)
+        run_step(scene, "mask", args)
         ran("mask")
     if due("solve", scene.solve_done(images)):
-        with scene.step("solve", matcher=args.matcher):
-            steps.solve(scene, args.matcher, args.no_masks)
+        run_step(scene, "solve", args)
         ran("solve")
-    if args.dense and due("dense", scene.dense_done()):
-        with scene.step("dense"):
-            steps.dense(scene, args.resolution_level)
-        ran("dense")
-    if due("train", scene.train_done()):
-        with scene.step("train", trainer=args.trainer, iterations=args.iterations) as made:
-            made["run"] = str(_train(scene, args).relative_to(scene.root))
-        ran("train")
-    if args.lod and due("lod", scene.lod_done()):
-        with scene.step("lod") as made:
-            made["run"] = str(_lod(scene, None, args).relative_to(scene.root))
-        ran("lod")
-    if args.mesh and due("mesh", scene.mesh_done()):
-        with scene.step("mesh") as made:
-            made["run"] = str(_mesh(scene, args).relative_to(scene.root))
-        ran("mesh")
-    if args.map and due("map", scene.map_done()):
-        with scene.step("map") as made:
-            made["run"] = str(mapping.make(scene, resolution=args.resolution).relative_to(scene.root))
+    for name, wanted, done in (
+        ("dense", args.dense, scene.dense_done),
+        ("train", True, scene.train_done),
+        ("lod", args.lod, scene.lod_done),
+        ("mesh", args.mesh, scene.mesh_done),
+        ("map", args.map, scene.map_done),
+    ):
+        if wanted and due(name, done()):
+            run_step(scene, name, args)
+            ran(name)
 
 
 def status(scene: Scene) -> None:
@@ -461,10 +498,10 @@ def status(scene: Scene) -> None:
         print("model   -")
     cloud = scene.dense_cloud()
     if cloud:
-        print(f"dense   {steps.ply_count(cloud):,} points{'' if scene.dense_done() else stale}")
+        print(f"dense   {ply.count(cloud):,} points{'' if scene.dense_done() else stale}")
     lidar = scene.lidar_cloud()
     if lidar:
-        print(f"lidar   {steps.ply_count(lidar):,} points, ARKit poses (iPhone scan)")
+        print(f"lidar   {ply.count(lidar):,} points, ARKit poses (iPhone scan)")
     exports = scene.exports()
     for export in exports[-5:]:
         print(f"export  {export.relative_to(scene.root)}")
@@ -481,36 +518,31 @@ def status(scene: Scene) -> None:
         if size:
             print(f"tmp     {size / 1e9:.1f} GB of failed attempts in {scene.tmp} (delete when nothing is running)")
     print("\nTools")
-    tools = {
-        "ffmpeg": steps.FFMPEG_HINT,
-        "ffprobe": steps.FFMPEG_HINT,
-        "colmap": steps.COLMAP_HINT,
-        "brush": steps.BRUSH_HINT,
-        "splat-transform": steps.SPLAT_TRANSFORM_HINT,
-        "DensifyPointCloud": f"optional, for `dense` and `mesh`; {steps.OPENMVS_HINT}",
-        "node": "brew install node",
-    }
-    for name, hint in tools.items():
+    for name, hint in TOOLS.items():
+        if name in ("InterfaceCOLMAP", "ReconstructMesh", "RefineMesh", "TextureMesh"):
+            continue  # built and linked together with DensifyPointCloud
+        if name == "DensifyPointCloud":
+            hint = f"optional, for `dense` and `mesh`; {hint}"
         path = shutil.which(name)
-        print(f"  {'✓' if path else '✗'} {name:16}{path or hint}")
+        print(f"  {'✓' if path else '✗'} {name:18}{path or hint}")
     sam3 = importlib.util.find_spec("sam3")
     if sam3 is None or sam3.origin is None:
-        print(f"  ✗ {'sam3':16}optional; run scripts/install-macos.sh")
+        print(f"  ✗ {'sam3':18}optional; run scripts/install-macos.sh")
     elif "_TRITON_AVAILABLE" not in (Path(sam3.origin).parent / "model" / "edt.py").read_text():
-        print(f"  ✗ {'sam3':16}installed but missing patches/sam3-macos.patch; rerun scripts/install-macos.sh")
+        print(f"  ✗ {'sam3':18}installed but missing patches/sam3-macos.patch; rerun scripts/install-macos.sh")
     else:
-        print(f"  ✓ {'sam3':16}patched for macOS")
+        print(f"  ✓ {'sam3':18}patched for macOS")
     from .orbit import has_playwright, node_dir
 
     found = has_playwright()
-    print(f"  {'✓' if found else '✗'} {'playwright-core':16}{node_dir() if found else 'optional, for `gausser orbit`; run scripts/install-macos.sh'}")
+    print(f"  {'✓' if found else '✗'} {'playwright-core':18}{node_dir() if found else 'optional, for `gausser orbit`; run scripts/install-macos.sh'}")
     found = importlib.util.find_spec("msplat") is not None
-    print(f"  {'✓' if found else '✗'} {'msplat':16}{'importable' if found else 'optional; pip install -e .[msplat]'}")
+    print(f"  {'✓' if found else '✗'} {'msplat':18}{'importable' if found else 'optional; pip install -e .[msplat]'}")
     from .view import supersplat_dist
 
     dist = supersplat_dist()
     ok = (dist / "index.html").is_file()
-    print(f"  {'✓' if ok else '✗'} {'supersplat':16}{dist if ok else 'optional, for `gausser view`; run scripts/install-macos.sh'}")
+    print(f"  {'✓' if ok else '✗'} {'supersplat':18}{dist if ok else 'optional, for `gausser view`; run scripts/install-macos.sh'}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -636,19 +668,6 @@ def _time_range(text: str) -> tuple[float, float]:
     return span
 
 
-def _frames(scene: Scene, source: Path, ranges: list[tuple[float, float]] | None, args: argparse.Namespace) -> None:
-    if args.min_frames > args.max_frames or (args.every is not None and args.every < 1):
-        raise GausserError("--min-frames must not exceed --max-frames, and --every must be at least 1")
-    if args.overlap is not None and not 30 <= args.overlap <= 95:
-        raise GausserError("--overlap is a percentage from 30 to 95")
-    if args.overlap is not None and args.every is not None:
-        raise GausserError("--overlap and --every cannot be combined")
-    steps.frames(
-        scene, source, ranges, spacing=args.spacing, min_frames=args.min_frames, max_frames=args.max_frames, every=args.every,
-        overlap=args.overlap / 100 if args.overlap is not None else None,
-    )
-
-
 def _crop(scene: Scene, args: argparse.Namespace) -> None:
     from . import crop
 
@@ -666,39 +685,10 @@ def _crop(scene: Scene, args: argparse.Namespace) -> None:
 def dispatch(scene: Scene, args: argparse.Namespace) -> None:
     if args.command == "run":
         run_pipeline(scene, args)
-    elif args.command == "frames":
-        with scene.step("frames", source=str(args.source)):
-            _frames(scene, args.source, args.ranges, args)
-    elif args.command == "mask":
-        with scene.step("mask", prompt=args.prompt, exclude=args.exclude):
-            _mask(scene, args.prompt, args, args.exclude)
-    elif args.command == "solve":
-        with scene.step("solve", matcher=args.matcher):
-            steps.solve(scene, args.matcher, args.no_masks)
-    elif args.command == "train":
-        if args.resume:
-            args.trainer = "msplat"  # only Msplat runs can be resumed
-        extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
-        if extra and args.trainer != "brush":
-            raise GausserError("Arguments after -- go to Brush; Msplat takes none")
-        if args.exclude_masks and (args.trainer != "brush" or args.no_masks):
-            raise GausserError("--exclude-masks is for Brush and cannot be combined with --no-masks")
-        with scene.step("train", trainer=args.trainer, iterations=args.iterations) as made:
-            made["run"] = str(_train(scene, args, args.resume, extra).relative_to(scene.root))
     elif args.command == "crop":
         _crop(scene, args)
-    elif args.command == "dense":
-        with scene.step("dense"):
-            steps.dense(scene, args.resolution_level)
-    elif args.command == "mesh":
-        with scene.step("mesh") as made:
-            made["run"] = str(_mesh(scene, args).relative_to(scene.root))
-    elif args.command == "map":
-        with scene.step("map") as made:
-            made["run"] = str(mapping.make(scene, args.source, args.resolution).relative_to(scene.root))
-    elif args.command == "lod":
-        with scene.step("lod") as made:
-            made["run"] = str(_lod(scene, args.source, args).relative_to(scene.root))
+    else:
+        run_step(scene, args.command, args, getattr(args, "source", None))
 
 
 if __name__ == "__main__":

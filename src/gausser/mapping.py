@@ -16,8 +16,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from . import ply
 from .colmap_model import quaternion_matrix
-from .composite import read_ply
 from .scene import GausserError, Scene, replace
 
 SH_C0 = 0.28209479177387814
@@ -147,13 +147,9 @@ def make(scene: Scene, source: Path | None = None, resolution: float = 0.03) -> 
     record = scene.geo()
     if record is None:
         raise GausserError("The model is not georeferenced (no sparse/geo.json); solve photos or video frames with GPS")
-    if source is None:
-        exports = scene.exports()
-        if not exports:
-            raise GausserError("No trained .ply export found; run `gausser train` first")
-        source = exports[-1]
+    source = scene.splat(source)
     print(f"Reading {source}", flush=True)
-    _, data = read_ply(source)
+    _, data = ply.read(source)
     splat = {name: data[name] for name in data.dtype.names}
     west, east, south, north = extent(splat)
     width, height = int(np.ceil((east - west) / resolution)), int(np.ceil((north - south) / resolution))

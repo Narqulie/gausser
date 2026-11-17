@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
 
-from . import colmap_model, orbit, pano, steps as pipeline
+from . import colmap_model, orbit, pano, ply, steps as pipeline
 from .scene import GausserError, Scene, index, index_path, is_image, mtime, registered_images
 
 WEB = Path(__file__).with_name("web")
@@ -73,11 +73,11 @@ def _running(info: Any) -> bool:
     After a reboot the pid in an old lock or monitor.json may belong to an unrelated process; that one
     started after the record was written.
     """
-    if not (isinstance(info, dict) and isinstance(info.get("pid"), int) and _alive(info["pid"])):
+    if not (isinstance(info, dict) and isinstance(info.get("pid"), int) and isinstance(info.get("start"), (int, float))):
         return False
-    pid, start = info["pid"], info.get("start")
-    if not isinstance(start, (int, float)):
-        return True  # written by an older gausser
+    pid, start = info["pid"], info["start"]
+    if not _alive(pid):
+        return False
     if (pid, start) not in _genuine:
         out = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"},
@@ -94,26 +94,6 @@ def holder(scene: Scene) -> dict[str, Any] | None:
     """The command holding the scene lock, if it is still running."""
     info = _read_json(scene.root / ".gausser" / "lock")
     return info if _running(info) else None
-
-
-def legacy_step(scene: Scene) -> dict[str, Any] | None:
-    """A step of a gausser from before history and logs existed, seen by its staging folder still being written."""
-    if isinstance(_read_json(scene.root / ".gausser" / "lock"), dict):
-        return None  # the lock names its holder, and it has ended
-    newest, when = None, 0.0
-    for staging in scene.tmp.glob("*-*"):
-        written = max([mtime(staging), *(mtime(p) for p in staging.iterdir())]) if staging.is_dir() else 0.0
-        if written > when:
-            newest, when = staging, written
-    if newest is None or time.time() - when > 300:
-        return None
-    kind, _, started = newest.name.partition("-")
-    step = {"brush": "train"}.get(kind, kind)
-    try:
-        start = time.mktime(time.strptime(started[:15], "%Y%m%d-%H%M%S"))
-    except ValueError:
-        start = mtime(newest)
-    return {"step": step, "start": start, "log": None}
 
 
 def history(scene: Scene) -> list[dict[str, Any]]:
@@ -158,10 +138,6 @@ def live(scene: Scene, step: dict[str, Any]) -> dict[str, Any]:
         newest = _newest(models)
         if newest is not None:
             result["model"] = {"path": _rel(scene, newest), "registered": registered_images(newest), "mtime": mtime(newest)}
-    elif step["step"] == "mask":
-        result["count"] = sum(1 for _ in staging.glob("masks/*.png"))
-    elif step["step"] == "frames":
-        result["count"] = sum(1 for p in staging.glob("images/*") if is_image(p))
     return result
 
 
@@ -182,8 +158,6 @@ def state(scene: Scene) -> dict[str, Any]:
     running = holder(scene)
     steps = history(scene)
     current = next((s for s in reversed(steps) if "end" not in s), None) if running else None
-    if running is None and (current := legacy_step(scene)):
-        running = {"pid": None, "argv": [current["step"], "(started by an older gausser: no log)"], "start": current["start"]}
     first = None
     if images:
         try:
@@ -218,7 +192,7 @@ def state(scene: Scene) -> dict[str, Any]:
         "trained": scene.train_done(),
         "lods": [{"path": _rel(scene, p), "mtime": mtime(p / "lod-meta.json")} for p in scene.lod_runs()],
         "lod_current": scene.lod_done(),
-        "dense": cloud and {"points": pipeline.ply_count(cloud), "current": scene.dense_done()},
+        "dense": cloud and {"points": ply.count(cloud), "current": scene.dense_done()},
         "meshes": [{"path": _rel(scene, p / "mesh.glb"), "mtime": mtime(p / "mesh.glb")} for p in scene.mesh_runs()],
         "mesh_current": scene.mesh_done(),
         "crop": _read_json(scene.crop),  # {up, min, max}: `gausser crop`'s box in the level frame

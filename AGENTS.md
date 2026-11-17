@@ -26,7 +26,8 @@ src/gausser/
 ├── geo.py     GPS: DJI .SRT subtitle tracks → EXIF GPS in frames; solve's georeference (similarity onto GPS in EPSG:3067/UTM)
 ├── mapping.py `gausser map`: orthographic top-down splat render → ortho.tif, dsm.tif (COG, rasterio), map.html (Leaflet)
 ├── crop.py    `gausser crop`: box in the level frame (sparse/crop.json); crops Brush's start points, exports and the OpenMVS mesh
-├── colmap_model.py the one reader of binary COLMAP models (cameras.bin, images.bin, points3D.bin)
+├── colmap_model.py the one reader of binary COLMAP models (cameras.bin, images.bin, points3D.bin); writes Brush's start points3D.bin
+├── ply.py     every PLY reader/writer: splat exports (float properties), xyz+rgb clouds (LiDAR), OpenMVS dense clouds
 ├── msplat.py  experimental Msplat trainer with checkpoint resume; masks via black compositing
 ├── composite.py `gausser composite`: visual-hull filter of the statue splat, voxel carve of the context, PLY merge
 ├── align.py   `gausser align`: fits a similarity (multi-start trimmed ICP) of a splat onto a published one; splat-transform applies it
@@ -75,8 +76,7 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLT
   (through a pty on a terminal, so progress bars still draw), into `.gausser/logs/<time>-<step>.log`.
   Nothing in the pipeline reads these. Live data comes from staging folders: Brush's
   `.gausser/tmp/brush-*/exports/*.ply` and the COLMAP mapper's `snapshots/` (~20 per solve,
-  `--Mapper.snapshot_frames_freq`). Scenes run by a gausser without these files show the step only
-  from its recently written staging folder (`monitor.legacy_step`).
+  `--Mapper.snapshot_frames_freq`).
 - One monitor (port 8737, `~/.local/share/gausser/monitor.json`) serves every scene in the index
   `~/.local/share/gausser/history.jsonl` (`GAUSSER_HOME`; `scene.index_path()`): every `Scene.step()`
   record is also appended there with its `scene`, and `gausser monitor` adds an `opened` record. API
@@ -102,14 +102,14 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLT
   `masks` folder. That includes Msplat dataset copies, failed attempts and the old
   `.gausser/invalidated` archives. `train_brush` therefore passes a staging folder
   that only links `images`, `sparse` and `masks`; never pass the scene root.
-- External tools are found on PATH with `require_tool()` and run through
+- External tools are found on PATH with `require_tool(name)` (install hints in `scene.TOOLS`, which `status` lists) and run through
   `run_tool()`, with output passed straight through. Don't add output parsers or
   progress UIs to the CLI; the monitor page parses the step logs.
 
 - OpenMVS (`dense`, `mesh`; built by `scripts/install-openmvs.sh` at a pinned commit, tools linked into
   `~/.local/bin`) runs with `cwd` = the folder of its `.mvs` project: image paths in it are relative.
   `dense` passes `--remove-dmaps 1` (the depth maps were 7.5 GB for 350 frames). Its PLY ends each vertex in
-  two variable-length lists (views, weights); `steps.read_dense_cloud` walks them. Brush takes initial points
+  two variable-length lists (views, weights); `ply.read_dense_cloud` walks them. Brush takes initial points
   only from a COLMAP `points3D.bin`, so dense init writes one (empty tracks) into Brush's staging `sparse/0`,
   next to links to the real cameras; the run gets an `init-dense`/`init-lidar`/`init-sparse` marker. `--init auto` picks
   dense, else the LiDAR points (arkit/), only when Brush gets no masks (the clouds ignore masks; a masked run would keep

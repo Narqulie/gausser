@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from gausser import arkit, steps
+from gausser import arkit, ply, steps
 from gausser.scene import Scene
 
 WIDTH, HEIGHT, F = 64, 48, 50.0  # video frames; the depth maps are a quarter of that
@@ -54,7 +54,7 @@ def test_a_lidar_scan_folder_gives_frames_poses_depth_and_points_in_the_gravity_
     assert np.allclose(poses["frame_000001.jpg"]["rotation"], np.eye(3), atol=1e-9)  # looks along +z, image down = +y
     assert poses["frame_000001.jpg"]["size"] == [WIDTH, HEIGHT]
     assert (scene.arkit / "depth" / "frame_000001.png").is_file()
-    xyz, rgb = arkit.read_points(scene.arkit / "points.ply", 10**6)
+    xyz, rgb = ply.read_points(scene.arkit / "points.ply", 10**6)
     assert np.allclose(xyz[:, 2], 2.0) and (rgb[:, 0] > 240).all() and (rgb[:, 2] < 15).all()  # red, through JPEG
     # The low-confidence top row (image up = -y) is left out: the points start one depth pixel lower.
     assert xyz[:, 1].min() > (0.5 + 1 - 24 / 4) / (F / 4) * 2 - 0.01

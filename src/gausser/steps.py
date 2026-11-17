@@ -15,14 +15,9 @@ from typing import Any
 
 from PIL import Image
 
-from . import arkit, colmap_model, crop as cropping, geo, keyframes, pano, qoocam
+from . import arkit, colmap_model, crop as cropping, geo, keyframes, pano, ply, qoocam
 from .scene import GEO_FILE, GausserError, Scene, is_image, is_video, registered_images, remove, replace, require_tool, run_tool
 
-BRUSH_HINT = "build Brush (cargo build --release) and put `brush` on PATH"
-COLMAP_HINT = "brew install colmap"
-FFMPEG_HINT = "brew install ffmpeg (version 7 or newer)"
-SPLAT_TRANSFORM_HINT = "npm install -g @playcanvas/splat-transform"
-OPENMVS_HINT = "build OpenMVS with scripts/install-openmvs.sh"
 DENSE_INIT_POINTS = 500_000  # Brush's starting splats from dense/; it grows to --max-splats from there
 # `train --adaptive`: after --iterations, train this many more steps at a time while held-out PSNR gains this much.
 EXTEND_STEPS = 5000
@@ -110,7 +105,7 @@ def _select_frames(
 
     With `overlap`, each part has one level, the threshold for that overlap, and the frame count is not limited.
     """
-    ffmpeg, ffprobe = require_tool("ffmpeg", FFMPEG_HINT), require_tool("ffprobe", FFMPEG_HINT)
+    ffmpeg, ffprobe = require_tool("ffmpeg"), require_tool("ffprobe")
     spans = ranges or [None]  # type: ignore[list-item]
     parts = [(video, span) for video in videos for span in spans]
     infos, analysed = [], []
@@ -196,7 +191,6 @@ def mask(
     images = scene.require_images()
     try:
         import numpy as np
-        from PIL import Image
 
         from . import sam
 
@@ -255,7 +249,7 @@ def mask(
 def exclude_mask(hit: Any, protect: Any, dilation: int) -> Any:
     """White (True) = train: everything except ``hit`` grown by ``dilation`` px, but never inside ``protect``."""
     import numpy as np
-    from PIL import Image, ImageFilter
+    from PIL import ImageFilter
 
     grown = Image.fromarray(hit.astype(np.uint8) * 255, mode="L")
     if dilation > 0:
@@ -268,7 +262,6 @@ def _exclude(
 ) -> None:
     """Write out/<stem>.png: black where every instance of ``prompt`` is, white elsewhere and inside masks/."""
     import numpy as np
-    from PIL import Image
 
     hits, share = 0, 0.0
     with Image.open(images[0]) as first:
@@ -300,7 +293,7 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     In a 360° scene the views of one panorama form a COLMAP rig with fixed, known rotations, and
     masks-exclude/ also masks features (the operator moves with the camera, so it would match).
     """
-    colmap = require_tool("colmap", COLMAP_HINT)
+    colmap = require_tool("colmap")
     images = scene.require_images()
     rig = scene.is_pano()
     positions = {} if rig else geo.image_positions(images)  # drone photos and DJI video frames carry GPS
@@ -435,8 +428,8 @@ def start_points(scene: Scene, cloud: Path | None, init: str, crop: cropping.Cro
     import numpy as np
 
     if cloud:
-        print(f"Reading {cloud.relative_to(scene.root)} ({ply_count(cloud):,} points)", flush=True)
-        read = read_dense_cloud if init == "dense" else arkit.read_points
+        print(f"Reading {cloud.relative_to(scene.root)} ({ply.count(cloud):,} points)", flush=True)
+        read = ply.read_dense_cloud if init == "dense" else ply.read_points
         xyz, rgb = read(cloud, DENSE_INIT_POINTS if crop is None else sys.maxsize)  # thinned after cropping
         name = str(cloud.relative_to(scene.root))
     else:
@@ -479,7 +472,7 @@ def train_brush(
     With a crop (sparse/crop.json), Brush starts only from points in the box and the exports keep only
     splats in it. `adaptive` continues 5000 steps at a time (see `extend`) up to `max_iterations`.
     """
-    brush = require_tool("brush", BRUSH_HINT)
+    brush = require_tool("brush")
     scene.require_model()
     if exclude_masks and no_masks:
         raise GausserError("--exclude-masks and --no-masks cannot be combined")
@@ -522,7 +515,7 @@ def train_brush(
             if path.name != "points3D.bin":
                 (model / path.name).symlink_to(path)
         xyz, rgb, source_name = start_points(scene, cloud, init, crop)
-        write_points3d(model / "points3D.bin", xyz, rgb)
+        colmap_model.write_points3d(model / "points3D.bin", xyz, rgb)
         print(f"Starting from {len(xyz):,} points of {source_name}")
     command = [
         brush, str(dataset),
@@ -624,9 +617,9 @@ def dense(scene: Scene, resolution_level: int = 1) -> None:
     OpenMVS estimates a depth map per image (patch match, on Metal on a Mac) and fuses the ones that agree.
     `resolution_level` halves the images that many times first; 1 is about 4x faster than 0.
     """
-    colmap = require_tool("colmap", COLMAP_HINT)
-    interface = require_tool("InterfaceCOLMAP", OPENMVS_HINT)
-    densify = require_tool("DensifyPointCloud", OPENMVS_HINT)
+    colmap = require_tool("colmap")
+    interface = require_tool("InterfaceCOLMAP")
+    densify = require_tool("DensifyPointCloud")
     model = scene.require_model()
     staged = scene.staging("dense")
     # OpenMVS needs ideal pinhole cameras; this writes images/ and sparse/ without lens distortion.
@@ -645,7 +638,7 @@ def dense(scene: Scene, resolution_level: int = 1) -> None:
     for path in [*staged.glob("*.log"), *staged.glob("*.sh"), staged / "stereo"]:
         remove(path)
     replace(staged, scene.dense)
-    print(f"Dense point cloud: {ply_count(scene.dense / 'scene_dense.ply'):,} points in {scene.dense}")
+    print(f"Dense point cloud: {ply.count(scene.dense / 'scene_dense.ply'):,} points in {scene.dense}")
 
 
 def mesh(scene: Scene, *, faces: int | None = None, refine: bool = True, texture_size: int = 8192) -> Path:
@@ -655,9 +648,9 @@ def mesh(scene: Scene, *, faces: int | None = None, refine: bool = True, texture
     until the photos agree, and TextureMesh picks a photo per triangle. `faces` decimates the mesh
     before texturing; `refine=False` skips the slowest stage (CPU only).
     """
-    reconstruct = require_tool("ReconstructMesh", OPENMVS_HINT)
-    refiner = require_tool("RefineMesh", OPENMVS_HINT)
-    texture = require_tool("TextureMesh", OPENMVS_HINT)
+    reconstruct = require_tool("ReconstructMesh")
+    refiner = require_tool("RefineMesh")
+    texture = require_tool("TextureMesh")
     if scene.dense_cloud() is None:
         raise GausserError("No dense point cloud; run `gausser dense` first")
     staged = scene.staging("mesh")
@@ -681,7 +674,7 @@ def mesh(scene: Scene, *, faces: int | None = None, refine: bool = True, texture
         texture, project, "-m", str(surface), "-o", str(staged / "mesh-textured.mvs"),
         "--export-type", "glb", "--max-texture-size", str(texture_size),
     ]
-    count = ply_count(surface, "face")
+    count = ply.count(surface, "face")
     if faces and faces < count:
         command += ["--decimate", f"{faces / count:.6f}"]
     run_tool(command, cwd=scene.dense)
@@ -697,66 +690,6 @@ def mesh(scene: Scene, *, faces: int | None = None, refine: bool = True, texture
     return run
 
 
-def ply_count(path: Path, element: str = "vertex") -> int:
-    """The number of `element`s a PLY file declares."""
-    with path.open("rb") as stream:
-        for line in stream:
-            if line.startswith(f"element {element} ".encode()):
-                return int(line.split()[2])
-            if line.strip() == b"end_header":
-                break
-    raise GausserError(f"{path.name} declares no {element} count")
-
-
-def read_dense_cloud(path: Path, limit: int) -> tuple[Any, Any]:
-    """Positions and colours of at most `limit` randomly chosen points of an OpenMVS dense cloud.
-
-    Its vertices end in variable-length lists (the views that saw them), so the records are walked
-    once to find where each starts.
-    """
-    import mmap
-    from array import array
-
-    import numpy as np
-
-    with path.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
-        header = data[: data.find(b"end_header") + 11].decode()
-        fields = [line.split()[-1] for line in header.splitlines() if line.startswith("property")]
-        if fields[:6] != ["x", "y", "z", "red", "green", "blue"] or "binary_little_endian" not in header:
-            raise GausserError(f"{path.name} is not an OpenMVS dense cloud")
-        count = ply_count(path)
-        fixed = 15 + 12 * (fields[6:9] == ["nx", "ny", "nz"])  # xyz, rgb, optional normals
-        lists = fields[9:] if fixed == 27 else fields[6:]
-        starts = array("q", bytes(8 * count))
-        offset = len(header)
-        for index in range(count):
-            starts[index] = offset
-            offset += fixed
-            for _ in lists:  # each list: a uint8 length and that many 4-byte values
-                offset += 1 + 4 * data[offset]
-        chosen = np.asarray(starts)
-        if count > limit:
-            chosen = np.sort(np.random.default_rng(0).choice(chosen, limit, replace=False))
-        raw = np.frombuffer(data, dtype=np.uint8)[chosen[:, None] + np.arange(15)]
-        xyz = raw[:, :12].copy().view(np.float32).astype(np.float64)
-        rgb = raw[:, 12:15].copy()
-        del raw
-    return xyz, rgb
-
-
-def write_points3d(path: Path, xyz: Any, rgb: Any) -> None:
-    """Write a COLMAP points3D.bin with empty tracks (Brush reads only position and colour)."""
-    import numpy as np
-
-    record = np.dtype([("id", "<u8"), ("xyz", "<f8", 3), ("rgb", "u1", 3), ("error", "<f8"), ("track", "<u8")])
-    points = np.zeros(len(xyz), dtype=record)
-    points["id"] = np.arange(1, len(xyz) + 1)
-    points["xyz"], points["rgb"] = xyz, rgb
-    with path.open("wb") as stream:
-        stream.write(np.uint64(len(xyz)).tobytes())
-        stream.write(points.tobytes())
-
-
 def lod(
     scene: Scene,
     source: Path | None = None,
@@ -766,15 +699,8 @@ def lod(
     percentages: tuple[int, ...] = (100, 50, 25),
 ) -> Path:
     """Build a streamed PlayCanvas LOD set into runs/lod/<time>/."""
-    tool = require_tool("splat-transform", SPLAT_TRANSFORM_HINT)
-    if source is None:
-        exports = scene.exports()
-        if not exports:
-            raise GausserError("No trained .ply export found; run `gausser train` first")
-        source = exports[-1]
-    source = source.expanduser().resolve()
-    if not source.is_file():
-        raise GausserError(f"LOD source does not exist: {source}")
+    tool = require_tool("splat-transform")
+    source = scene.splat(source)
     if percentages[0] != 100 or list(percentages) != sorted(set(percentages), reverse=True) or percentages[-1] <= 0:
         raise GausserError("LOD percentages must start at 100 and strictly decrease, e.g. 100,50,25")
 
@@ -805,7 +731,7 @@ def subset(scene: Scene, patterns: list[str], out: Path) -> Scene:
     The COLMAP model keeps its cameras, 3D points and coordinates, only the other images are
     removed, so splats trained on different subsets share one coordinate frame. The source is only read.
     """
-    colmap = require_tool("colmap", COLMAP_HINT)
+    colmap = require_tool("colmap")
     model = scene.require_model()
     images = scene.image_files()
     chosen = [image for image in images if any(fnmatchcase(image.name, pattern) for pattern in patterns)]

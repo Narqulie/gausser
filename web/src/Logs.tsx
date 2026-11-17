@@ -29,13 +29,6 @@ export function Logs({ state, pick, onPick, live }: {
     <div className="logs">
       <div className="runs">
         {runs.length === 0 && !current && <div className="empty">Steps run with this gausser are listed here.</div>}
-        {current && !current.log && (
-          <div className="run active" style={{ "--step": `var(--${current.step})` } as React.CSSProperties}>
-            <span className="what"><span className={`step-${current.step}`}>{current.step}</span> <span className="live">running</span></span>
-            <span>{duration(state.now - current.start)}</span>
-            <span className="when">started by an older gausser, so there is no log</span>
-          </div>
-        )}
         {runs.map((run) => {
           const running = current?.start === run.start && current.step === run.step;
           const status = running ? "running" : run.end === undefined ? "died" : run.ok ? "ok" : run.error === "interrupted" ? "interrupted" : "failed";

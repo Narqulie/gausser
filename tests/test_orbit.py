@@ -107,7 +107,7 @@ def orbit_scene(tmp_path, monkeypatch):
     (node_dir / "node_modules" / "playwright-core").mkdir(parents=True)
     monkeypatch.setenv("GAUSSER_SUPERSPLAT", str(dist))
     monkeypatch.setenv("GAUSSER_NODE_DIR", str(node_dir))
-    monkeypatch.setattr(orbit, "require_tool", lambda name, hint: name)
+    monkeypatch.setattr(orbit, "require_tool", lambda name: name)
     return scene, export
 
 
@@ -160,7 +160,7 @@ def test_orbit_without_a_model_or_playwright_fails_clearly(orbit_scene, monkeypa
     assert "playwright-core" in capsys.readouterr().err
 
     monkeypatch.undo()
-    monkeypatch.setattr(orbit, "require_tool", lambda name, hint: name)
+    monkeypatch.setattr(orbit, "require_tool", lambda name: name)
     monkeypatch.setenv("GAUSSER_NODE_DIR", str(scene.root.parent / "node"))
     (scene.sparse / "0" / "images.bin").unlink()
     assert cli.main(["orbit", "-s", str(scene.root)]) == 1
@@ -198,7 +198,7 @@ def test_write_gradient_interpolates_rows_and_clamps_outside_the_stops(tmp_path)
 def test_orbit_solid_background_is_one_render_without_ffmpeg(orbit_scene, monkeypatch, tmp_path):
     scene, _ = orbit_scene
     commands = []
-    monkeypatch.setattr(orbit, "require_tool", lambda name, hint: pytest.fail("no ffmpeg needed") if name == "ffmpeg" else name)
+    monkeypatch.setattr(orbit, "require_tool", lambda name: pytest.fail("no ffmpeg needed") if name == "ffmpeg" else name)
     monkeypatch.setattr(orbit, "run_tool", lambda command, *, cwd, env=None: (commands.append(command), Path(command[4]).write_bytes(b"mp4")))
 
     assert cli.main(["orbit", "-s", str(scene.root), "--background", "#102030", "-o", str(tmp_path / "x.mp4")]) == 0

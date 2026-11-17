@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gausser import cli, crop, steps
-from gausser.composite import read_ply, write_ply
+from gausser import cli, colmap_model, crop, ply, steps
+from gausser.ply import read as read_ply, write as write_ply
 from gausser.scene import Scene
 
 from test_gausser import make_scene, tools  # noqa: F401  (fixture)
@@ -33,7 +33,7 @@ def cropped_scene(root: Path) -> Scene:
     model.mkdir(parents=True)
     (model / "images.bin").write_bytes(struct.pack("<Q", 3))
     (model / "cameras.bin").write_bytes(b"")
-    steps.write_points3d(model / "points3D.bin", np.array([[0.0, 0, -1], [0, 0, 5], [9, 0, 0]]), np.zeros((3, 3), np.uint8))
+    colmap_model.write_points3d(model / "points3D.bin", np.array([[0.0, 0, -1], [0, 0, 5], [9, 0, 0]]), np.zeros((3, 3), np.uint8))
     assert cli.main(["crop", "-s", str(root), "--box=-1,0,-1,1,2,1", "--up=" + ",".join(map(str, UP))]) == 0
     return scene
 
@@ -98,7 +98,7 @@ def test_crop_mesh_keeps_faces_with_every_corner_inside(tmp_path):
         faces.tofile(f)
 
     assert crop.crop_mesh(path, crop.Crop(UP, [-1, 0, -1], [1, 2, 1])) == (1, 2)
-    assert steps.ply_count(path) == 3 and steps.ply_count(path, "face") == 1
+    assert ply.count(path) == 3 and ply.count(path, "face") == 1
 
 
 @pytest.mark.parametrize("scores, final", [({10: 20.0, 15: 21.0, 20: 21.05}, 20), ({10: 20.0, 15: 19.5}, 10)])

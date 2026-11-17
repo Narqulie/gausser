@@ -13,6 +13,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from . import ply
 from .colmap_model import read_cameras, read_images
 from .scene import GausserError, Scene, replace
 
@@ -60,45 +61,13 @@ def hull_keep(
     return (seen >= min_views) & (inside >= min_share * seen)
 
 
-def read_ply(path: Path) -> tuple[list[str], Any]:
-    """Header lines and the vertex array of a binary little-endian PLY with float properties only."""
-    import numpy as np
-
-    with path.open("rb") as f:
-        header = []
-        while (line := f.readline().decode().strip()) != "end_header":
-            if not line and not f.peek(1):
-                raise GausserError(f"{path.name} is not a PLY file")
-            header.append(line)
-        count = next((int(h.split()[2]) for h in header if h.startswith("element vertex")), None)
-        names = [h.split()[2] for h in header if h.startswith("property float")]
-        if count is None or "format binary_little_endian 1.0" not in header or len(names) != sum(
-            h.startswith("property") for h in header
-        ):
-            raise GausserError(f"{path.name}: only binary little-endian PLY with float properties is supported")
-        return header, np.fromfile(f, dtype=np.dtype([(n, "<f4") for n in names]), count=count)
-
-
-def write_ply(path: Path, header: list[str], data: Any) -> None:
-    lines = [f"element vertex {len(data)}" if h.startswith("element vertex") else h for h in header]
-    with path.open("wb") as f:
-        f.write(("\n".join(lines) + "\nend_header\n").encode())
-        data.tofile(f)
-
-
-def xyz(data: Any) -> Any:
-    import numpy as np
-
-    return np.stack([data["x"], data["y"], data["z"]], axis=1)
-
-
 def carve(
     statue: Any, context: Any, cells: int = 256, grow: int = 2, radius: float | None = None,
 ) -> Any:
     """Boolean keep-mask over ``context``: False inside the statue's voxel hull (and beyond ``radius`` heights)."""
     import numpy as np
 
-    solid = xyz(statue)[1 / (1 + np.exp(-statue["opacity"])) > 0.5]
+    solid = ply.opaque_centres(statue)
     if not len(solid):
         raise GausserError("The statue has no opaque splats to carve with")
     lo, hi = np.percentile(solid, 0.5, axis=0), np.percentile(solid, 99.5, axis=0)
@@ -111,7 +80,7 @@ def carve(
     for _ in range(grow):  # 6-neighbour dilation, one voxel per pass
         keys = np.unique(np.concatenate([keys, *(keys + sign * stride for stride in strides for sign in (1, -1))]))
 
-    points = xyz(context)
+    points = ply.xyz(context)
     idx = ((points - lo) / size).astype(int)
     within = np.all((idx >= 0) & (idx < shape), axis=1)  # the margin keeps grown keys from wrapping across rows
     inside = np.zeros(len(context), bool)
@@ -131,12 +100,12 @@ def column_keep(header: list[str], statue: Any, points: Any, radius: float, floo
     """
     import numpy as np
 
-    line = next((h for h in header if h.startswith("comment Vertical axis")), None)
+    line = next((h for h in header if h.startswith(ply.VERTICAL)), None)
     if line is None:
         raise GausserError("--column needs the context PLY's 'comment Vertical axis' header line (written by Brush)")
     up = np.array([float(v) for v in line.split(":", 1)[1].split()])
     up /= np.linalg.norm(up)
-    solid = xyz(statue)[1 / (1 + np.exp(-statue["opacity"])) > 0.5]
+    solid = ply.opaque_centres(statue)
     if not len(solid):
         raise GausserError("The statue has no opaque splats to place the column on")
     along = np.einsum("ij,j->i", solid, up)  # einsum: no spurious matmul warnings
@@ -173,18 +142,18 @@ def composite(
 
     statue = (statue or newest_export(scene, "masked")).expanduser().resolve()
     context = (context or newest_export(scene, "unmasked", "excluded")).expanduser().resolve()
-    for ply in (statue, context):
-        if not ply.is_file():
-            raise GausserError(f"No such file: {ply}")
+    for path in (statue, context):
+        if not path.is_file():
+            raise GausserError(f"No such file: {path}")
     scene.require_model()
     if not scene.masks.is_dir():
         raise GausserError("No masks/ folder; the statue splat is filtered by the masks (`gausser mask`)")
     print(f"statue  {statue}\ncontext {context}")
-    _, statue_data = read_ply(statue)
-    header, context_data = read_ply(context)
+    _, statue_data = ply.read(statue)
+    header, context_data = ply.read(context)
     if statue_data.dtype != context_data.dtype:
         raise GausserError("The statue and context splats have different PLY layouts")
-    hull = hull_keep(xyz(statue_data), scene, slack=slack)
+    hull = hull_keep(ply.xyz(statue_data), scene, slack=slack)
     print(f"visual hull keeps {int(hull.sum()):,}/{len(hull):,} statue splats")
     statue_data = statue_data[hull]
     keep = carve(statue_data, context_data, cells=cells, grow=grow, radius=radius)
@@ -192,12 +161,12 @@ def composite(
 
     merged = np.concatenate([context_data[keep], statue_data])
     if column:
-        inside = column_keep(header, statue_data, xyz(merged), column, floor)
+        inside = column_keep(header, statue_data, ply.xyz(merged), column, floor)
         print(f"column keeps {int(inside.sum()):,}/{len(inside):,} splats")
         merged = merged[inside]
 
     staged = scene.staging("composite")
-    write_ply(staged / "composite.ply", header, merged)
+    ply.write(staged / "composite.ply", header, merged)
     if out:
         out = out.expanduser().resolve()
         out.parent.mkdir(parents=True, exist_ok=True)

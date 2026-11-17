@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import colmap_model
+from . import colmap_model, ply
 from .scene import GausserError
 
 POSES = "poses.json"
@@ -92,35 +92,9 @@ def import_scan(scan: Path, images: Path, items: list[dict[str, Any]], out: Path
     xyz, rgb = np.concatenate(chunks), np.concatenate(colours)
     _, first = np.unique(np.floor(xyz / VOXEL).astype(np.int64), axis=0, return_index=True)
     (out / POSES).write_text(json.dumps(selected, indent=1))
-    write_points(out / POINTS, xyz[first], rgb[first])
+    ply.write_points(out / POINTS, xyz[first], rgb[first])
     print(f"ARKit poses for {len(selected)} frames; {len(first):,} LiDAR points ({VOXEL * 100:g} cm voxels)", flush=True)
     return len(first)
-
-
-def write_points(path: Path, xyz: Any, rgb: Any) -> None:
-    import numpy as np
-
-    record = np.dtype([("xyz", "<f4", 3), ("rgb", "u1", 3)])
-    points = np.zeros(len(xyz), dtype=record)
-    points["xyz"], points["rgb"] = xyz, rgb
-    header = (
-        f"ply\nformat binary_little_endian 1.0\nelement vertex {len(xyz)}\n"
-        "property float x\nproperty float y\nproperty float z\n"
-        "property uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n"
-    )
-    path.write_bytes(header.encode() + points.tobytes())
-
-
-def read_points(path: Path, limit: int) -> tuple[Any, Any]:
-    """Positions and colours of at most `limit` randomly chosen points of `write_points`' file."""
-    import numpy as np
-
-    data = path.read_bytes()
-    start = data.index(b"end_header\n") + 11
-    points = np.frombuffer(data, dtype=[("xyz", "<f4", 3), ("rgb", "u1", 3)], offset=start)
-    if len(points) > limit:
-        points = points[np.sort(np.random.default_rng(0).choice(len(points), limit, replace=False))]
-    return points["xyz"].astype(np.float64), points["rgb"].copy()
 
 
 def camera_params(poses: dict[str, Any]) -> str:

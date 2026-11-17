@@ -1,4 +1,4 @@
-"""Readers for binary COLMAP models (cameras.bin, images.bin, points3D.bin)."""
+"""Read binary COLMAP models (cameras.bin, images.bin, points3D.bin)."""
 
 from __future__ import annotations
 
@@ -102,3 +102,16 @@ def read_points(model: Path) -> Points:
         rgb[i] = r, g, b
         at += 51 + int(tracks[i]) * 8
     return Points(ids, xyz, rgb, errors, tracks)
+
+
+def write_points3d(path: Path, xyz: Any, rgb: Any) -> None:
+    """Write a COLMAP points3D.bin with empty tracks (Brush reads only position and colour)."""
+    import numpy as np
+
+    record = np.dtype([("id", "<u8"), ("xyz", "<f8", 3), ("rgb", "u1", 3), ("error", "<f8"), ("track", "<u8")])
+    points = np.zeros(len(xyz), dtype=record)
+    points["id"] = np.arange(1, len(xyz) + 1)
+    points["xyz"], points["rgb"] = xyz, rgb
+    with path.open("wb") as stream:
+        stream.write(np.uint64(len(xyz)).tobytes())
+        stream.write(points.tobytes())

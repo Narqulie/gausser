@@ -64,11 +64,11 @@ def save(scene: Scene, box: list[float], up: list[float] | None = None) -> Crop:
 
 def crop_splats(path: Path, crop: Crop) -> tuple[int, int]:
     """Keep only the splats of a PLY export whose centres lie in the box; returns (kept, total)."""
-    from .composite import read_ply, write_ply, xyz
+    from . import ply
 
-    header, data = read_ply(path)
-    keep = crop.inside(xyz(data))
-    write_ply(path, header, data[keep])
+    header, data = ply.read(path)
+    keep = crop.inside(ply.xyz(data))
+    ply.write(path, header, data[keep])
     return int(keep.sum()), len(data)
 
 

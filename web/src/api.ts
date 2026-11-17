@@ -26,7 +26,6 @@ export interface Live {
   staging?: string;
   exports?: Export[];
   model?: { path: string; registered: number; mtime: number };
-  count?: number;
 }
 
 export interface Evaluation {

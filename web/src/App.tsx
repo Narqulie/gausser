@@ -80,11 +80,6 @@ export function App() {
 function progressOf(state: State, lines: string[], partial: string, totals: { images: number; frames: number; iterations?: number }): Progress | null {
   const current = state.current;
   if (!current) return null;
-  if (!current.log) {
-    // started by a gausser without logs: count what its staging folder holds
-    const count = current.live.count;
-    return { phase: "no log", done: count ?? null, total: count === undefined ? null : totals.images };
-  }
   return progress(current.step, lines, partial, totals);
 }
 

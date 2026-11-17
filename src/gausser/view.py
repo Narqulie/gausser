@@ -24,19 +24,6 @@ def supersplat_dist() -> Path:
     return Path(os.environ.get("GAUSSER_SUPERSPLAT", "~/Developer/supersplat/dist")).expanduser()
 
 
-def resolve_splat(scene: Scene, source: Path | None) -> Path:
-    """The splat to show: ``source``, or the scene's newest export."""
-    if source is None:
-        exports = scene.exports()
-        if not exports:
-            raise GausserError("No trained .ply export found; run `gausser train` first")
-        source = exports[-1]
-    splat = source.expanduser().resolve()
-    if not splat.is_file():
-        raise GausserError(f"No such file: {splat}")
-    return splat
-
-
 @contextmanager
 def serve(splat: Path) -> Iterator[str]:
     """Serve SuperSplat plus one splat on 127.0.0.1 in a thread; yield the URL that opens it."""
@@ -71,7 +58,7 @@ def serve(splat: Path) -> Iterator[str]:
 
 
 def view(scene: Scene, source: Path | None) -> None:
-    splat = resolve_splat(scene, source)
+    splat = scene.splat(source)
     with serve(splat) as url:
         print(f"Viewing {splat}\n{url}\nCtrl+C to stop", flush=True)
         webbrowser.open(url)

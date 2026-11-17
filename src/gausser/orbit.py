@@ -15,10 +15,8 @@ from typing import Any
 
 from .colmap_model import read_images
 from .scene import GausserError, Scene, replace, require_tool, run_tool
-from .view import resolve_splat, serve
+from .view import serve
 
-NODE_HINT = "brew install node"
-FFMPEG_HINT = "brew install ffmpeg"
 # The JUTAKA public-art viewer's default sky (PlayCanvasSplatCanvas.tsx SKY_GRADIENT).
 JUTAKA_GRADIENT = "linear-gradient(to bottom, rgb(38,102,204) 0%, rgb(173,217,255) 45%, rgb(102,140,191) 55%, rgb(5,8,20) 100%)"
 Rgb = tuple[int, int, int]
@@ -165,12 +163,12 @@ def orbit(
     if not match or seconds <= 0 or zoom <= 0:
         raise GausserError("--size must look like 1920x1080; --seconds and --zoom must be positive")
     backdrop = parse_background(background) if background else None
-    node = require_tool("node", NODE_HINT)
-    ffmpeg = require_tool("ffmpeg", FFMPEG_HINT) if isinstance(backdrop, list) else ""
+    node = require_tool("node")
+    ffmpeg = require_tool("ffmpeg") if isinstance(backdrop, list) else ""
     if not has_playwright():
         raise GausserError(f"playwright-core not found in {node_dir()}; run scripts/install-macos.sh")
     model = scene.require_model()
-    splat = resolve_splat(scene, source)
+    splat = scene.splat(source)
     up = camera_up(model / "images.bin")
     params = orbit_params(model / "images.bin", up, zoom, drop)
     if target is not None:

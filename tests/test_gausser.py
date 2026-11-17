@@ -14,7 +14,7 @@ from PIL import Image
 
 import gausser.scene
 
-from gausser import arkit, cli, keyframes, monitor, msplat, pano, qoocam, steps
+from gausser import cli, keyframes, monitor, msplat, pano, ply, qoocam, steps
 from gausser.scene import GausserError, Scene, registered_images, run_tool
 
 
@@ -97,7 +97,7 @@ def solved_and_trained(root: Path) -> Scene:
 def tools(monkeypatch):
     """Pretend every external tool is installed and record the commands run."""
     commands: list[list[str]] = []
-    monkeypatch.setattr(steps, "require_tool", lambda name, hint: name)
+    monkeypatch.setattr(steps, "require_tool", lambda name: name)
 
     def record(handler):
         def run_tool(command, *, cwd, env=None):
@@ -968,16 +968,6 @@ def test_monitor_shows_the_running_step_and_its_live_snapshot(tmp_path):
     assert monitor.state(scene)["current"] is None  # ended
 
 
-def test_monitor_sees_a_step_of_an_older_gausser_by_its_staging_folder(tmp_path):
-    scene = make_scene(tmp_path)
-    (scene.root / ".gausser").mkdir()
-    (scene.root / ".gausser" / "lock").write_text("")  # older lock files are empty
-    (scene.tmp / "mask-20261105-113838" / "masks").mkdir(parents=True)
-    (scene.tmp / "mask-20261105-113838" / "masks" / "img0.png").write_bytes(b"png")
-    state = monitor.state(scene)
-    assert state["current"]["step"] == "mask" and state["current"]["live"]["count"] == 1
-
-
 def test_monitor_cleans_terminal_output_and_serves_only_the_scene(tmp_path):
     assert monitor.clean(b"\x1b[32mok\x1b[0m\n10%\r50%\r100%\r\n") == "ok\n100%\n"
     scene = Scene(tmp_path)
@@ -1140,11 +1130,11 @@ def test_read_dense_cloud_walks_the_variable_length_view_lists(tmp_path):
     path = tmp_path / "scene_dense.ply"
     write_dense_ply(path, [(1, 2, 3), (4, 5, 6), (7, 8, 9)], [2, 0, 5])
 
-    xyz, rgb = steps.read_dense_cloud(path, limit=10)
+    xyz, rgb = ply.read_dense_cloud(path, limit=10)
 
     assert xyz.tolist() == [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
     assert rgb.tolist() == [[0, 0, 0], [1, 2, 3], [2, 4, 6]]
-    assert len(steps.read_dense_cloud(path, limit=2)[0]) == 2
+    assert len(ply.read_dense_cloud(path, limit=2)[0]) == 2
 
 
 def test_brush_starts_from_the_dense_cloud_when_there_is_one(tmp_path, tools):
@@ -1195,7 +1185,7 @@ def test_brush_starts_from_the_lidar_points_unless_it_gets_masks(tmp_path, tools
     for name in ("cameras.bin", "images.bin", "points3D.bin"):
         (model / name).write_bytes(b"")
     scene.arkit.mkdir()
-    arkit.write_points(scene.arkit / "points.ply", np.array([[0.0, 1, 2], [3, 4, 5]]), np.array([[9, 8, 7], [6, 5, 4]]))
+    ply.write_points(scene.arkit / "points.ply", np.array([[0.0, 1, 2], [3, 4, 5]]), np.array([[9, 8, 7], [6, 5, 4]]))
     if masked:
         scene.masks.mkdir()
     seen = {}

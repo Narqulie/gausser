@@ -22,11 +22,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .composite import read_ply, write_ply, xyz
+from . import ply
 from .scene import GausserError, require_tool, run_tool
 
-SPLAT_TRANSFORM_HINT = "npm install -g @playcanvas/splat-transform"
-VERTICAL = "comment Vertical axis:"
 COARSE_POINTS, FINE_POINTS = (1_000, 20_000), (50_000, 150_000)  # (reference, moving) samples per stage
 SCALE_STEPS = (0.6, 1.0, 1.7)  # around the ratio of the clouds' median radii
 
@@ -38,12 +36,6 @@ class Fit:
     translation: Any  # 3
     rms: float  # best 70% of reference points, reference units
     inliers: float  # share of reference points within 2% of the reference extent
-
-
-def opaque_centres(data: Any) -> Any:
-    import numpy as np
-
-    return xyz(data)[1 / (1 + np.exp(-data["opacity"])) > 0.5].astype(np.float64)
 
 
 def umeyama(src: Any, dst: Any, with_scale: bool = True) -> tuple[float, Any, Any]:
@@ -193,7 +185,7 @@ def align(moving: Path, references: list[Path], out: Path, *, with_scale: bool =
     """Write MOVING moved into the REFERENCE frame to ``out``; inputs stay untouched."""
     import numpy as np
 
-    tool = require_tool("splat-transform", SPLAT_TRANSFORM_HINT)
+    tool = require_tool("splat-transform")
     moving, out = moving.expanduser().resolve(), out.expanduser().resolve()
     references = [ref.expanduser().resolve() for ref in references]
     for path in (moving, *references):
@@ -201,30 +193,30 @@ def align(moving: Path, references: list[Path], out: Path, *, with_scale: bool =
             raise GausserError(f"No such file: {path}")
     if out in (moving, *references):
         raise GausserError("-o must not be one of the inputs")
-    header, data = read_ply(moving)
+    header, data = ply.read(moving)
     out.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=".gausser-align-", dir=out.parent))  # same filesystem as ``out`` for the final move
     try:
         # splat-transform decodes SOG (log-encoded means) and LOD children itself; never decode them here.
         run_tool([tool, "-w", *map(str, references), str(work / "reference.ply")], cwd=work)
-        _, reference = read_ply(work / "reference.ply")
-        fit = estimate(opaque_centres(data), opaque_centres(reference), with_scale)
+        _, reference = ply.read(work / "reference.ply")
+        fit = estimate(ply.opaque_centres(data), ply.opaque_centres(reference), with_scale)
         print(f"scale {fit.scale:.6g}\nrotation\n{np.array2string(fit.rotation, precision=6, suppress_small=True)}")
         print(f"translation {np.array2string(fit.translation, precision=6)}")
         print(f"trimmed RMS {fit.rms:.4g}, inliers {fit.inliers:.1%} of reference splats (within 2% of its extent)")
         run_tool([tool, "-w", str(moving), *transform_args(fit), str(work / "aligned.ply")], cwd=work)
-        aligned_header, aligned = read_ply(work / "aligned.ply")
-        expected = fit.scale * np.einsum("ij,nj->ni", fit.rotation, xyz(data).astype(np.float64)) + fit.translation  # einsum: no spurious matmul warnings
-        error = float(np.abs(xyz(aligned) - expected).max())
+        aligned_header, aligned = ply.read(work / "aligned.ply")
+        expected = fit.scale * np.einsum("ij,nj->ni", fit.rotation, ply.xyz(data).astype(np.float64)) + fit.translation  # einsum: no spurious matmul warnings
+        error = float(np.abs(ply.xyz(aligned) - expected).max())
         if len(aligned) != len(data) or error > 1e-4 * max(1.0, float(np.abs(expected).max())):
             raise GausserError(f"splat-transform moved the splats differently than planned (max error {error:.3g})")
         print(f"splat-transform matches the fit (max error {error:.2g})")
-        up = next((h for h in header if h.startswith(VERTICAL)), None)
+        up = next((h for h in header if h.startswith(ply.VERTICAL)), None)
         if up:  # splat-transform drops comments; `gausser orbit` needs the rotated up vector
-            vector = fit.rotation @ np.array(up[len(VERTICAL):].split(), dtype=float)
+            vector = fit.rotation @ np.array(up[len(ply.VERTICAL):].split(), dtype=float)
             after_format = 1 + next(i for i, h in enumerate(aligned_header) if h.startswith("format"))
-            aligned_header.insert(after_format, f"{VERTICAL} {' '.join(f'{v:g}' for v in vector)}")
-        write_ply(work / "final.ply", aligned_header, aligned)
+            aligned_header.insert(after_format, f"{ply.VERTICAL} {' '.join(f'{v:g}' for v in vector)}")
+        ply.write(work / "final.ply", aligned_header, aligned)
         shutil.move(work / "final.ply", out)
     finally:
         shutil.rmtree(work, ignore_errors=True)

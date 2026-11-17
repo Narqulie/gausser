@@ -8,7 +8,7 @@ import pytest
 np = pytest.importorskip("numpy")
 image_module = pytest.importorskip("PIL.Image")
 
-from gausser import cli, composite  # noqa: E402
+from gausser import cli, composite, ply  # noqa: E402
 from gausser.scene import GausserError, Scene  # noqa: E402
 
 SIZE, FOCAL, DISTANCE, VIEWS = 256, 400.0, 5.0, 12
@@ -45,7 +45,7 @@ def splat(path: Path, points: list[list[float]], opacity: float = 5.0) -> None:
     for axis, name in enumerate("xyz"):
         data[name] = [point[axis] for point in points]
     data["opacity"] = opacity
-    composite.write_ply(path, HEADER, data)
+    ply.write(path, HEADER, data)
 
 
 def cube() -> list[list[float]]:
@@ -63,8 +63,8 @@ def test_hull_keep_keeps_the_centre_and_drops_a_point_outside_the_masks(tmp_path
 def test_carve_drops_context_inside_the_statue_and_keeps_the_rest(tmp_path):
     splat(tmp_path / "s.ply", cube())
     splat(tmp_path / "c.ply", [[0, 0, 0], [10, 0, 0]])
-    _, statue = composite.read_ply(tmp_path / "s.ply")
-    _, context = composite.read_ply(tmp_path / "c.ply")
+    _, statue = ply.read(tmp_path / "s.ply")
+    _, context = ply.read(tmp_path / "c.ply")
     assert composite.carve(statue, context, cells=16).tolist() == [False, True]
 
 
@@ -72,8 +72,8 @@ def test_carve_with_many_cells_carves_only_near_each_of_two_distant_clusters(tmp
     near = np.array(cube())
     splat(tmp_path / "s.ply", [*(near - [10, 0, 0]).tolist(), *(near + [10, 0, 0]).tolist()])
     splat(tmp_path / "c.ply", [[-10, 0, 0], [10, 0, 0], [0, 0, 0], [-10, 0.5, 0]])
-    _, statue = composite.read_ply(tmp_path / "s.ply")
-    _, context = composite.read_ply(tmp_path / "c.ply")
+    _, statue = ply.read(tmp_path / "s.ply")
+    _, context = ply.read(tmp_path / "c.ply")
     # 2000 cells over 20 m: 1 cm voxels (a dense grid would need 8e9 cells)
     assert composite.carve(statue, context, cells=2000).tolist() == [False, False, True, True]
 
@@ -92,7 +92,7 @@ def test_composite_command_passes_cells_slack_and_grow(tmp_path, monkeypatch):
 
 def test_column_keeps_the_statue_and_its_plinth_and_drops_far_and_below_floor_points(tmp_path):
     splat(tmp_path / "s.ply", cube())  # 0.6 tall; "up" is -y, so its feet are at y=+0.3
-    _, statue = composite.read_ply(tmp_path / "s.ply")
+    _, statue = ply.read(tmp_path / "s.ply")
     points = np.array([
         [0.0, 0, 0],  # inside the statue
         [0.1, 0.4, 0],  # plinth just under the feet
@@ -135,7 +135,7 @@ def test_composite_selects_runs_filters_the_statue_and_keeps_the_context_header(
 
     out = composite.composite(scene, None, None, radius=None, out=tmp_path / "out" / "o.ply", slack=6)
 
-    header, data = composite.read_ply(out)
+    header, data = ply.read(out)
     assert header[2] == "comment Vertical axis: 0 -1 0"
     assert len(data) == 1 + 343  # the context splat outside the statue, plus the statue without its garbage splat
     assert not list(scene.runs.glob("composite/*"))  # -o writes only there

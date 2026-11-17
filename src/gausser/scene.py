@@ -283,6 +283,18 @@ class Scene:
         found = [*self.runs.glob("brush/*/exports/*.ply"), *self.runs.glob("msplat/*/exports/*.ply")]
         return sorted((p for p in found if not p.name.startswith("._")), key=lambda path: path.stat().st_mtime)
 
+    def splat(self, source: Path | None = None) -> Path:
+        """``source``, or the newest export, as an existing file."""
+        if source is None:
+            exports = self.exports()
+            if not exports:
+                raise GausserError("No trained .ply export found; run `gausser train` first")
+            source = exports[-1]
+        splat = source.expanduser().resolve()
+        if not splat.is_file():
+            raise GausserError(f"No such file: {splat}")
+        return splat
+
     def lod_runs(self) -> list[Path]:
         return sorted(path.parent for path in self.runs.glob("lod/*/lod-meta.json"))
 
@@ -331,10 +343,24 @@ def replace(staged: Path, destination: Path) -> None:
     staged.replace(destination)
 
 
-def require_tool(name: str, hint: str) -> str:
+_OPENMVS = "build OpenMVS with scripts/install-openmvs.sh"
+_FFMPEG = "brew install ffmpeg (version 7 or newer)"
+# How to install each external tool gausser runs; `gausser status` lists them.
+TOOLS = {
+    "ffmpeg": _FFMPEG,
+    "ffprobe": _FFMPEG,
+    "colmap": "brew install colmap",
+    "brush": "scripts/install-macos.sh builds the pinned Brush",
+    "splat-transform": "npm install -g @playcanvas/splat-transform",
+    "node": "brew install node",
+    **{name: _OPENMVS for name in ("InterfaceCOLMAP", "DensifyPointCloud", "ReconstructMesh", "RefineMesh", "TextureMesh")},
+}
+
+
+def require_tool(name: str) -> str:
     path = shutil.which(name)
     if path is None:
-        raise GausserError(f"`{name}` is not on PATH. Install: {hint}")
+        raise GausserError(f"`{name}` is not on PATH. Install: {TOOLS[name]}")
     return path
 
 

@@ -8,7 +8,7 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("scipy")
 
 from gausser import align, cli  # noqa: E402
-from gausser.composite import read_ply, write_ply  # noqa: E402
+from gausser.ply import read as read_ply, write as write_ply  # noqa: E402
 from gausser.scene import GausserError  # noqa: E402
 
 NAMES = ("x", "y", "z", "opacity")
@@ -105,7 +105,7 @@ def test_align_command_writes_the_moved_splat_with_a_rotated_vertical_axis(tmp_p
     r, s, t = random_rotation(rng), 1.8, np.array([1.0, 2.0, -3.0])
     splat(tmp_path / "moving.ply", moving)
     splat(tmp_path / "ref.ply", s * np.einsum("ij,nj->ni", r, moving[np.linalg.norm(moving - [0, 1, 0], axis=1) < 7]) + t)
-    monkeypatch.setattr(align, "require_tool", lambda name, hint: name)
+    monkeypatch.setattr(align, "require_tool", lambda name: name)
     real_run = fake_splat_transform
 
     def run_tool(command: list[str], *, cwd: Path, env=None) -> None:
@@ -127,6 +127,6 @@ def test_align_command_writes_the_moved_splat_with_a_rotated_vertical_axis(tmp_p
 
 def test_align_refuses_an_output_that_is_an_input(tmp_path, monkeypatch):
     splat(tmp_path / "a.ply", np.zeros((3, 3)))
-    monkeypatch.setattr(align, "require_tool", lambda name, hint: name)
+    monkeypatch.setattr(align, "require_tool", lambda name: name)
     with pytest.raises(GausserError, match="must not be one of the inputs"):
         align.align(tmp_path / "a.ply", [tmp_path / "a.ply"], tmp_path / "a.ply")
