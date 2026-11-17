@@ -1126,6 +1126,7 @@ def test_brush_starts_from_the_dense_cloud_when_there_is_one(tmp_path, tools):
         seen["first"] = struct.unpack_from("<Q3d3B", data, 8)
         seen["cameras"] = (model / "cameras.bin").resolve() == (scene.sparse / "0" / "cameras.bin").resolve()
         seen["start"] = seen.get("start", 0) + 1
+        seen["sidecar"] = (model / "._cameras.bin").exists()
         export = Path(command[command.index("--export-path") + 1]) / "export_10.ply"
         export.parent.mkdir(parents=True)
         export.write_bytes(b"ply")
@@ -1133,7 +1134,7 @@ def test_brush_starts_from_the_dense_cloud_when_there_is_one(tmp_path, tools):
     tools.on_run(fake_brush)
     run = steps.train_brush(scene, iterations=10)
 
-    assert seen == {"count": 4, "first": (1, 0.0, 0.5, 0.0, 0, 0, 0), "cameras": True, "start": 1}
+    assert seen == {"count": 4, "first": (1, 0.0, 0.5, 0.0, 0, 0, 0), "cameras": True, "start": 1, "sidecar": False}
     assert (run / "init-dense").is_file()
     assert (scene.sparse / "0" / "points3D.bin").read_bytes() == b""  # the scene's own model is untouched
 
