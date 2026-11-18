@@ -29,7 +29,7 @@
 <p class="lead">Every command and option, generated from <code>cli.build_parser()</code>. Every command also takes
 <code>-h/--help</code>; most take <code>-s/--scene DIR</code> (default: the current folder), and the ones that change a scene
 take <code>--monitor</code>. What the commands are for is on the other pages.</p>
-<nav class="toc"><a href="#cmd-run">run</a> <a href="#cmd-frames">frames</a> <a href="#cmd-mask">mask</a> <a href="#cmd-solve">solve</a> <a href="#cmd-dense">dense</a> <a href="#cmd-mesh">mesh</a> <a href="#cmd-map">map</a> <a href="#cmd-train">train</a> <a href="#cmd-lod">lod</a> <a href="#cmd-view">view</a> <a href="#cmd-orbit">orbit</a> <a href="#cmd-align">align</a> <a href="#cmd-crop">crop</a> <a href="#cmd-status">status</a> <a href="#cmd-monitor">monitor</a></nav>
+<nav class="toc"><a href="#cmd-run">run</a> <a href="#cmd-frames">frames</a> <a href="#cmd-mask">mask</a> <a href="#cmd-solve">solve</a> <a href="#cmd-dense">dense</a> <a href="#cmd-mesh">mesh</a> <a href="#cmd-map">map</a> <a href="#cmd-train">train</a> <a href="#cmd-lod">lod</a> <a href="#cmd-view">view</a> <a href="#cmd-orbit">orbit</a> <a href="#cmd-align">align</a> <a href="#cmd-crop">crop</a> <a href="#cmd-name">name</a> <a href="#cmd-status">status</a> <a href="#cmd-monitor">monitor</a></nav>
 <section class="command" id="cmd-run"><h2>gausser run</h2>
 <p>run every step that is missing or out of date</p>
 <p class="muted">Run the pipeline unattended. Steps that are already up to date are skipped.</p>
@@ -343,6 +343,19 @@ take <code>--monitor</code>. What the commands are for is on the other pages.</p
 <tr><td><code>--box</code></td><td></td><td><code></code></td><td>minimum and maximum corner, level frame</td></tr>
 <tr><td><code>--up</code></td><td></td><td><code></code></td><td>the model&#x27;s up the box was drawn with (default: computed)</td></tr>
 <tr><td><code>--clear</code></td><td></td><td><code></code></td><td>remove the crop</td></tr>
+</table>
+</section>
+<section class="command" id="cmd-name"><h2>gausser name</h2>
+<p>name the scene in the monitor</p>
+<p class="muted">Save the name the monitor shows for this scene in .gausser/name.txt. Without a saved name a scene is called after its folder, or after the parent folder when the folder is called `scene`.</p>
+<pre>gausser name [-h] [-s SCENE] [--clear] [name]</pre>
+<h3>positional arguments</h3><table><tr><th>option</th><th>choices</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>name</code></td><td></td><td><code></code></td><td>the new name; without it, print the current name</td></tr>
+</table>
+<h3>options</h3><table><tr><th>option</th><th>choices</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>-h, --help</code></td><td></td><td><code></code></td><td>show this help message and exit</td></tr>
+<tr><td><code>-s, --scene</code></td><td></td><td><code>.</code></td><td>scene folder (default: current folder)</td></tr>
+<tr><td><code>--clear</code></td><td></td><td><code></code></td><td>remove the saved name</td></tr>
 </table>
 </section>
 <section class="command" id="cmd-status"><h2>gausser status</h2>

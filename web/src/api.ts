@@ -37,6 +37,7 @@ export interface Evaluation {
 export interface SceneSummary extends Partial<State> {
   root: string;
   name: string;
+  group?: string; // the folder that holds the scene (the parent of `statue/scene`)
   last: number;
   missing?: boolean;
   error?: string;
@@ -242,6 +243,11 @@ export function duration(seconds: number): string {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
+/** A folder for people: `~` for home, `/tmp`, and a drive name instead of `/Volumes/<drive>/`. */
+export function prettyPath(path: string): string {
+  return path.replace(/^\/Users\/[^/]+/, "~").replace(/^\/private\/tmp/, "/tmp").replace(/^\/Volumes\/([^/]+)\/?/, "$1 › ");
 }
 
 export function bytes(n: number): string {

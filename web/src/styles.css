@@ -15,6 +15,8 @@
   --solve: #36f9f6;
   --train: #ff7edb;
   --lod: #72f1b8;
+  --dense: #b893ce;
+  --mesh: #f97e72;
   --red: #fe4450;
 
   --font: mononoki, "JetBrains Mono", "SF Mono", Menlo, monospace;
@@ -42,6 +44,7 @@ code { font: inherit; }
 .header { display: flex; align-items: baseline; gap: 16px; padding: 14px 24px 0; min-width: 0; }
 .scene-name { margin: 0; font-size: 20px; font-weight: 700; }
 .scene-root { flex: 1; min-width: 0; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app .scene-root { direction: rtl; text-align: left; } /* cut the drive end, keep the scene end */
 .run-line { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
 .run-line.running code { color: var(--text); }
 .run-line.offline { color: var(--red); }
@@ -50,7 +53,7 @@ code { font: inherit; }
 @keyframes blink { 50% { opacity: 0; } }
 
 /* the rail: five stations on one line; a segment fills as its step completes */
-.rail { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px; padding: 14px 24px 16px; }
+.rail { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3px; padding: 14px 24px 16px; }
 .station {
   display: grid; gap: 3px; padding: 0; text-align: left; cursor: pointer;
   background: none; border: 0; min-width: 0;
@@ -170,6 +173,8 @@ a.button { text-decoration: none; color: inherit; }
 .step-solve { color: var(--solve); }
 .step-train { color: var(--train); }
 .step-lod { color: var(--lod); }
+.step-dense { color: var(--dense); }
+.step-mesh { color: var(--mesh); }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line); }
@@ -204,19 +209,32 @@ a.button { text-decoration: none; color: inherit; }
 /* scenes */
 .hub { height: 100%; overflow-y: auto; padding-bottom: 40px; }
 .hub .header { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
-.scene-list { display: grid; padding: 6px 0; }
+.hub .filter {
+  width: 240px; padding: 3px 8px; background: var(--deep); border: 1px solid var(--line); color: var(--text);
+}
+.hub .filter::placeholder { color: var(--dim); }
+.hub-note { padding: 14px 24px; }
+.scene-group { padding: 4px 0 8px; }
+.group-head {
+  margin: 0; padding: 12px 24px 4px; font-size: 12px; font-weight: 400; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.group-head .count { color: var(--dim); margin-left: 8px; }
+.group-head.live { color: var(--train); }
+.missing-folders summary { cursor: pointer; list-style: none; }
+.missing-folders summary::before { content: "▸ "; }
+.missing-folders[open] summary::before { content: "▾ "; }
 .scene-row {
-  display: grid; grid-template-columns: minmax(140px, 1.2fr) 150px minmax(0, 2fr) minmax(0, 1.4fr) 90px;
-  gap: 18px; align-items: center; padding: 9px 24px; color: inherit; text-decoration: none;
+  display: grid; grid-template-columns: minmax(160px, 1fr) 150px minmax(0, 2.6fr) 90px;
+  gap: 18px; align-items: center; padding: 7px 24px; color: inherit; text-decoration: none;
 }
 .scene-row:hover { background: var(--raise); }
 .scene-row.missing { opacity: 0.45; }
 .scene-row-name { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.scene-row-info, .scene-row-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.scene-row-path { color: var(--dim); }
+.scene-row-info { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .scene-row-when { color: var(--muted); text-align: right; }
-.mini-rail { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; }
-.mini { height: 3px; background: var(--line); }
+.mini-rail { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; }
+.mini { height: 4px; background: var(--line); }
 .mini.done, .mini.running { background: var(--step); }
 .mini.stale { background: var(--step); opacity: 0.4; }
 .mini.failed { background: var(--red); }
@@ -228,6 +246,8 @@ a.button { text-decoration: none; color: inherit; }
 .all-runs td:last-child { width: 100%; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .all-runs tr { cursor: pointer; }
 .all-runs tr:hover td { background: var(--raise); }
+.all-runs .more { margin-top: 8px; padding: 3px 10px; background: none; border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
+.all-runs .more:hover { color: var(--text); border-color: var(--line-2); }
 
 .run-picks { display: grid; gap: 2px; }
 .run-picks label { display: flex; gap: 10px; align-items: center; cursor: pointer; padding: 2px 0; }

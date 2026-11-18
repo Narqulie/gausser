@@ -173,6 +173,7 @@ def scene_tree() -> str:
         "dense": "OpenMVS undistorted images and dense cloud", "arkit": "iPhone scan: poses.json, points.ply, depth/",
         "runs": "brush/, msplat/, lod/, mesh/, map/, orbit/ <time>/ (never deleted)",
         "tmp": "staging of running or failed steps", "logs": "one log per step (monitor)", "history": "start/end record per step",
+        "name_file": "the name gausser name saved (monitor)",
     }
     missing = set(attrs) - set(notes)
     if missing:

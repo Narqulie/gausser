@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import geo
-from .scene import VIDEO_EXTENSIONS, GausserError, Scene, registered_images
+from .scene import VIDEO_EXTENSIONS, GausserError, Scene, registered_images, scene_name
 
 
 def open_target(target: Path) -> tuple[Scene, Path | None, bool]:
@@ -66,6 +66,7 @@ def menu(scene: Scene, video: Path | None) -> list[tuple[str, str]]:
         "lod": "Build a streamed LOD set" if exports else None,
         "map": "Make an orthophoto and DSM (GeoTIFF + web map)" if exports and scene.geo() else None,
         "view": "View the newest splat (SuperSplat)" if exports else None,
+        "name": "Name this scene in the monitor",
         "status": "Show full status and installed tools",
     }
     if not images:
@@ -123,6 +124,8 @@ def guided(scene: Scene, video: Path | None) -> list[str]:
             default=True,
         ).unsafe_ask():
             argv += ["--overlap", "80"] + (["--map"] if choice == "run" else [])
+    if choice == "name":
+        argv.append(questionary.text("Name:", default=scene_name(scene.root)).unsafe_ask())
     if choice == "mask":
         argv.append(questionary.text('Subject to keep, e.g. "statue":', validate=lambda t: bool(t.strip()) or "Required").unsafe_ask())
     if choice == "run":

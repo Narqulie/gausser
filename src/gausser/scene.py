@@ -94,6 +94,25 @@ def read_json(path: Path) -> dict[str, Any] | None:
     return record
 
 
+def count_pngs(folder: Path) -> int:
+    """PNG files in a folder, without exFAT's `._` AppleDouble sidecars."""
+    return sum(1 for path in folder.glob("*.png") if not path.name.startswith("._")) if folder.is_dir() else 0
+
+
+def scene_folder(root: Path) -> Path:
+    """The folder a scene is known by: a folder called `scene` is known by its parent (`statue/scene`)."""
+    return root.parent if root.name.lower() == "scene" and root.parent != root else root
+
+
+def scene_name(root: Path) -> str:
+    """The name `gausser name` saved, else the name of the scene's folder."""
+    try:
+        saved = (root / ".gausser" / "name.txt").read_text().strip()
+    except OSError:
+        saved = ""
+    return saved or scene_folder(root).name
+
+
 class Scene:
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root).expanduser().resolve()
@@ -114,6 +133,7 @@ class Scene:
         # Read only by `gausser monitor`; no step depends on them.
         self.logs = self.root / ".gausser" / "logs"
         self.history = self.root / ".gausser" / "history.jsonl"
+        self.name_file = self.root / ".gausser" / "name.txt"  # `gausser name`; see scene_name()
 
     def image_files(self) -> list[Path]:
         if not self.images.is_dir():

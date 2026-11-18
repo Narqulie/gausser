@@ -11,7 +11,13 @@ below are real captures of scenes on this Mac, two of them while Brush was train
 
 <h2 id="hub">All scenes</h2>
 <figure><img src="img/monitor-hub.jpg" alt="Monitor list of all scenes">
-<figcaption>Every scene in the index, newest first, with a step bar per scene and the running command. Scenes on unplugged drives show "folder not found".</figcaption></figure>
+<figcaption>Running scenes first, with the running step and its arguments. The rest are grouped by the folder that holds them,
+newest first, with a step bar per scene. Folders that are gone (an unplugged drive, a moved or deleted scene) are folded at the end.
+<kbd>/</kbd> filters scenes and steps by name or path.</figcaption></figure>
+<p>A scene is listed under its name: the one <code>gausser name "Atlas-tyttö"</code> saved in <code>.gausser/name.txt</code>, else
+its folder's name. A folder called <code>scene</code> takes its parent's name, so <code>atlas-tytto/scene</code> is <code>atlas-tytto</code>
+and is grouped with the other statues. <code>gausser name</code> takes no lock, so it works while a step runs;
+<code>gausser name</code> alone prints the name and <code>--clear</code> removes it. The scene page, the tab title and notifications use the same name.</p>
 
 <h2 id="header">The scene header</h2>
 <p>One cell per step: count, tool, state (up to date, out of date, running with progress and time left). The command

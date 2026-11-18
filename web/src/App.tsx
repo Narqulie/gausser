@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { duration, STEPS, useLog, useSceneState } from "./api";
+import { duration, prettyPath, STEPS, useLog, useSceneState } from "./api";
 import { NotifyToggle, Toasts, useStepToasts } from "./Toasts";
 import type { HistoryRecord, State, Step } from "./api";
 import { progress } from "./parse";
@@ -43,7 +43,7 @@ export function App() {
       <header className="header">
         <a className="back" href="./" title="All scenes">scenes /</a>
         <h1 className="scene-name">{state.name}</h1>
-        <span className="scene-root" title={state.root}>{state.root.replace(/^\/Users\/[^/]+/, "~")}</span>
+        <span className="scene-root" title={state.root}><bdi>{prettyPath(state.root)}</bdi></span>
         <RunLine state={state} offline={offline} />
         <NotifyToggle />
       </header>

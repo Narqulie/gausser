@@ -68,7 +68,7 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLT
   while it is still empty. Without a TTY the menu refuses (exit 2).
 - `solve` publishes the model, then raises if fewer than half the images were
   registered, so `run` stops before a wasted training run.
-- Every command except `status`, `view`, `orbit`, `monitor` and `align` (which has no scene) holds `Scene.lock()` (flock on
+- Every command except `status`, `view`, `orbit`, `monitor`, `name` and `align` (which has no scene) holds `Scene.lock()` (flock on
   `.gausser/lock`). A second command fails fast; it never waits. The lock file holds the holder's
   pid/argv as JSON (opened `a+`, so a refused command does not erase it).
 - `gausser monitor` only reads. It must never take the lock (not even briefly to probe it): a running
@@ -78,6 +78,9 @@ web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLT
   Nothing in the pipeline reads these. Live data comes from staging folders: Brush's
   `.gausser/tmp/brush-*/exports/*.ply` and the COLMAP mapper's `snapshots/` (~20 per solve,
   `--Mapper.snapshot_frames_freq`).
+- A scene's name (`scene.scene_name`) is `.gausser/name.txt` (`gausser name`, no lock: nothing in the pipeline reads it),
+  else its folder's name; a folder called `scene` takes its parent's (`scene_folder`), and the monitor groups scenes by
+  that folder's parent. Mask counts use `scene.count_pngs`, which skips exFAT `._` sidecars.
 - One monitor (port 8737, `~/.local/share/gausser/monitor.json`) serves every scene in the index
   `~/.local/share/gausser/history.jsonl` (`GAUSSER_HOME`; `scene.index_path()`): every `Scene.step()`
   record is also appended there with its `scene`, and `gausser monitor` adds an `opened` record. API

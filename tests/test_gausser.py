@@ -681,6 +681,25 @@ def test_status_runs_on_an_empty_folder(tmp_path, capsys):
     assert "images  0" in capsys.readouterr().out
 
 
+def test_a_scene_is_named_after_its_folder_or_the_saved_name(tmp_path, capsys):
+    root = tmp_path / "atlas" / "scene"
+    root.mkdir(parents=True)
+    summary = monitor.summary(str(root), 1.0)
+    assert (summary["name"], summary["group"]) == ("atlas", str(tmp_path))  # `scene` folders take the parent's name
+    assert cli.main(["name", "-s", str(root), "Atlas-tyttö"]) == 0
+    assert monitor.summary(str(root), 1.0)["name"] == "Atlas-tyttö"
+    assert cli.main(["name", "-s", str(root), "--clear"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["Atlas-tyttö", "atlas"]
+    assert monitor.summary(str(tmp_path / "gone"), 1.0)["name"] == "gone"
+
+
+def test_mask_counts_skip_exfat_sidecars(tmp_path):
+    (tmp_path / "masks").mkdir()
+    for name in ("a.png", "._a.png"):
+        (tmp_path / "masks" / name).write_bytes(b"")
+    assert monitor.state(Scene(tmp_path))["masks"]["count"] == 1
+
+
 def test_missing_scene_is_a_clean_error(tmp_path, capsys):
     assert cli.main(["solve", "-s", str(tmp_path / "nope")]) == 1
     assert "does not exist" in capsys.readouterr().err
@@ -735,11 +754,11 @@ def test_menu_recommends_the_next_step_and_hides_impossible_ones(tmp_path):
     from gausser import guide
 
     empty = Scene(tmp_path)
-    assert [command for _label, command in guide.menu(empty, None)] == ["frames", "status"]
+    assert [command for _label, command in guide.menu(empty, None)] == ["frames", "name", "status"]
     assert guide.menu(empty, tmp_path / "clip.mp4")[0] == ("Run the pipeline (skips what is up to date)  ← next", "run")
 
     photos = make_scene(tmp_path / "photos")
-    assert [command for _label, command in guide.menu(photos, None)] == ["run", "frames", "mask", "solve", "status"]
+    assert [command for _label, command in guide.menu(photos, None)] == ["run", "frames", "mask", "solve", "name", "status"]
 
     done = solved_and_trained(tmp_path / "done")
     assert guide.menu(done, None)[0][1] == "view"

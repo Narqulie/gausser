@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from . import keyframes, mapping, pano, ply, steps
-from .scene import TOOLS, GausserError, Scene, is_image, registered_images
+from .scene import TOOLS, GausserError, Scene, count_pngs, is_image, registered_images, scene_name
 
 STEPS = ("frames", "mask", "solve", "dense", "train", "lod", "mesh", "map")
-COMMANDS = ("run", *STEPS, "crop", "align", "view", "orbit", "status", "monitor")
+COMMANDS = ("run", *STEPS, "crop", "align", "view", "orbit", "name", "status", "monitor")
 QUICK_START = """\
 quick start:
   gausser clip.mp4              guided: makes clip/ next to the video and walks you through
@@ -281,6 +281,14 @@ def build_parser() -> argparse.ArgumentParser:
     crop.add_argument("--up", type=_floats(3), metavar="x,y,z", help="the model's up the box was drawn with (default: computed)")
     crop.add_argument("--clear", action="store_true", help="remove the crop")
 
+    name = commands.add_parser(
+        "name", parents=[common], help="name the scene in the monitor",
+        description="Save the name the monitor shows for this scene in .gausser/name.txt. Without a saved name a scene "
+        "is called after its folder, or after the parent folder when the folder is called `scene`.",
+    )
+    name.add_argument("name", nargs="?", help="the new name; without it, print the current name")
+    name.add_argument("--clear", action="store_true", help="remove the saved name")
+
     commands.add_parser("status", parents=[common], help="show scene progress and installed tools")
 
     monitor = commands.add_parser(
@@ -447,9 +455,9 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
 def status(scene: Scene) -> None:
     images = scene.image_files()
     model = scene.model()
-    masks = sum(1 for _ in scene.masks.glob("*.png")) if scene.masks.is_dir() else 0
+    masks = count_pngs(scene.masks)
     stale = "  (out of date)"
-    print(f"Scene   {scene.root}")
+    print(f"Scene   {scene_name(scene.root)}  {scene.root}")
     print(f"images  {len(images)}")
     if scene.is_pano():
         panos = sum(1 for path in scene.panos.iterdir() if is_image(path))
@@ -545,6 +553,14 @@ def main(argv: list[str] | None = None) -> int:
         scene = Scene(args.scene)
         if args.command == "status":
             status(scene)
+            return 0
+        if args.command == "name":  # no lock: nothing in the pipeline reads the name, so it can change mid-run
+            if args.clear:
+                scene.name_file.unlink(missing_ok=True)
+            elif args.name and args.name.strip():
+                scene.name_file.parent.mkdir(exist_ok=True)
+                scene.name_file.write_text(args.name.strip() + "\n")
+            print(scene_name(scene.root))
             return 0
         if args.command == "view":
             from .view import view

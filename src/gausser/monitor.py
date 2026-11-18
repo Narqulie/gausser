@@ -26,7 +26,7 @@ from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
 
 from . import colmap_model, orbit, pano, ply, steps as pipeline
-from .scene import GausserError, Scene, index, index_path, is_image, mtime, registered_images
+from .scene import GausserError, Scene, count_pngs, index, index_path, is_image, mtime, registered_images, scene_folder, scene_name
 
 WEB = Path(__file__).with_name("web")
 WEB_HINT = "cd web && npm ci && npm run build (in the gausser repository), or rerun scripts/install-macos.sh"
@@ -168,7 +168,7 @@ def state(scene: Scene) -> dict[str, Any]:
         except OSError:
             pass
     return {
-        "name": scene.root.name,
+        "name": scene_name(scene.root),
         "root": str(scene.root),
         "now": time.time(),
         "holder": running,
@@ -180,8 +180,8 @@ def state(scene: Scene) -> dict[str, Any]:
             "views": pano.VIEWS if scene.is_pano() else 0,
         },
         "masks": {
-            "count": sum(1 for _ in scene.masks.glob("*.png")) if scene.masks.is_dir() else 0,
-            "exclude": sum(1 for _ in scene.masks_exclude.glob("*.png")) if scene.masks_exclude.is_dir() else 0,
+            "count": count_pngs(scene.masks),
+            "exclude": count_pngs(scene.masks_exclude),
             "done": bool(images) and scene.masks_done(images),
         },
         "model": model and {
@@ -304,16 +304,17 @@ def recent_runs(limit: int = 300) -> list[dict[str, Any]]:
 def summary(root: str, last: float) -> dict[str, Any]:
     """A scene for the list of all scenes: its state with only the newest record of each step."""
     path = Path(root)
+    base = {"root": root, "name": scene_name(path), "group": str(scene_folder(path).parent), "last": last}
     if not path.is_dir():
-        return {"root": root, "name": path.name, "last": last, "missing": True}
+        return {**base, "missing": True}
     try:
         info = state(Scene(path))
     except GausserError as exc:
-        return {"root": root, "name": path.name, "last": last, "error": str(exc)}
+        return {**base, "error": str(exc)}
     newest: dict[str, dict[str, Any]] = {}
     for record in info["history"]:
         newest[record["step"]] = record
-    return {**info, "history": list(newest.values()), "last": last}
+    return {**info, **base, "history": list(newest.values())}
 
 
 def looks_like_scene(scene: Scene) -> bool:
