@@ -24,7 +24,7 @@ src/gausser/
 ├── qoocam.py  QooCam 8K raw .MOV: reads the kfix LENS calibration into panos/lenses.json form
 ├── arkit.py   iPhone LiDAR scans (Stray Scanner folder): arkit/ poses, depth maps and LiDAR points; solve's snap to metres
 ├── geo.py     GPS: DJI .SRT subtitle tracks → EXIF GPS in frames; solve's georeference (similarity onto GPS in EPSG:3067/UTM)
-├── mapping.py `gausser map`: orthographic top-down render of the splat, or (`--source mesh`) of the OpenMVS textured mesh (own .glb reader + z-buffer rasteriser) → ortho.tif, dsm.tif (COG, rasterio), web previews, map.html (Leaflet)
+├── mapping.py `gausser map`: orthographic top-down render of the splat, of the OpenMVS textured mesh (`--source mesh`: own .glb reader + z-buffer rasteriser), or the photos on the mesh surface (`--source photos`: best visible photo per spot, `--photos` full-res copies) → ortho.tif, dsm.tif (COG, rasterio), web previews, map.html (Leaflet)
 ├── crop.py    `gausser crop`: box in the level frame (sparse/crop.json); crops Brush's start points, exports and the OpenMVS mesh
 ├── colmap_model.py the one reader of binary COLMAP models (cameras.bin, images.bin, points3D.bin); writes Brush's start points3D.bin
 ├── ply.py     every PLY reader/writer: splat exports (float properties), xyz+rgb clouds (LiDAR), OpenMVS dense clouds

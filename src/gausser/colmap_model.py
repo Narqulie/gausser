@@ -22,6 +22,26 @@ class Camera:
     height: int
     params: tuple[float, ...]
 
+    def project(self, points: Any, scale: float = 1.0) -> Any:
+        """Pixel coordinates (N×2) of camera-frame points (N×3, z forward), in an image `scale` times this camera's size.
+
+        Handles SIMPLE_PINHOLE, PINHOLE, SIMPLE_RADIAL, RADIAL and OPENCV, the models COLMAP gives drone photos.
+        """
+        import numpy as np
+
+        if self.model not in (0, 1, 2, 3, 4):
+            raise ValueError(f"camera model {self.model} is not supported here")
+        fx, fy, cx, cy = self.intrinsics
+        x, y = points[:, 0] / points[:, 2], points[:, 1] / points[:, 2]
+        p = self.params
+        k1, k2, p1, p2 = (p[3], 0, 0, 0) if self.model == 2 else (p[3], p[4], 0, 0) if self.model == 3 else \
+            (p[4], p[5], p[6], p[7]) if self.model == 4 else (0, 0, 0, 0)
+        r2 = x * x + y * y
+        radial = 1 + k1 * r2 + k2 * r2 * r2
+        xd = x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x)
+        yd = y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
+        return np.stack([(fx * xd + cx) * scale, (fy * yd + cy) * scale], 1)
+
     @property
     def intrinsics(self) -> tuple[float, float, float, float]:
         """fx, fy, cx, cy."""

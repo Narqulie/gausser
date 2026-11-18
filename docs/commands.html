@@ -52,7 +52,7 @@ take <code>--monitor</code>. What the commands are for is on the other pages.</p
                    [--chunk-count CHUNK_COUNT] [--chunk-extent CHUNK_EXTENT]
                    [--levels LEVELS] [--faces FACES] [--no-refine]
                    [--texture-size TEXTURE_SIZE] [--no-crop] [--resolution M]
-                   [--source {splat,mesh}] [--no-masks]</pre>
+                   [--source {splat,mesh,photos}] [--photos DIR] [--no-masks]</pre>
 <h3>options</h3><table><tr><th>option</th><th>choices</th><th>default</th><th>meaning</th></tr>
 <tr><td><code>-h, --help</code></td><td></td><td><code></code></td><td>show this help message and exit</td></tr>
 <tr><td><code>-s, --scene</code></td><td></td><td><code>.</code></td><td>scene folder (default: current folder)</td></tr>
@@ -115,7 +115,8 @@ take <code>--monitor</code>. What the commands are for is on the other pages.</p
 </table>
 <h3>map</h3><table><tr><th>option</th><th>choices</th><th>default</th><th>meaning</th></tr>
 <tr><td><code>--resolution</code></td><td></td><td><code>0.03</code></td><td>orthophoto and DSM cell size in metres (default 0.03)</td></tr>
-<tr><td><code>--source</code></td><td>splat | mesh</td><td><code>splat</code></td><td>render the newest splat, or the newest textured mesh (colours straight from the photos: sharper, true ortho)</td></tr>
+<tr><td><code>--source</code></td><td>splat | mesh | photos</td><td><code>splat</code></td><td>render the newest splat; the newest textured mesh (colours from the photos: sharper, true ortho); or the photos themselves on the mesh surface (sharpest; the crop box if set, else the mesh)</td></tr>
+<tr><td><code>--photos</code></td><td></td><td><code></code></td><td>with --source photos: full-resolution copies of images/ (same names), e.g. the camera&#x27;s originals</td></tr>
 </table>
 </section>
 <section class="command" id="cmd-frames"><h2>gausser frames</h2>
@@ -220,7 +221,7 @@ take <code>--monitor</code>. What the commands are for is on the other pages.</p
 <p>orthophoto and DSM GeoTIFFs from the splat or the textured mesh</p>
 <p class="muted">Render the newest splat (or, with --source mesh, the newest textured mesh) straight down into runs/map/&lt;time&gt;/: ortho.tif and dsm.tif in the scene&#x27;s CRS and map.html, the orthophoto over a web map. Needs a model georeferenced from GPS (drone photos, or DJI video frames with a .SRT subtitle file).</p>
 <pre>gausser map [-h] [-s SCENE] [--monitor] [--resolution M]
-                   [--source {splat,mesh}]
+                   [--source {splat,mesh,photos}] [--photos DIR]
                    [source]</pre>
 <h3>positional arguments</h3><table><tr><th>option</th><th>choices</th><th>default</th><th>meaning</th></tr>
 <tr><td><code>source</code></td><td></td><td><code></code></td><td>splat .ply or mesh .glb (default: the newest export or mesh)</td></tr>
@@ -232,7 +233,8 @@ take <code>--monitor</code>. What the commands are for is on the other pages.</p
 </table>
 <h3>map</h3><table><tr><th>option</th><th>choices</th><th>default</th><th>meaning</th></tr>
 <tr><td><code>--resolution</code></td><td></td><td><code>0.03</code></td><td>orthophoto and DSM cell size in metres (default 0.03)</td></tr>
-<tr><td><code>--source</code></td><td>splat | mesh</td><td><code>splat</code></td><td>render the newest splat, or the newest textured mesh (colours straight from the photos: sharper, true ortho)</td></tr>
+<tr><td><code>--source</code></td><td>splat | mesh | photos</td><td><code>splat</code></td><td>render the newest splat; the newest textured mesh (colours from the photos: sharper, true ortho); or the photos themselves on the mesh surface (sharpest; the crop box if set, else the mesh)</td></tr>
+<tr><td><code>--photos</code></td><td></td><td><code></code></td><td>with --source photos: full-resolution copies of images/ (same names), e.g. the camera&#x27;s originals</td></tr>
 </table>
 </section>
 <section class="command" id="cmd-train"><h2>gausser train</h2>

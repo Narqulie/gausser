@@ -56,7 +56,8 @@
 <ul>
   <li><b>Set 2 processed</b>: all 94 photos placed and georeferenced, dense cloud, 30k-step splat, orthophoto and DSM.</li>
   <li><b>Monitor Map tab</b> (gausser <code>a3c77e5</code>, pushed): cameras, points, orthophoto and DSM on satellite or OpenStreetMap for any scene with GPS.</li>
-  <li><b>Map from the photos</b>: <code>gausser map --source mesh</code> renders the textured mesh (true orthophoto, splat fills its holes); <code>gausser mesh --no-crop</code> meshes the whole flight when the splat is cropped.</li>
+  <li><b>Map straight from the photos</b>: <code>gausser map --source photos --photos DIR --resolution 0.01</code>: each cell's colour from the best photo at full resolution, on the mesh surface.</li>
+  <li><b>Map from the textured mesh</b>: <code>gausser map --source mesh</code> renders the textured mesh (true orthophoto, splat fills its holes); <code>gausser mesh --no-crop</code> meshes the whole flight when the splat is cropped.</li>
   <li><b>Plot splat</b>: retrained on the 107 × 91 m plot only (crop box), for the 3D view.</li>
   <li><b>DSM preview</b>: <code>gausser map</code> also writes <code>dsm-web.webp</code>, coloured by height and hill-shaded.</li>
   <li><b>waypoint-burner</b> (other session, not committed): 1 s hover before each photo, 48 MP 4:3 photo model, obliques at -60° moved back 29 m, camera settings first in the checklist.</li>
@@ -64,7 +65,7 @@
 
 <h2>Map</h2>
 <div class="bar">
-  <span class="seg" id="set"><button data-v="2" class="on">Set 2 photos (mesh)</button><button data-v="2s">Set 2 splat (plot)</button><button data-v="1">Set 1</button></span>
+  <span class="seg" id="set"><button data-v="2p" class="on">Set 2 photos (1 cm)</button><button data-v="2">Set 2 mesh</button><button data-v="2s">Set 2 splat (plot)</button><button data-v="1">Set 1</button></span>
   <span class="seg" id="layer"><button data-v="ortho" class="on">orthophoto</button><button data-v="dsm">surface (DSM)</button></span>
   <label>opacity <input id="op" type="range" min="0" max="1" step="0.05" value="1"></label>
   <span id="range"></span>
@@ -73,9 +74,15 @@
 <p class="muted">Cameras of Set 2: cyan straight down, pink oblique with a tick towards where it looked. Base layers top right.</p>
 
 <h2>Orthophoto from the photos, not the splat</h2>
-<figure><img class="full" src="2026-11-18-drone-set2/ab-house.jpg" alt="Same roof three ways">
-<figcaption>The same 16 × 12 m at 3 cm per cell. Left: splat of the whole flight. Middle: splat retrained on the plot only.
-Right: <code>gausser map --source mesh</code>, the textured OpenMVS mesh with each triangle coloured from the best photo.</figcaption></figure>
+<figure><img class="full" src="2026-11-18-drone-set2/ab-house.jpg" alt="Same roof four ways">
+<img class="full" src="2026-11-18-drone-set2/ab-verge.jpg" alt="Same verge four ways">
+<figcaption>The same 8 × 6 m spots, enlarged to 1 cm per pixel. From left: splat of the whole flight (3 cm); splat retrained
+on the plot (3 cm); textured mesh (<code>--source mesh</code>, 3 cm); photos on the mesh surface
+(<code>--source photos --photos</code> the 48 MP originals, 1 cm).</figcaption></figure>
+<p>The photo map is the sharpest: grass blades, kerb stones and the roof vent's grille show. It samples the original
+48 MP photos directly, picking per spot the photo that looks most straight down, sees the spot, and is least blurred,
+and cross-fades over 0.4 m where the choice changes. It covers the 107 × 91 m plot at 1 cm (10,700 × 9,100 cells,
+99.7% covered).</p>
 <p>The splat spreads 1.5 million Gaussians over the whole 300 m the flight saw, so fine texture (roof corrugation, edges)
 blurs. Cropping the splat to the 107 × 91 m plot helps a little. The mesh map takes its colour straight from the photos,
 so it keeps the corrugation and sharp edges, and it is a true orthophoto (roofs over their footprints).
@@ -122,6 +129,7 @@ and the orthophoto or DSM once <code>map</code> has run.</p>
 </main>
 <script>
 const sets = {
+  "2p": {bounds: [[61.52169450370266, 23.68859901518407], [61.52255878430484, 23.690693933712065]], range: [365.38, 380.23], dir: "2026-11-18-drone-set2/photos-"},
   2: {bounds: [[61.520726762074624, 23.686803072126654], [61.523400940866864, 23.692678221203057]], range: [361.18, 380.88], dir: "2026-11-18-drone-set2/"},
   "2s": {bounds: [[61.521698788133094, 23.68861284859366], [61.52255298945039, 23.690679567130207]], range: [365.28, 384.56], dir: "2026-11-18-drone-set2/splat-"},
   1: {bounds: [[61.52162783843167, 23.68845405568186], [61.52265130020887, 23.690685672200868]], range: [306.81, 319.09], dir: "2026-11-18-drone-set2/set1-"},
@@ -142,7 +150,7 @@ const camLayer = L.layerGroup(cams.flatMap(([lat, lon, heading, pitch]) => {
 })).addTo(map);
 L.control.layers({"Satellite": sat, "OpenStreetMap": osm}, {"Set 2 cameras": camLayer}).addTo(map);
 L.control.scale({imperial: false}).addTo(map);
-let pick = {set: "2", layer: "ortho"}, overlay = null;
+let pick = {set: "2p", layer: "ortho"}, overlay = null;
 function show() {
   const s = sets[pick.set];
   if (overlay) overlay.remove();
@@ -164,7 +172,7 @@ for (const id of ["set", "layer"]) {
   });
 }
 document.getElementById("op").oninput = e => overlay && overlay.setOpacity(+e.target.value);
-map.fitBounds(L.latLngBounds([...sets[2].bounds, ...sets[1].bounds]), {padding: [20, 20]});
+map.fitBounds(L.latLngBounds(sets["2p"].bounds), {padding: [20, 20]});
 show();
 </script>
 </body>

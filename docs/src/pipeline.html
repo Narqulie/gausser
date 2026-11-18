@@ -128,7 +128,12 @@ ground and is blended top first on a grid of <code>--resolution</code> metres (0
 renders the newest textured mesh instead, as OpenDroneMap does: each triangle carries its colour from the best photo at
 full resolution, the highest surface wins (a true orthophoto: roofs over their footprints), and each cell averages 2×2
 samples. Where the mesh has holes (glass, deep shadow, thin structures) the newest splat fills in; <code>map.json</code>
-records the share (<code>filled_from_splat</code>). That is sharper than a splat of a large scene; mesh the whole flight with <code>gausser mesh --no-crop</code>
+records the share (<code>filled_from_splat</code>). <code>--source photos</code> goes one step further and skips the
+texture atlas: each map cell takes its height from the mesh surface and its colour straight from the photo that sees it
+best (visible by a depth test, most straight down, near the image centre, sharpest), cross-faded over 0.4 m where the
+chosen photo changes. With <code>--photos DIR</code> it samples full-resolution copies (for example the camera's 48 MP
+originals when <code>images/</code> holds reduced ones), so <code>--resolution 0.01</code> is worth it. It covers the
+crop box when one is set. That is sharper than a splat of a large scene; mesh the whole flight with <code>gausser mesh --no-crop</code>
 when the splat is cropped to a smaller plot. Writes
 <code>ortho.tif</code> and <code>dsm.tif</code> (Cloud Optimized GeoTIFFs in the scene's CRS), Web Mercator previews of both
 (<code>ortho-web.webp</code>, and <code>dsm-web.webp</code> coloured by height and hill-shaded) for the monitor's

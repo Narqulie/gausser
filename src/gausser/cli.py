@@ -116,8 +116,13 @@ def _add_map_options(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("map")
     group.add_argument("--resolution", type=float, default=0.03, metavar="M", help="orthophoto and DSM cell size in metres (default 0.03)")
     group.add_argument(
-        "--source", dest="map_source", choices=("splat", "mesh"), default="splat",
-        help="render the newest splat, or the newest textured mesh (colours straight from the photos: sharper, true ortho)",
+        "--source", dest="map_source", choices=("splat", "mesh", "photos"), default="splat",
+        help="render the newest splat; the newest textured mesh (colours from the photos: sharper, true ortho); or the photos "
+        "themselves on the mesh surface (sharpest; the crop box if set, else the mesh)",
+    )
+    group.add_argument(
+        "--photos", type=Path, metavar="DIR",
+        help="with --source photos: full-resolution copies of images/ (same names), e.g. the camera's originals",
     )
 
 
@@ -387,7 +392,7 @@ def run_step(scene: Scene, name: str, args: argparse.Namespace, source: Path | N
         elif name == "mesh":
             run = steps.mesh(scene, faces=args.faces, refine=args.refine, texture_size=args.texture_size, crop=args.mesh_crop)
         elif name == "map":
-            run = mapping.make(scene, source, args.resolution, args.map_source)
+            run = mapping.make(scene, source, args.resolution, args.map_source, args.photos)
         if run is not None:
             made["run"] = str(run.relative_to(scene.root))
 

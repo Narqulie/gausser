@@ -90,3 +90,25 @@ def test_mesh_map_shows_the_highest_surface_with_its_photo_texture(tmp_path):
     assert rgb[10, 10] == pytest.approx([1, 0, 0], abs=0.01) and depth[10, 10] == pytest.approx(-2)  # the roof wins
     assert rgb[1, 1] == pytest.approx([0, 1, 0], abs=0.01) and depth[1, 1] == pytest.approx(0)
     assert coverage.min() == 1
+
+
+def test_camera_projection_applies_radial_distortion_and_scales_to_full_resolution_copies():
+    from gausser.colmap_model import Camera
+
+    camera = Camera(2, 4032, 2268, (3000.0, 2016.0, 1134.0, 0.05))  # SIMPLE_RADIAL: f, cx, cy, k
+    point = np.array([[0.2, -0.1, 1.0]])  # x/z = 0.2, y/z = -0.1, r² = 0.05
+    u, v = camera.project(point)[0]
+    assert (u, v) == pytest.approx((3000 * 0.2 * 1.0025 + 2016, 3000 * -0.1 * 1.0025 + 1134))
+    assert camera.project(point, scale=2)[0] == pytest.approx((2 * u, 2 * v))  # 8064-pixel originals of a 4032 model
+
+
+def test_photo_map_area_is_the_crop_box_in_model_coordinates(tmp_path):
+    import json
+
+    from gausser.scene import Scene
+
+    scene = Scene(tmp_path)
+    scene.sparse.mkdir()
+    # A georeferenced model has y down, so the level frame is (x, -y, -z).
+    scene.crop.write_text(json.dumps({"up": [0, -1, 0], "min": [-54, -53, -46], "max": [53, -25, 45]}))
+    assert mapping._crop_area(scene) == pytest.approx((-54, 53, -45, 46))
