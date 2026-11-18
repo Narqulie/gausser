@@ -204,8 +204,10 @@ texturing. Needs <code>dense/</code>. A crop cuts the surface before refining.</
 <h2 id="map">gausser map [PLY]</h2>
 <p>Renders the newest splat straight down, without a browser or GPU: every Gaussian projects to a 2D Gaussian on the
 ground and is blended top first on a grid of <code>--resolution</code> metres (0.03). Writes
-<code>ortho.tif</code> and <code>dsm.tif</code> (Cloud Optimized GeoTIFFs in the scene's CRS) and <code>map.html</code>,
-the orthophoto over satellite imagery or OpenStreetMap. Needs a georeferenced model (drone GPS).</p>
+<code>ortho.tif</code> and <code>dsm.tif</code> (Cloud Optimized GeoTIFFs in the scene's CRS), Web Mercator previews of both
+(<code>ortho-web.webp</code>, and <code>dsm-web.webp</code> coloured by height and hill-shaded) for the monitor's
+<a href="monitor.html#map">Map tab</a>, and <code>map.html</code>, the orthophoto over satellite imagery or OpenStreetMap.
+Needs a georeferenced model (drone GPS).</p>
 <figure><div class="pair"><img src="reports/2026-11-14-drone-mapping/ortho-web.webp" alt="Orthophoto">
 <img src="reports/2026-11-14-drone-mapping/dsm.webp" alt="DSM hillshade"></div>
 <figcaption>Orthophoto and DSM hillshade from 81 frames of a DJI Mini 4 Pro flight.</figcaption></figure>

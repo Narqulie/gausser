@@ -9,9 +9,12 @@ import { Images } from "./Images";
 import { Stats } from "./Stats";
 import { Logs } from "./Logs";
 import { Renders } from "./Renders";
+import { Map } from "./Map";
 
-type Tab = "3d" | "images" | "renders" | "stats" | "logs";
-const TABS: [Tab, string][] = [["3d", "3D"], ["images", "Images"], ["renders", "Renders"], ["stats", "Stats"], ["logs", "Logs"]];
+type Tab = "3d" | "map" | "images" | "renders" | "stats" | "logs";
+const TABS: [Tab, string][] = [
+  ["3d", "3D"], ["map", "Map"], ["images", "Images"], ["renders", "Renders"], ["stats", "Stats"], ["logs", "Logs"],
+];
 
 export function App() {
   const { state, offline } = useSceneState();
@@ -59,12 +62,13 @@ export function App() {
         ))}
       </section>
       <nav className="tabs">
-        {TABS.map(([id, label]) => (
+        {TABS.filter(([id]) => id !== "map" || state.geo || state.maps.length).map(([id, label]) => (
           <button key={id} className={`tab ${tab === id ? "active" : ""}`} onClick={() => setTab(id)}>{label}</button>
         ))}
       </nav>
       <main className="content">
         {tab === "3d" && <Viewer state={state} focus={focus} />}
+        {tab === "map" && <Map state={state} />}
         {tab === "images" && (
           <Images state={state} onShow={(name) => { setFocus(name); setTab("3d"); }} />
         )}
@@ -161,7 +165,7 @@ export function stepStatus(step: Step, state: State, run: HistoryRecord | undefi
     // a failure counts only until the step succeeds again
     return ["failed", run.error === "interrupted" ? "interrupted" : "failed"];
   }
-  const { images, masks, model, exports, trained, lods, lod_current, dense, meshes, mesh_current } = state;
+  const { images, masks, model, exports, trained, lods, lod_current, dense, meshes, mesh_current, maps, map_current } = state;
   switch (step) {
     case "frames":
       return images.count ? ["done", "done"] : ["idle", "no images"];
@@ -183,11 +187,14 @@ export function stepStatus(step: Step, state: State, run: HistoryRecord | undefi
     case "mesh":
       if (!meshes.length) return ["idle", "none"];
       return mesh_current ? ["done", "done"] : ["stale", "out of date"];
+    case "map":
+      if (!maps.length) return ["idle", "none"];
+      return map_current ? ["done", "done"] : ["stale", "out of date"];
   }
 }
 
 export function stepMetric(step: Step, state: State): [string, string] {
-  const { images, masks, model, exports, lods, dense, meshes } = state;
+  const { images, masks, model, exports, lods, dense, meshes, maps, geo } = state;
   const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
   switch (step) {
     case "frames":
@@ -210,5 +217,8 @@ export function stepMetric(step: Step, state: State): [string, string] {
       return [dense ? plural(dense.points, "point") : "none", "openmvs"];
     case "mesh":
       return [meshes.length ? plural(meshes.length, "mesh") : "none", "openmvs"];
+    case "map":
+      if (maps.length) return [`${(maps[maps.length - 1].resolution_m * 100).toFixed(0)} cm orthophoto`, maps[maps.length - 1].crs];
+      return [geo ? "not made" : "no GPS fit", "gausser"];
   }
 }

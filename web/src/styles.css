@@ -17,6 +17,7 @@
   --lod: #72f1b8;
   --dense: #b893ce;
   --mesh: #f97e72;
+  --map: #6c9bff;
   --red: #fe4450;
 
   --font: mononoki, "JetBrains Mono", "SF Mono", Menlo, monospace;
@@ -175,6 +176,7 @@ a.button { text-decoration: none; color: inherit; }
 .step-lod { color: var(--lod); }
 .step-dense { color: var(--dense); }
 .step-mesh { color: var(--mesh); }
+.step-map { color: var(--map); }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line); }
@@ -291,3 +293,26 @@ button.col:hover, .col.active { color: var(--text); }
 .swipe-edge { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--train); pointer-events: none; }
 .canvas-tip { position: absolute; padding: 1px 6px; background: var(--deep); border: 1px solid var(--line); pointer-events: none; white-space: nowrap; }
 .side .command { display: block; padding: 6px 8px; background: var(--line); border-radius: 4px; word-break: break-all; user-select: all; font-size: 11px; }
+
+/* Map tab: a georeferenced scene on a web map */
+.geomap { height: 100%; display: flex; flex-direction: column; }
+.geomap-body { flex: 1; display: grid; grid-template-columns: 1fr 260px; min-height: 0; }
+.geomap-map { height: 100%; background: var(--deep); }
+.geomap-legend { border-left: 1px solid var(--line); padding: 14px 16px; overflow-y: auto; font-size: 13px; }
+.geomap-legend .legend-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.geomap-legend .legend-row i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.geomap-legend dl { margin: 14px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; }
+.geomap-legend dt { color: var(--muted); }
+.geomap-legend dd { margin: 0; }
+.geomap-legend .muted { color: var(--muted); }
+.geomap-legend .stale { color: var(--mask); }
+.dsm-ramp { display: grid; grid-template-columns: 1fr 1fr; margin-top: 14px; color: var(--muted); }
+.dsm-ramp .ramp { grid-column: 1 / -1; height: 8px; border-radius: 4px; margin-bottom: 4px;
+  background: linear-gradient(90deg, #171520, var(--solve), var(--lod), var(--frames), var(--train)); }
+.dsm-ramp span:last-child { text-align: right; }
+.downloads { display: flex; gap: 14px; margin-top: 14px; }
+.downloads a { color: var(--solve); }
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.segmented button { background: none; border: 0; color: var(--muted); padding: 4px 10px; font: inherit; cursor: pointer; }
+.segmented button.active { background: var(--raise); color: var(--text); }
+.leaflet-container { font-family: var(--font); background: var(--deep); }

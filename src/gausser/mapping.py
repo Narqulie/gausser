@@ -164,11 +164,12 @@ def make(scene: Scene, source: Path | None = None, resolution: float = 0.03) -> 
     dsm = (origin[2] - depth).astype(np.float32)  # NaN where less than half covered
     _write_geotiff(staged / "ortho.tif", ortho, corner, resolution, record["crs"])
     _write_geotiff(staged / "dsm.tif", dsm, corner, resolution, record["crs"])
-    bounds = _web_overlay(staged / "ortho.tif", staged / "ortho-web.webp")
+    bounds, _ = _web_overlay(staged / "ortho.tif", staged / "ortho-web.webp")
+    _, heights = _web_overlay(staged / "dsm.tif", staged / "dsm-web.webp")
     cameras = [list(position[:2]) for position in _camera_gps(scene)]
     (staged / "map.json").write_text(json.dumps({
         "crs": record["crs"], "resolution_m": resolution, "north_west": list(corner), "size": [width, height],
-        "source": str(source), "bounds_latlon": bounds,
+        "source": str(source), "bounds_latlon": bounds, "dsm_range_m": heights,
     }, indent=1))
     (staged / "map.html").write_text(_html(bounds, cameras))
     run = scene.new_run("map")
@@ -200,15 +201,19 @@ def _write_geotiff(path: Path, data: Any, corner: tuple[float, float], resolutio
         copy(memory.name, str(path), driver="COG", compress="DEFLATE")
 
 
-def _web_overlay(ortho: Path, image: Path, size: int = 4096) -> list[list[float]]:
-    """The orthophoto in Web Mercator as WebP (long edge `size`), and its [[south, west], [north, east]] in degrees."""
+def _web_overlay(raster: Path, image: Path, size: int = 4096) -> tuple[list[list[float]], list[float] | None]:
+    """A GeoTIFF in Web Mercator as WebP (long edge `size`) for a web map, and its [[south, west], [north, east]] in degrees.
+
+    RGBA rasters (the orthophoto) are reprojected as they are; a one-band DSM is coloured by height and hill-shaded,
+    and its colour range (2nd to 98th percentile of height, metres) is returned as the second value.
+    """
     import numpy as np
     import rasterio
     from PIL import Image
     from pyproj import Transformer
     from rasterio.warp import Resampling, calculate_default_transform, reproject
 
-    with rasterio.open(ortho) as source:
+    with rasterio.open(raster) as source:
         transform, cols, rows = calculate_default_transform(source.crs, "EPSG:3857", source.width, source.height, *source.bounds)
         assert cols is not None and rows is not None  # always set when the source size is given
         width, height = int(cols), int(rows)
@@ -216,13 +221,46 @@ def _web_overlay(ortho: Path, image: Path, size: int = 4096) -> list[list[float]
         if scale > 1:
             width, height = int(width / scale), int(height / scale)
             transform = transform * transform.scale(scale)
-        out = np.zeros((4, height, width), dtype=np.uint8)
-        reproject(rasterio.band(source, [1, 2, 3, 4]), out, dst_transform=transform, dst_crs="EPSG:3857", resampling=Resampling.average)
-    Image.fromarray(np.moveaxis(out, 0, 2), "RGBA").save(image, quality=85)  # 3 MB; a PNG was 20 MB
+        bands = list(range(1, source.count + 1))
+        out = np.full((len(bands), height, width), np.nan if source.count == 1 else 0, dtype=source.dtypes[0])
+        reproject(
+            rasterio.band(source, bands), out, dst_transform=transform, dst_crs="EPSG:3857",
+            resampling=Resampling.average, dst_nodata=np.nan if source.count == 1 else None,
+        )
     west, north = transform * (0, 0)
     east, south = transform * (width, height)
     lon, lat = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True).transform([west, east], [south, north])
-    return [[lat[0], lon[0]], [lat[1], lon[1]]]
+    heights = None
+    if source.count == 1:
+        pixel = transform.a * np.cos(np.radians((lat[0] + lat[1]) / 2))  # Web Mercator metres → ground metres
+        rgba, heights = _shade(out[0], pixel)
+    else:
+        rgba = np.moveaxis(out, 0, 2)
+    Image.fromarray(rgba, "RGBA").save(image, quality=85)  # 3 MB; a PNG was 20 MB
+    return [[lat[0], lon[0]], [lat[1], lon[1]]], heights
+
+
+# Low to high: the monitor's palette (deep, solve, lod, frames, train).
+RAMP = ((23, 21, 32), (54, 249, 246), (114, 241, 184), (254, 222, 93), (255, 126, 219))
+
+
+def _shade(z: Any, pixel: float) -> tuple[Any, list[float]]:
+    """Heights as RGBA: colour from RAMP over the 2-98 % range, times a hill shade lit from the north-west."""
+    import numpy as np
+
+    valid = np.isfinite(z)
+    if not valid.any():
+        return np.zeros((*z.shape, 4), dtype=np.uint8), [0.0, 0.0]
+    lo, hi = (float(v) for v in np.percentile(z[valid], [2, 98]))
+    filled = np.where(valid, z, np.median(z[valid]))
+    gy, gx = np.gradient(filled, pixel)  # rows run south
+    shade = np.clip(0.65 + 0.35 * (gy - gx) / np.sqrt(1 + gx**2 + gy**2) * 2, 0.25, 1)
+    t = np.clip((filled - lo) / max(hi - lo, 1e-6), 0, 1) * (len(RAMP) - 1)
+    i = np.minimum(t.astype(int), len(RAMP) - 2)
+    ramp = np.array(RAMP, dtype=np.float32)
+    colour = ramp[i] + (ramp[i + 1] - ramp[i]) * (t - i)[..., None]
+    rgba = np.dstack([colour * shade[..., None], np.where(valid, 255, 0)]).astype(np.uint8)
+    return rgba, [round(lo, 2), round(hi, 2)]
 
 
 def _camera_gps(scene: Scene) -> list[tuple[float, float, float]]:

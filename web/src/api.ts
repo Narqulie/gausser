@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
-export type Step = "frames" | "mask" | "solve" | "dense" | "train" | "lod" | "mesh";
-export const STEPS: Step[] = ["frames", "mask", "solve", "dense", "train", "lod", "mesh"];
+export type Step = "frames" | "mask" | "solve" | "dense" | "train" | "lod" | "mesh" | "map";
+export const STEPS: Step[] = ["frames", "mask", "solve", "dense", "train", "lod", "mesh", "map"];
 
 export interface HistoryRecord {
   step: Step;
@@ -67,6 +67,36 @@ export interface State {
   meshes: { path: string; mtime: number }[];
   mesh_current: boolean;
   crop: { up: number[]; min: [number, number, number]; max: [number, number, number] } | null;
+  geo: GeoFit | null;
+  maps: MapRun[];
+  map_current: boolean;
+}
+
+/** sparse/geo.json: a model georeferenced onto GPS by `solve`. */
+export interface GeoFit {
+  crs: string;
+  origin: [number, number, number];
+  images: number;
+  rms_horizontal_m: number;
+  rms_vertical_m: number;
+}
+
+/** A `gausser map` run: runs/map/<time>/ and its map.json. */
+export interface MapRun {
+  path: string;
+  mtime: number;
+  crs: string;
+  resolution_m: number;
+  size: [number, number];
+  bounds_latlon: [[number, number], [number, number]];
+  dsm_range_m?: [number, number] | null;
+}
+
+/** Cameras (and points) in latitude/longitude: from the georeferenced model, or the photos' GPS before solve. */
+export interface GeoData {
+  source: "model" | "gps";
+  cameras: { name: string; lat: number; lon: number; heading?: number; pitch?: number }[];
+  points: { latlon: number[]; rgb: number[] } | null;
 }
 
 export interface Camera {

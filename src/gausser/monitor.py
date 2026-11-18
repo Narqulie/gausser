@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
 
-from . import colmap_model, orbit, pano, ply, steps as pipeline
-from .scene import GausserError, Scene, count_pngs, index, index_path, is_image, mtime, registered_images, scene_folder, scene_name
+from . import colmap_model, geo, orbit, pano, ply, steps as pipeline
+from .scene import GEO_FILE, GausserError, Scene, count_pngs, index, index_path, is_image, mtime, registered_images, scene_folder, scene_name
 
 WEB = Path(__file__).with_name("web")
 WEB_HINT = "cd web && npm ci && npm run build (in the gausser repository), or rerun scripts/install-macos.sh"
@@ -196,6 +196,9 @@ def state(scene: Scene) -> dict[str, Any]:
         "meshes": [{"path": _rel(scene, p / "mesh.glb"), "mtime": mtime(p / "mesh.glb")} for p in scene.mesh_runs()],
         "mesh_current": scene.mesh_done(),
         "crop": _read_json(scene.crop),  # {up, min, max}: `gausser crop`'s box in the level frame
+        "geo": scene.geo(),  # sparse/geo.json: CRS, origin and fit of a model georeferenced from GPS
+        "maps": [{"path": _rel(scene, p), "mtime": mtime(p / "ortho.tif"), **(_read_json(p / "map.json") or {})} for p in scene.map_runs()],
+        "map_current": scene.map_done(),
     }
 
 
@@ -233,6 +236,38 @@ def read_model(model: Path, max_points: int = MAX_POINTS) -> dict[str, Any]:
             "mean_track": float(tracks.mean()) if count else 0.0,
             "track_lengths": [[int(n), int(c)] for n, c in zip(lengths, counts)],  # 30 = 30 or more
         },
+    }
+
+
+def geo_model(model: Path, record: dict[str, Any], max_points: int = 20_000) -> dict[str, Any]:
+    """A georeferenced model's cameras (position, compass heading and pitch of the view) and up to
+    `max_points` points with their colours, in latitude/longitude."""
+    import numpy as np
+    from pyproj import Transformer
+
+    to_lonlat = Transformer.from_crs(record["crs"], "EPSG:4326", always_xy=True).transform
+    origin = np.asarray(record["origin"], dtype=np.float64)
+
+    def lonlat(local: Any) -> Any:  # local x east, y down, z north → lon, lat
+        return np.stack(to_lonlat(origin[0] + local[:, 0], origin[1] + local[:, 2]), 1)
+
+    images = colmap_model.read_images(model)
+    centres = lonlat(np.array([image.centre for image in images]))
+    views = np.array([image.rotation[2] for image in images])  # the optical axis (third row of world→camera)
+    cameras = [
+        {
+            "name": image.name, "lat": round(float(lat), 8), "lon": round(float(lon), 8),
+            "heading": round(float(np.degrees(np.arctan2(view[0], view[2]))) % 360, 1),
+            "pitch": round(float(-np.degrees(np.arcsin(np.clip(view[1], -1, 1)))), 1),
+        }
+        for image, (lon, lat), view in zip(images, centres, views, strict=True)
+    ]
+    points = colmap_model.read_points(model)
+    keep = np.random.default_rng(0).choice(len(points.ids), max_points, replace=False) if len(points.ids) > max_points else slice(None)
+    where = lonlat(points.xyz[keep])
+    return {
+        "source": "model", "cameras": cameras,
+        "points": {"latlon": np.round(where[:, ::-1], 7).ravel().tolist(), "rgb": points.rgb[keep].ravel().tolist()},
     }
 
 
@@ -361,6 +396,17 @@ class Monitor:
         key = ("model", path, mtime(path / "images.bin"), mtime(path / "points3D.bin"))
         return self.cached(key, lambda: json.dumps(read_model(path)).encode())  # type: ignore[no-any-return]
 
+    def geo(self, scene: Scene) -> dict[str, Any]:
+        """Cameras (and a sample of points) in latitude/longitude for the map: from the georeferenced model,
+        else from the images' GPS (before or during solve)."""
+        model, record = scene.model(), scene.geo()
+        if model and record:
+            key = ("geo", model, mtime(model / "images.bin"), mtime(scene.sparse / GEO_FILE))
+            return self.cached(key, lambda: geo_model(model, record))  # type: ignore[no-any-return]
+        images = scene.image_files()
+        positions = self.cached(("gps", tuple((image.name, mtime(image)) for image in images)), lambda: geo.image_positions(images))
+        return {"source": "gps", "cameras": [{"name": n, "lat": p[0], "lon": p[1]} for n, p in positions.items()], "points": None}
+
     def images(self, scene: Scene) -> list[dict[str, Any]]:
         files = scene.image_files()
         panos = {p.stem: _rel(scene, p) for p in scene.panos.iterdir() if is_image(p)} if scene.is_pano() else {}
@@ -465,6 +511,8 @@ def make_handler(app: Monitor) -> type[SimpleHTTPRequestHandler]:
             elif route == "frames":  # frames.json: the frames `gausser frames` chose
                 folder = scene.panos if scene.is_pano() else scene.images
                 self.json(_read_json(folder / "frames.json"))
+            elif route == "geo":
+                self.json(app.geo(scene))
             elif route == "model":
                 self.send(app.model(scene, query.get("path", "sparse/0")), "application/json")
             elif route == "evals":
