@@ -11,7 +11,10 @@ below are real captures of scenes on this Mac, two of them while Brush was train
 
 <h2 id="hub">All scenes</h2>
 <figure><img src="img/monitor-hub.jpg" alt="Monitor list of all scenes">
-<figcaption>Running scenes first, with the running step and its arguments. The rest are grouped by the folder that holds them,
+<figcaption>Each scene has a status: <b>running</b> (a command holds the scene), <b>failed</b> (its last step failed,
+was interrupted or was killed, so it has no end record), <b>unfinished</b> (the last step worked, but there is no current splat),
+<b>trained</b> (the newest splat is trained from the current model) or <b>missing</b>. The chips filter by status; the column
+heads sort by status, name or last activity (click again to reverse). Running scenes first, with the running step and its arguments. The rest are grouped by the folder that holds them,
 newest first, with a step bar per scene. Folders that are gone (an unplugged drive, a moved or deleted scene) are folded at the end.
 <kbd>/</kbd> filters scenes and steps by name or path.</figcaption></figure>
 <p>A scene is listed under its name: the one <code>gausser name "Atlas-tyttö"</code> saved in <code>.gausser/name.txt</code>, else
