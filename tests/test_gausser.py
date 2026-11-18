@@ -1234,6 +1234,19 @@ def test_run_mesh_builds_the_dense_cloud_before_training_and_meshes_last(tmp_pat
     assert order == ["dense", "train-auto", "mesh"]
 
 
+def test_run_map_meshes_the_whole_flight_and_maps_from_the_photos_by_default(tmp_path, monkeypatch):
+    scene = solved_and_trained(tmp_path)
+    order = []
+    monkeypatch.setattr(steps, "dense", lambda scene, level: order.append("dense"))
+    monkeypatch.setattr(steps, "train_brush", lambda scene, **kw: record(order, "train", scene.runs / "brush" / "y"))
+    monkeypatch.setattr(steps, "mesh", lambda scene, **kw: record(order, f"mesh crop={kw['crop']}", scene.runs / "mesh" / "z"))
+    monkeypatch.setattr(cli.mapping, "make", lambda scene, source, resolution, kind, photos, plot: record(
+        order, f"map {kind} {photos} plot={plot}", scene.runs / "map" / "m"))
+
+    assert cli.main(["run", "-s", str(scene.root), "--map", "--photos", "/originals"]) == 0
+    assert order == ["dense", "train", "mesh crop=False", "map auto /originals plot=False"]
+
+
 def test_solve_with_gps_matches_spatially_maps_globally_and_georeferences(tmp_path, tools, monkeypatch):
     scene = make_scene(tmp_path)
     positions = {f"img{i}.jpg": (61.52 + i * 1e-4, 23.69 + (i % 2) * 2e-4, 350.0) for i in range(3)}

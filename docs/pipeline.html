@@ -203,22 +203,29 @@ example to map more ground than the cropped splat shows).</p>
 <figcaption>Left: full mesh with ragged edges. Right: the same scene cut to the crop box before refining.</figcaption></figure>
 
 <h2 id="map">gausser map [PLY|GLB]</h2>
-<p>Renders the newest splat straight down, without a browser or GPU: every Gaussian projects to a 2D Gaussian on the
-ground and is blended top first on a grid of <code>--resolution</code> metres (0.03). With <code>--source mesh</code> it
-renders the newest textured mesh instead, as OpenDroneMap does: each triangle carries its colour from the best photo at
-full resolution, the highest surface wins (a true orthophoto: roofs over their footprints), and each cell averages 2×2
-samples. Where the mesh has holes (glass, deep shadow, thin structures) the newest splat fills in; <code>map.json</code>
-records the share (<code>filled_from_splat</code>). <code>--source photos</code> goes one step further and skips the
-texture atlas: each map cell takes its height from the mesh surface and its colour straight from the photo that sees it
-best (visible by a depth test, most straight down, near the image centre, sharpest), cross-faded over 0.4 m where the
-chosen photo changes. With <code>--photos DIR</code> it samples full-resolution copies (for example the camera's 48 MP
-originals when <code>images/</code> holds reduced ones), so <code>--resolution 0.01</code> is worth it. It covers the
-crop box when one is set. That is sharper than a splat of a large scene; mesh the whole flight with <code>gausser mesh --no-crop</code>
-when the splat is cropped to a smaller plot. Writes
-<code>ortho.tif</code> and <code>dsm.tif</code> (Cloud Optimized GeoTIFFs in the scene's CRS), Web Mercator previews of both
+<p>An orthophoto and a surface model (DSM) of a georeferenced scene (drone GPS), from one of three sources
+(<code>--source</code>):</p>
+<ul>
+<li><b>photos</b> (the default when there is a mesh): each map cell takes its height from the mesh surface and its colour
+straight from the photo that sees it best: visible by a depth test, most straight down, near the image centre, and
+sharpest. The choice is made on a 5 cm grid with smoothed scores, and photos cross-fade over 0.4 m where it changes.
+<code>--photos DIR</code> samples full-resolution copies (for example the camera's 48 MP originals when
+<code>images/</code> holds reduced ones). Cells no photo sees take the mesh texture or the splat. Default 2 cm cells.</li>
+<li><b>mesh</b>: the textured OpenMVS mesh rendered straight down, 2×2 samples per cell, as OpenDroneMap does. The highest
+surface wins, so roofs sit over their footprints (a true orthophoto).</li>
+<li><b>splat</b> (the default without a mesh): every Gaussian projects to a 2D Gaussian on the ground and is blended top
+first. Softer on large scenes, but needs no mesh.</li>
+</ul>
+<p>The mesh and photo maps fill the mesh's holes (glass, deep shadow, thin structures) from the newest splat and cover
+the whole mesh; the photo map also bridges holes up to 15 m wide in the surface (the mesh often misses ground beside
+buildings) so the photos can still be laid on them. A whole flight at 2 cm takes about 7 minutes and 22 GB of memory
+(Set 2: 299 × 283 m, 94 photos at 48 MP); <code>--plot</code> limits them to the crop box, for example to map the plot at
+<code>--resolution 0.01</code>. <code>run --map</code> builds the best set in one go: the dense cloud, the splat (cropped
+when there is a crop), a mesh of the whole flight (<code>mesh --no-crop</code>) and the photo map. Each map run writes
+<code>ortho.tif</code> and <code>dsm.tif</code> (Cloud Optimized GeoTIFFs in the scene's CRS), Web Mercator previews
 (<code>ortho-web.webp</code>, and <code>dsm-web.webp</code> coloured by height and hill-shaded) for the monitor's
-<a href="monitor.html#map">Map tab</a>, and <code>map.html</code>, the orthophoto over satellite imagery or OpenStreetMap.
-Needs a georeferenced model (drone GPS).</p>
+<a href="monitor.html#map">Map tab</a>, <code>map.html</code> (the orthophoto over satellite imagery or OpenStreetMap),
+<code>map.json</code> and <code>README.txt</code>, which says what made each file.</p>
 <figure><div class="pair"><img src="reports/2026-11-14-drone-mapping/ortho-web.webp" alt="Orthophoto">
 <img src="reports/2026-11-14-drone-mapping/dsm.webp" alt="DSM hillshade"></div>
 <figcaption>Orthophoto and DSM hillshade from 81 frames of a DJI Mini 4 Pro flight.</figcaption></figure>

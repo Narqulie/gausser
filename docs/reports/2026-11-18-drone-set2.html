@@ -65,7 +65,7 @@
 
 <h2>Map</h2>
 <div class="bar">
-  <span class="seg" id="set"><button data-v="2p" class="on">Set 2 photos (1 cm)</button><button data-v="2">Set 2 mesh</button><button data-v="2s">Set 2 splat (plot)</button><button data-v="1">Set 1</button></span>
+  <span class="seg" id="set"><button data-v="2w" class="on">Set 2 photos, whole flight (2 cm)</button><button data-v="2p">Set 2 photos, plot (1 cm)</button><button data-v="2">Set 2 mesh</button><button data-v="2s">Set 2 splat (plot)</button><button data-v="1">Set 1</button></span>
   <span class="seg" id="layer"><button data-v="ortho" class="on">orthophoto</button><button data-v="dsm">surface (DSM)</button></span>
   <label>opacity <input id="op" type="range" min="0" max="1" step="0.05" value="1"></label>
   <span id="range"></span>
@@ -82,7 +82,15 @@ on the plot (3 cm); textured mesh (<code>--source mesh</code>, 3 cm); photos on 
 <p>The photo map is the sharpest: grass blades, kerb stones and the roof vent's grille show. It samples the original
 48 MP photos directly, picking per spot the photo that looks most straight down, sees the spot, and is least blurred,
 and cross-fades over 0.4 m where the choice changes. It covers the 107 × 91 m plot at 1 cm (10,700 × 9,100 cells,
-99.7% covered).</p>
+99.7% covered). The same method over the whole flight, at 2 cm (14,932 × 14,162 cells), is the default layer above:
+holes in the mesh up to 15 m wide are bridged so the photos can still be laid on them, and 1.4% of the
+cells, which no photo sees, take the mesh texture.</p>
+
+<h2>One command for the best set</h2>
+<pre>gausser run --map --photos "~/Desktop/straight_down/Set 2"</pre>
+<p>Builds the dense cloud, the splat (cropped to the plot when a crop box is set: the 3D view), a mesh of the whole
+flight (the surface and DSM) and the photo orthophoto (2 cm by default). Each map run carries a <code>README.txt</code>
+saying what made each file. <code>gausser map --plot --resolution 0.01</code> adds a finer map of the plot.</p>
 <p>The splat spreads 1.5 million Gaussians over the whole 300 m the flight saw, so fine texture (roof corrugation, edges)
 blurs. Cropping the splat to the 107 × 91 m plot helps a little. The mesh map takes its colour straight from the photos,
 so it keeps the corrugation and sharp edges, and it is a true orthophoto (roofs over their footprints).
@@ -129,6 +137,7 @@ and the orthophoto or DSM once <code>map</code> has run.</p>
 </main>
 <script>
 const sets = {
+  "2w": {bounds: [[61.52072684318004, 23.686803072126654], [61.52340093631401, 23.692678033019757]], range: [361.56, 380.4], dir: "2026-11-18-drone-set2/whole-"},
   "2p": {bounds: [[61.52169450370266, 23.68859901518407], [61.52255878430484, 23.690693933712065]], range: [365.38, 380.23], dir: "2026-11-18-drone-set2/photos-"},
   2: {bounds: [[61.520726762074624, 23.686803072126654], [61.523400940866864, 23.692678221203057]], range: [361.18, 380.88], dir: "2026-11-18-drone-set2/"},
   "2s": {bounds: [[61.521698788133094, 23.68861284859366], [61.52255298945039, 23.690679567130207]], range: [365.28, 384.56], dir: "2026-11-18-drone-set2/splat-"},
@@ -150,7 +159,7 @@ const camLayer = L.layerGroup(cams.flatMap(([lat, lon, heading, pitch]) => {
 })).addTo(map);
 L.control.layers({"Satellite": sat, "OpenStreetMap": osm}, {"Set 2 cameras": camLayer}).addTo(map);
 L.control.scale({imperial: false}).addTo(map);
-let pick = {set: "2p", layer: "ortho"}, overlay = null;
+let pick = {set: "2w", layer: "ortho"}, overlay = null;
 function show() {
   const s = sets[pick.set];
   if (overlay) overlay.remove();
@@ -172,7 +181,7 @@ for (const id of ["set", "layer"]) {
   });
 }
 document.getElementById("op").oninput = e => overlay && overlay.setOpacity(+e.target.value);
-map.fitBounds(L.latLngBounds(sets["2p"].bounds), {padding: [20, 20]});
+map.fitBounds(L.latLngBounds(sets["2p"].bounds), {padding: [20, 20]});  // the plot; zoom out for the whole flight
 show();
 </script>
 </body>

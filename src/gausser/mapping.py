@@ -304,11 +304,12 @@ CHOICE_BLUR = 1.0  # m: score smoothing, so the chosen photo changes in patches,
 SEAM_BLEND = 0.4  # m: photos are cross-faded over about this distance where the choice changes
 
 
-def render_photos(scene: Scene, surface: Any, west: float, north: float, width: int, height: int, resolution: float,
-                  photos: Path | None = None) -> Any:
-    """True orthophoto (RGB 0-1, NaN where no photo sees the ground) sampled straight from the photos.
+def render_photos(scene: Scene, surface: Any, fallback: Any, west: float, north: float, width: int, height: int,
+                  resolution: float, photos: Path | None = None) -> tuple[Any, Any, float]:
+    """True orthophoto (RGB 0-1, NaN where nothing is known) sampled straight from the photos, the map cells' y, and
+    the share of known cells no photo sees, which take the `fallback` colour (mesh texture or splat) instead.
 
-    `surface` is the top surface's y on the COARSE grid (NaN where unknown). Every coarse cell gets the photo that sees
+    `surface` and `fallback` are the top surface's y and colour on the COARSE grid (NaN where unknown). Every coarse cell gets the photo that sees
     it best: visible (depth test against the surface seen from that camera), looking most straight down, near the
     image centre, and sharp (motion blur differs per photo). Map cells then sample that photo bilinearly, from the
     full-resolution copies in `photos` (same names) when given, cross-fading neighbouring photos over SEAM_BLEND
@@ -336,7 +337,7 @@ def render_photos(scene: Scene, surface: Any, west: float, north: float, width: 
     points = np.stack([gx[known], surface[known], gz[known]], 1)
     best = np.zeros(ch * cw, dtype=np.float32)
     choice = np.full(ch * cw, -1, dtype=np.int16)
-    visible = np.zeros((len(images), ch * cw), dtype=bool)
+    visible = []  # per photo, the coarse cells it sees (bit-packed: a whole flight has tens of millions)
     sigma = CHOICE_BLUR / COARSE
     for number, image in enumerate(images):
         camera = cameras[image.camera_id]
@@ -360,31 +361,43 @@ def render_photos(scene: Scene, surface: Any, west: float, north: float, width: 
         score = np.zeros(ch * cw, dtype=np.float32)
         score[np.flatnonzero(known)[seen]] = down**4 * centred * sharp[number]
         mask = score > 0
-        visible[number] = mask
+        visible.append(np.packbits(mask))
         smooth = cv2.GaussianBlur(score.reshape(ch, cw), (0, 0), sigma).ravel() * mask
         better = smooth > best
         best[better], choice[better] = smooth[better], number
         print(f"photo {number + 1}/{len(images)}: sees {mask.mean():.0%} of the area", end="\r", flush=True)
     print()
 
-    # Map cells: height and photo weights from the coarse grid.
-    rows, cols = np.mgrid[0:height, 0:width]
-    crow = np.minimum(((rows + 0.5) * resolution / COARSE).astype(np.int32), ch - 1)
-    coarse = (crow * cw + np.minimum(((cols + 0.5) * resolution / COARSE).astype(np.int32), cw - 1)).ravel()
-    del crow
+    # Map cells, a band of rows at a time: their coarse cell and height.
+    coarse = np.empty(width * height, dtype=np.int32)
+    y = np.empty(width * height, dtype=np.float32)
     filled = np.where(known, surface, np.nanmedian(surface) if known.any() else 0)
-    y = map_coordinates(filled, [((rows + 0.5) * resolution / COARSE - 0.5).ravel(), ((cols + 0.5) * resolution / COARSE - 0.5).ravel()],
-                        order=1, mode="nearest").astype(np.float32)
-    del rows, cols
+    ccol = np.minimum(((np.arange(width) + 0.5) * resolution / COARSE).astype(np.int32), cw - 1)
+    fcol = (np.arange(width) + 0.5) * resolution / COARSE - 0.5
+    for start in range(0, height, 512):
+        rows = np.arange(start, min(start + 512, height))
+        crow = np.minimum(((rows + 0.5) * resolution / COARSE).astype(np.int32), ch - 1)
+        band = slice(start * width, (start + len(rows)) * width)
+        coarse[band] = (crow[:, None] * cw + ccol[None, :]).ravel()
+        frow = (rows + 0.5) * resolution / COARSE - 0.5
+        grid = np.meshgrid(frow, fcol, indexing="ij")
+        y[band] = map_coordinates(filled, [grid[0].ravel(), grid[1].ravel()], order=1, mode="nearest")
     rgb = np.zeros((width * height, 3), dtype=np.float32)
     total = np.zeros(width * height, dtype=np.float32)
     for number, image in enumerate(images):
         chosen = (choice == number).reshape(ch, cw).astype(np.float32)
         if not chosen.any():
             continue
-        weight = (cv2.GaussianBlur(chosen, (0, 0), SEAM_BLEND / COARSE).ravel() * visible[number])[coarse]
-        cells = np.flatnonzero(weight > 0.01)
-        weight = weight[cells]
+        sees = np.unpackbits(visible[number], count=ch * cw).astype(bool).reshape(ch, cw)
+        wmap = cv2.GaussianBlur(chosen, (0, 0), SEAM_BLEND / COARSE) * sees
+        where = np.nonzero(wmap > 0.01)
+        # Only the map cells under this photo's patch: its coarse bounding box, in map rows and columns.
+        r0, r1 = (int(where[0].min() * COARSE / resolution), min(int((where[0].max() + 1) * COARSE / resolution) + 1, height))
+        c0, c1 = (int(where[1].min() * COARSE / resolution), min(int((where[1].max() + 1) * COARSE / resolution) + 1, width))
+        block = (np.arange(r0, r1)[:, None] * width + np.arange(c0, c1)[None, :]).ravel()
+        weight = wmap.ravel()[coarse[block]]
+        keep = weight > 0.01
+        cells, weight = block[keep], weight[keep]
         source = (photos / image.name) if photos and (photos / image.name).is_file() else scene.images / image.name
         with Image.open(source) as opened:
             photo = np.asarray(opened.convert("RGB"))
@@ -400,8 +413,54 @@ def render_photos(scene: Scene, surface: Any, west: float, north: float, width: 
         total[cells] += weight
         print(f"sampled photo {number + 1}/{len(images)} ({scale:g}×)", end="\r", flush=True)
     print()
-    rgb = np.where(total[:, None] > 0, rgb / np.maximum(total, 1e-6)[:, None], np.nan)
-    return rgb.reshape(height, width, 3), y.reshape(height, width)
+    rgb /= np.maximum(total, 1e-6)[:, None]
+    unseen = total <= 0
+    rgb[unseen] = fallback.reshape(-1, 3)[coarse[unseen]]  # NaN where the coarse grid knows nothing either
+    known_cells = np.isfinite(rgb[:, 0])
+    share = float((unseen & known_cells).sum() / max(int(known_cells.sum()), 1))
+    return rgb.reshape(height, width, 3), y.reshape(height, width), round(share, 4)
+
+
+HOLE_SPAN = 15.0  # m: holes in the surface up to about this wide are bridged, so the photos can still be laid on them
+
+
+def _close_holes(surface: Any) -> Any:
+    """`surface` (y on the COARSE grid) with its holes bridged where the surface closes around them.
+
+    The mesh misses ground beside buildings and under trees; the photos still see much of it. A hole counts as
+    inside the surface when a morphological closing over HOLE_SPAN covers it, and its height is pulled in from
+    the surrounding surface at ever coarser scales (push-pull), so it stays smooth.
+    """
+    import cv2
+    import numpy as np
+
+    known = np.isfinite(surface)
+    size = max(3, int(HOLE_SPAN / COARSE) | 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+    # Padded with empty cells: outside the grid is not surface (OpenCV's own border would close everything near the edge).
+    padded = np.pad(known.astype(np.uint8), size)
+    inside = cv2.morphologyEx(padded, cv2.MORPH_CLOSE, kernel)[size:-size, size:-size]
+    holes = (inside > 0) & ~known
+    if not holes.any():
+        return surface
+    return np.where(holes, _push_pull(surface), surface)
+
+
+def _push_pull(z: Any) -> Any:
+    """`z` with every NaN replaced by the mean of the known values around it, at the finest scale that has any."""
+    import numpy as np
+
+    known = np.isfinite(z)
+    if known.all() or not known.any():
+        return z
+    h, w = z.shape
+    padded = np.full((h + h % 2, w + w % 2), np.nan, dtype=np.float64)
+    padded[:h, :w] = z
+    blocks = padded.reshape(padded.shape[0] // 2, 2, padded.shape[1] // 2, 2)
+    count = np.isfinite(blocks).sum((1, 3))
+    coarse = np.where(count > 0, np.nansum(blocks, (1, 3)) / np.maximum(count, 1), np.nan)
+    up = np.repeat(np.repeat(_push_pull(coarse), 2, 0), 2, 1)[:h, :w]
+    return np.where(known, z, up)
 
 
 def _mesh_with_fill(scene: Scene, parts: list[MeshPart], west: float, north: float, width: int, height: int,
@@ -425,22 +484,29 @@ def _mesh_with_fill(scene: Scene, parts: list[MeshPart], west: float, north: flo
     return (rgb, coverage, depth, filled) if colour else (None, coverage, depth)
 
 
-def make(scene: Scene, source: Path | None = None, resolution: float = 0.03, kind: str = "splat",
-         photos: Path | None = None) -> Path:
-    """Write runs/map/<time>/: ortho.tif, dsm.tif (heights in the CRS's vertical frame of the GPS) and map.html.
+def make(scene: Scene, source: Path | None = None, resolution: float | None = None, kind: str = "auto",
+         photos: Path | None = None, plot: bool = False) -> Path:
+    """Write runs/map/<time>/: ortho.tif, dsm.tif (heights in the CRS's vertical frame of the GPS), web previews,
+    map.html and README.txt (what made each file).
 
     `kind` "splat" renders the newest (or given) splat export; "mesh" the newest (or given) textured OpenMVS
     mesh, whose colours come from the photos (sharper, and a true orthophoto); "photos" samples the photos
-    themselves on the mesh surface (full-resolution copies in `photos`), the sharpest. "photos" covers the crop
-    box when there is one, else the mesh.
+    themselves on the mesh surface (full-resolution copies in `photos`), the sharpest; "auto" is photos when
+    there is a mesh, else splat. `plot` limits a mesh or photo map to the crop box. `resolution` defaults to
+    2 cm for photos and 3 cm otherwise.
     """
     import numpy as np
 
     record = scene.geo()
     if record is None:
         raise GausserError("The model is not georeferenced (no sparse/geo.json); solve photos or video frames with GPS")
-    filled = None  # share of cells taken from the splat where the mesh has holes
-    area = _crop_area(scene)
+    if kind == "auto":
+        kind = "photos" if scene.mesh_runs() or (source and source.suffix == ".glb") else "splat"
+    resolution = resolution or (0.02 if kind == "photos" else 0.03)
+    filled = unseen = None  # shares of cells taken from the splat (mesh holes) and from the fallback (no photo sees them)
+    area = _crop_area(scene) if plot else None
+    if plot and area is None:
+        raise GausserError("--plot needs a crop box; set one with `gausser crop`")
     if kind in ("mesh", "photos"):
         if source is None:
             meshes = scene.mesh_runs()
@@ -449,12 +515,14 @@ def make(scene: Scene, source: Path | None = None, resolution: float = 0.03, kin
             source = meshes[-1] / "mesh.glb"
         print(f"Reading {source}", flush=True)
         parts = read_mesh(source)
-        west, east, south, north = mesh_extent(parts) if kind == "mesh" or area is None else area
+        west, east, south, north = area or mesh_extent(parts)
         if kind == "photos":  # the surface on the coarse grid; the map cells sample the photos
             cw, ch = int(np.ceil((east - west) / COARSE)), int(np.ceil((north - south) / COARSE))
-            _, coverage, surface = _mesh_with_fill(scene, parts, west, north, cw, ch, COARSE)
+            texture, coarse_coverage, surface, filled = _mesh_with_fill(scene, parts, west, north, cw, ch, COARSE, colour=True)
+            texture[coarse_coverage <= 0.5] = np.nan
+            surface = _close_holes(surface)
             width, height = _grid(west, east, south, north, resolution, f"{len(scene.image_files())} photos on the mesh surface")
-            rgb, depth = render_photos(scene, surface, west, north, width, height, resolution, photos)
+            rgb, depth, unseen = render_photos(scene, surface, texture, west, north, width, height, resolution, photos)
             coverage = np.isfinite(rgb[..., 0]).astype(np.float32)
             rgb = np.nan_to_num(rgb)
         else:
@@ -481,13 +549,40 @@ def make(scene: Scene, source: Path | None = None, resolution: float = 0.03, kin
     cameras = [list(position[:2]) for position in _camera_gps(scene)]
     (staged / "map.json").write_text(json.dumps({
         "crs": record["crs"], "resolution_m": resolution, "north_west": list(corner), "size": [width, height],
-        "source": str(source), "kind": kind, "filled_from_splat": filled, "bounds_latlon": bounds, "dsm_range_m": heights,
+        "source": str(source), "kind": kind, "filled_from_splat": filled, "fallback_share": unseen,
+        "photos": str(photos) if kind == "photos" and photos else None, "bounds_latlon": bounds, "dsm_range_m": heights,
     }, indent=1))
+    (staged / "README.txt").write_text(_readme(kind, source, resolution, photos, filled, unseen, plot))
     (staged / "map.html").write_text(_html(bounds, cameras))
     run = scene.new_run("map")
     replace(staged, run)
     print(f"Orthophoto and DSM in {run}; open {run / 'map.html'}")
     return run
+
+
+def _readme(kind: str, source: Path, resolution: float, photos: Path | None, filled: float | None, unseen: float | None,
+            plot: bool) -> str:
+    """What made each file of a map run, in words."""
+    colour = {
+        "splat": f"the splat {source} rendered straight down",
+        "mesh": f"the textured mesh {source} rendered straight down (each triangle coloured from one photo)",
+        "photos": f"the photos themselves{f' (full-resolution copies in {photos})' if photos else ''}, each spot from the "
+                  f"photo that sees it best, on the surface of the mesh {source}",
+    }[kind]
+    lines = [
+        f"ortho.tif   orthophoto, {resolution * 100:g} cm cells: {colour}.",
+        "dsm.tif     surface heights (metres, the drone GPS's vertical frame): " + (
+            "the splat's surface." if kind == "splat" else "the mesh surface."),
+        "*-web.webp  the same in Web Mercator for web maps (monitor Map tab, map.html).",
+        "map.json    CRS, extent, sources and the shares below.",
+        "",
+        f"Area: {'the crop box (plot)' if plot else 'everything the source covers'}.",
+    ]
+    if filled:
+        lines.append(f"{filled:.1%} of the cells come from the newest splat, where the mesh has holes.")
+    if unseen:
+        lines.append(f"{unseen:.1%} of the cells no photo sees; they take the mesh texture (or splat) colour.")
+    return "\n".join(lines) + "\n"
 
 
 def _crop_area(scene: Scene) -> tuple[float, float, float, float] | None:

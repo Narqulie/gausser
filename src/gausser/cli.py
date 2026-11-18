@@ -114,12 +114,13 @@ def _add_mesh_options(parser: argparse.ArgumentParser) -> None:
 
 def _add_map_options(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("map")
-    group.add_argument("--resolution", type=float, default=0.03, metavar="M", help="orthophoto and DSM cell size in metres (default 0.03)")
+    group.add_argument("--resolution", type=float, metavar="M", help="orthophoto and DSM cell size in metres (default 0.02 for photos, else 0.03)")
     group.add_argument(
-        "--source", dest="map_source", choices=("splat", "mesh", "photos"), default="splat",
+        "--source", dest="map_source", choices=("auto", "splat", "mesh", "photos"), default="auto",
         help="render the newest splat; the newest textured mesh (colours from the photos: sharper, true ortho); or the photos "
-        "themselves on the mesh surface (sharpest; the crop box if set, else the mesh)",
+        "themselves on the mesh surface (sharpest). auto (default): photos when there is a mesh, else splat",
     )
+    group.add_argument("--plot", action="store_true", help="map only the crop box (mesh and photos maps), e.g. finer than the whole flight")
     group.add_argument(
         "--photos", type=Path, metavar="DIR",
         help="with --source photos: full-resolution copies of images/ (same names), e.g. the camera's originals",
@@ -170,7 +171,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--dense", action="store_true", help="also build a dense point cloud before training; Brush then starts from it")
     run.add_argument("--lod", action="store_true", help="also build a streamed LOD set")
     run.add_argument("--mesh", action="store_true", help="also build a textured mesh (implies --dense)")
-    run.add_argument("--map", action="store_true", help="also make an orthophoto and DSM (needs images with GPS)")
+    run.add_argument(
+        "--map", action="store_true",
+        help="also make the orthophoto and DSM (needs images with GPS); implies --mesh of the whole flight, ignoring the crop",
+    )
     run.add_argument("--from", dest="from_step", choices=STEPS, help="redo this step and every step after it")
     for add in (
         _add_frames_options, _add_mask_options, _add_solve_options, _add_dense_options, _add_train_options,
@@ -392,7 +396,7 @@ def run_step(scene: Scene, name: str, args: argparse.Namespace, source: Path | N
         elif name == "mesh":
             run = steps.mesh(scene, faces=args.faces, refine=args.refine, texture_size=args.texture_size, crop=args.mesh_crop)
         elif name == "map":
-            run = mapping.make(scene, source, args.resolution, args.map_source, args.photos)
+            run = mapping.make(scene, source, args.resolution, args.map_source, args.photos, args.plot)
         if run is not None:
             made["run"] = str(run.relative_to(scene.root))
 
@@ -424,6 +428,8 @@ def run_pipeline(scene: Scene, args: argparse.Namespace) -> None:
         raise GausserError("--from mask needs --prompt")
     if args.from_step in ("dense", "lod", "mesh", "map"):
         setattr(args, args.from_step, True)
+    if args.map:  # the best map: the photos on a mesh of the whole flight (the splat keeps any crop)
+        args.mesh, args.mesh_crop = True, False
     if args.mesh:
         args.dense = True
     redo_from = STEPS.index(args.from_step) if args.from_step else len(STEPS)

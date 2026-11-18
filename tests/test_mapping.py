@@ -112,3 +112,12 @@ def test_photo_map_area_is_the_crop_box_in_model_coordinates(tmp_path):
     # A georeferenced model has y down, so the level frame is (x, -y, -z).
     scene.crop.write_text(json.dumps({"up": [0, -1, 0], "min": [-54, -53, -46], "max": [53, -25, 45]}))
     assert mapping._crop_area(scene) == pytest.approx((-54, 53, -45, 46))
+
+
+def test_a_hole_inside_the_surface_is_bridged_but_open_ground_outside_stays_empty():
+    surface = np.full((200, 200), np.nan)
+    surface[20:180, 20:180] = 5.0
+    surface[90:110, 90:110] = np.nan  # a 1 m hole in the middle (5 cm cells)
+    closed = mapping._close_holes(surface)
+    assert np.isfinite(closed[90:110, 90:110]).all() and closed[100, 100] == pytest.approx(5.0)
+    assert np.isnan(closed[5, 5])  # outside the surface: not invented
