@@ -197,13 +197,19 @@ streamed PlayCanvas LOD set into <code>runs/lod/&lt;time&gt;/lod-meta.json</code
 <p>OpenMVS <code>ReconstructMesh</code> (Delaunay and a graph cut on what the cameras see through), <code>RefineMesh</code>
 (moves the surface until the photos agree; CPU only, slow, <code>--no-refine</code> skips it) and <code>TextureMesh</code>
 (a photo per triangle) into <code>runs/mesh/&lt;time&gt;/mesh.glb</code>. <code>--faces 30000</code> decimates before
-texturing. Needs <code>dense/</code>. A crop cuts the surface before refining.</p>
+texturing. Needs <code>dense/</code>. A crop cuts the surface before refining; <code>--no-crop</code> ignores it (for
+example to map more ground than the cropped splat shows).</p>
 <figure><img src="reports/2026-11-14-crop-adaptive/mesh-ab.jpg" alt="Mesh before and after cropping">
 <figcaption>Left: full mesh with ragged edges. Right: the same scene cut to the crop box before refining.</figcaption></figure>
 
-<h2 id="map">gausser map [PLY]</h2>
+<h2 id="map">gausser map [PLY|GLB]</h2>
 <p>Renders the newest splat straight down, without a browser or GPU: every Gaussian projects to a 2D Gaussian on the
-ground and is blended top first on a grid of <code>--resolution</code> metres (0.03). Writes
+ground and is blended top first on a grid of <code>--resolution</code> metres (0.03). With <code>--source mesh</code> it
+renders the newest textured mesh instead, as OpenDroneMap does: each triangle carries its colour from the best photo at
+full resolution, the highest surface wins (a true orthophoto: roofs over their footprints), and each cell averages 2×2
+samples. Where the mesh has holes (glass, deep shadow, thin structures) the newest splat fills in; <code>map.json</code>
+records the share (<code>filled_from_splat</code>). That is sharper than a splat of a large scene; mesh the whole flight with <code>gausser mesh --no-crop</code>
+when the splat is cropped to a smaller plot. Writes
 <code>ortho.tif</code> and <code>dsm.tif</code> (Cloud Optimized GeoTIFFs in the scene's CRS), Web Mercator previews of both
 (<code>ortho-web.webp</code>, and <code>dsm-web.webp</code> coloured by height and hill-shaded) for the monitor's
 <a href="monitor.html#map">Map tab</a>, and <code>map.html</code>, the orthophoto over satellite imagery or OpenStreetMap.

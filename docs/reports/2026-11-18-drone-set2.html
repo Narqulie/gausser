@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Drone Set 2: first waypoint photo mission (2026-11-18)</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  /* Tokens from gausser's monitor (web/src/styles.css). */
+  :root {
+    --bg: #241b2f; --deep: #171520; --raise: #2a2139; --line: #34294f;
+    --text: #f0eff1; --muted: #848bbd; --dim: #614d85;
+    --frames: #fede5d; --mask: #ff8b39; --solve: #36f9f6; --train: #ff7edb; --lod: #72f1b8; --red: #fe4450;
+    --font: mononoki, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var(--font); }
+  main { max-width: 1200px; margin: 0 auto; padding: 28px 24px 80px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; color: var(--solve); margin: 36px 0 10px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  h3 { font-size: 14px; color: var(--train); margin: 20px 0 6px; }
+  p, li { color: var(--text); max-width: 100ch; }
+  .muted { color: var(--muted); }
+  code { color: var(--frames); }
+  a { color: var(--solve); }
+  #map { height: 640px; border: 1px solid var(--line); border-radius: 6px; }
+  .bar { display: flex; gap: 18px; align-items: center; margin: 8px 0; color: var(--muted); font-size: 13px; }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 14px 0; }
+  .card { background: var(--raise); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+  .card b { display: block; font-size: 20px; color: var(--lod); }
+  .card span { color: var(--muted); font-size: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: normal; }
+  img.full { width: 100%; border: 1px solid var(--line); border-radius: 6px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  pre { background: var(--deep); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow: auto; font-size: 12px; max-height: 560px; }
+  details { margin: 6px 0; } summary { cursor: pointer; color: var(--muted); }
+  .good { color: var(--lod); } .bad { color: var(--red); } .warn { color: var(--mask); }
+
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  .seg button { background: none; border: 0; color: var(--muted); padding: 5px 12px; font: inherit; cursor: pointer; }
+  .seg button.on { background: var(--raise); color: var(--text); }
+  .ramp { display: inline-block; width: 160px; height: 8px; border-radius: 4px; vertical-align: middle;
+    background: linear-gradient(90deg, #171520, var(--solve), var(--lod), var(--frames), var(--train)); }
+  figure { margin: 0; } figcaption { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  td, th { white-space: normal; }
+</style>
+</head>
+<body>
+<main>
+<h1>Drone Set 2: first waypoint photo mission</h1>
+<p class="muted">2026-11-18 · DJI Mini 4 Pro, waypoint-burner mission flown by DJI Fly · Niemenranta, Tampere · scene <code>~/Desktop/straight_down/set2</code></p>
+
+<h2>Changelog</h2>
+<ul>
+  <li><b>Set 2 processed</b>: all 94 photos placed and georeferenced, dense cloud, 30k-step splat, orthophoto and DSM.</li>
+  <li><b>Monitor Map tab</b> (gausser <code>a3c77e5</code>, pushed): cameras, points, orthophoto and DSM on satellite or OpenStreetMap for any scene with GPS.</li>
+  <li><b>Map from the photos</b>: <code>gausser map --source mesh</code> renders the textured mesh (true orthophoto, splat fills its holes); <code>gausser mesh --no-crop</code> meshes the whole flight when the splat is cropped.</li>
+  <li><b>Plot splat</b>: retrained on the 107 × 91 m plot only (crop box), for the 3D view.</li>
+  <li><b>DSM preview</b>: <code>gausser map</code> also writes <code>dsm-web.webp</code>, coloured by height and hill-shaded.</li>
+  <li><b>waypoint-burner</b> (other session, not committed): 1 s hover before each photo, 48 MP 4:3 photo model, obliques at -60° moved back 29 m, camera settings first in the checklist.</li>
+</ul>
+
+<h2>Map</h2>
+<div class="bar">
+  <span class="seg" id="set"><button data-v="2" class="on">Set 2 photos (mesh)</button><button data-v="2s">Set 2 splat (plot)</button><button data-v="1">Set 1</button></span>
+  <span class="seg" id="layer"><button data-v="ortho" class="on">orthophoto</button><button data-v="dsm">surface (DSM)</button></span>
+  <label>opacity <input id="op" type="range" min="0" max="1" step="0.05" value="1"></label>
+  <span id="range"></span>
+</div>
+<div id="map"></div>
+<p class="muted">Cameras of Set 2: cyan straight down, pink oblique with a tick towards where it looked. Base layers top right.</p>
+
+<h2>Orthophoto from the photos, not the splat</h2>
+<figure><img class="full" src="2026-11-18-drone-set2/ab-house.jpg" alt="Same roof three ways">
+<figcaption>The same 16 × 12 m at 3 cm per cell. Left: splat of the whole flight. Middle: splat retrained on the plot only.
+Right: <code>gausser map --source mesh</code>, the textured OpenMVS mesh with each triangle coloured from the best photo.</figcaption></figure>
+<p>The splat spreads 1.5 million Gaussians over the whole 300 m the flight saw, so fine texture (roof corrugation, edges)
+blurs. Cropping the splat to the 107 × 91 m plot helps a little. The mesh map takes its colour straight from the photos,
+so it keeps the corrugation and sharp edges, and it is a true orthophoto (roofs over their footprints).
+The mesh has holes where OpenMVS found no surface (glass, deep shadow, thin structures); 1% of the cells come
+from the splat to fill them.</p>
+
+<h2>Set 1 and Set 2</h2>
+<table><tr><th></th><th>Set 1 (14 Nov)</th><th>Set 2 (18 Nov)</th></tr><tr><th>Capture</th><td>4K video, 81 frames by 80% overlap</td><td>94 photos, 48 MP 16:9 (reduced to 12 MP)</td></tr><tr><th>Pattern</th><td>hand-flown zigzag, straight down</td><td>waypoint mission: 28 straight down, 66 oblique at -45°</td></tr><tr><th>Placed by COLMAP</th><td>81 / 81</td><td>94 / 94</td></tr><tr><th>Fit to GPS (RMS)</th><td>0.279 m horizontal, 0.436 m vertical (75 cameras)</td><td>0.472 m horizontal, 0.616 m vertical (94 cameras)</td></tr><tr><th>Dense points</th><td>11.0 M</td><td>15.4 M</td></tr><tr><th>Orthophoto</th><td>3780×3614 cells of 3 cm</td><td>9955×9442 cells of 3 cm</td></tr><tr><th>DSM range (2–98 %)</th><td>306.8–319.1 m</td><td>361.2–380.9 m</td></tr></table>
+<p>Set 2 covers more ground and gives a tighter model: the obliques tie the strips together and add walls. Its fit to GPS is
+looser (0.47 m against 0.28 m), which is in line with the drone's GPS rather than the model: all 94 cameras were kept in the fit.</p>
+
+<h2>Sharpness: the drone did not stop for its photos</h2>
+<div class="two">
+  <figure><img class="full" src="2026-11-18-drone-set2/sharp-hover.jpg" alt="Hovering shot"><figcaption>Hovering at the first waypoint, 1/50 s: 100% crop of the 48 MP original.</figcaption></figure>
+  <figure><img class="full" src="2026-11-18-drone-set2/blur-moving.jpg" alt="Moving shot"><figcaption>Taken at 2.0 m/s, 1/50 s: about 4 cm of smear along the track.</figcaption></figure>
+</div>
+<p>92 of 94 photos were taken while flying (median 2.9 m/s). Auto exposure chose 1/30–1/100 s, so the
+smear is a median 4.8 cm and up to 9.8 cm, 5–8 pixels at 48 MP. The mission asked DJI Fly to stop at each
+waypoint; it did not. The next mission adds a 1 s hover before each photo and asks for 1/250 s in Pro mode. Its EXIF speeds will
+show whether DJI Fly honours the hover.</p>
+
+<h2>Oblique images: the top third looks too far</h2>
+<table>
+  <tr><th>Image band (-45° obliques)</th><th>Observations</th><th>On points inside the area</th><th>Median range</th></tr>
+  <tr><td>top third</td><td>27,548</td><td class="bad">14%</td><td>103 m</td></tr>
+  <tr><td>middle</td><td>25,109</td><td class="warn">41%</td><td>76 m</td></tr>
+  <tr><td>bottom</td><td>27,122</td><td class="good">76%</td><td>61 m</td></tr>
+</table>
+<p>At -45° a frame reaches from about 15 m to 160 m ahead, so most of its top third maps the neighbourhood, seen by few images.
+The planner now flies obliques at -60° (about 2–80 m ahead) and moves each oblique line back 29 m so the camera points at the area.
+For the same area: 96 → 74 waypoints, 17.6 → 13.0 minutes, coverage still 9+ images everywhere.</p>
+
+<h2>Monitor Map tab</h2>
+<img class="full" src="2026-11-18-drone-set2/monitor-map.jpg" alt="Monitor Map tab">
+<p class="muted">Real capture of the new tab on Set 1. It shows the photos' GPS before solve, the georeferenced cameras and points after it,
+and the orthophoto or DSM once <code>map</code> has run.</p>
+
+<h2>Checks and gaps</h2>
+<ul>
+  <li>gausser: pytest 113 passed, ruff and mypy clean, web and docs builds clean; Map tab checked in a browser.</li>
+  <li>Pipeline: <code>gausser run --from solve --dense --map --max-resolution 3840</code>, sharing the GPU with a statue run for most of training.</li>
+  <li>Not checked: heights against a surveyed point (they inherit the drone's altitude), and whether DJI Fly honours the hover.</li>
+</ul>
+</main>
+<script>
+const sets = {
+  2: {bounds: [[61.520726762074624, 23.686803072126654], [61.523400940866864, 23.692678221203057]], range: [361.18, 380.88], dir: "2026-11-18-drone-set2/"},
+  "2s": {bounds: [[61.521698788133094, 23.68861284859366], [61.52255298945039, 23.690679567130207]], range: [365.28, 384.56], dir: "2026-11-18-drone-set2/splat-"},
+  1: {bounds: [[61.52162783843167, 23.68845405568186], [61.52265130020887, 23.690685672200868]], range: [306.81, 319.09], dir: "2026-11-18-drone-set2/set1-"},
+};
+const cams = [[61.52221519, 23.69049371, 347.8, -87.4], [61.52199844, 23.6898893, 341.1, -87.9], [61.52207994, 23.68895338, 255.2, -88.9], [61.52178149, 23.68925534, 297.6, -89.6], [61.52191448, 23.68964448, 345.5, -88.6], [61.52194973, 23.68974751, 345.7, -88.3], [61.52187952, 23.68953884, 341.6, -88.9], [61.52205512, 23.69005071, 344.4, -87.7], [61.52210896, 23.69020849, 343.5, -87.7], [61.52227898, 23.69012823, 314.4, -88.8], [61.52215899, 23.69035422, 342.8, -87.5], [61.52194604, 23.68915916, 177.3, -87.9], [61.52234008, 23.69028123, 335.0, -88.7], [61.52211221, 23.68964318, 182.3, -88.7], [61.52222419, 23.68996594, 267.6, -89.4], [61.52217018, 23.68980952, 199.6, -89.1], [61.52205703, 23.68948314, 177.0, -88.3], [61.52200182, 23.68932096, 177.2, -88.0], [61.52238625, 23.68984005, 350.4, -87.5], [61.52202945, 23.6888053, 224.9, -88.1], [61.52213197, 23.68910188, 316.7, -89.0], [61.52190854, 23.68900294, 178.6, -87.6], [61.52218268, 23.68925279, 333.4, -88.5], [61.52233438, 23.68968864, 353.7, -87.5], [61.52223419, 23.68939852, 342.6, -88.2], [61.52228123, 23.68953393, 349.9, -87.9], [61.52182054, 23.69035596, 358.7, -44.8], [61.5220073, 23.69035865, 1.4, -44.4], [61.52256709, 23.69035873, 1.6, -44.2], [61.52275964, 23.69033459, 1.5, -44.2], [61.52219673, 23.69035847, 1.6, -44.3], [61.52243113, 23.68996913, 345.6, -87.5], [61.52247267, 23.69011237, 341.9, -87.3], [61.52161758, 23.69036676, 173.2, -44.0], [61.52273686, 23.68988623, 178.8, -44.7], [61.52238527, 23.6903587, 1.5, -44.2], [61.52292197, 23.68987312, 310.8, -44.1], [61.52236428, 23.68988422, 181.4, -44.4], [61.5221743, 23.68988294, 181.4, -44.3], [61.52254538, 23.6898852, 181.4, -44.8], [61.52199385, 23.68988208, 181.3, -44.1], [61.5218013, 23.68988187, 181.2, -44.1], [61.5214338, 23.68986211, 181.2, -44.2], [61.52148273, 23.68939238, 5.6, -44.8], [61.52222683, 23.68939638, 2.2, -44.3], [61.52161501, 23.68987887, 181.1, -44.2], [61.52203996, 23.68939447, 2.3, -44.2], [61.52240635, 23.68939648, 2.1, -44.3], [61.52128605, 23.68937912, 237.1, -44.0], [61.52166219, 23.68939536, 2.7, -44.3], [61.52185376, 23.68939391, 2.4, -44.3], [61.52259894, 23.6889157, 236.9, -44.4], [61.52277035, 23.68938883, 2.3, -44.4], [61.5225996, 23.68939735, 2.2, -44.4], [61.52240644, 23.68892176, 180.4, -44.4], [61.52185414, 23.68891899, 182.2, -44.3], [61.52222256, 23.68892093, 181.8, -44.3], [61.5220378, 23.68892053, 182.2, -44.3], [61.52181608, 23.68824333, 316.4, -44.0], [61.52167733, 23.68891868, 182.0, -44.2], [61.52181555, 23.68983855, 91.8, -44.2], [61.52181575, 23.68944297, 91.7, -44.2], [61.521508, 23.68889459, 181.5, -44.1], [61.52181474, 23.69021554, 91.8, -44.2], [61.52202292, 23.69117196, 55.3, -44.1], [61.52181453, 23.6890496, 91.9, -44.3], [61.5218217, 23.69061906, 91.8, -44.2], [61.52181454, 23.68863761, 94.5, -44.8], [61.52201981, 23.68967007, 272.3, -44.1], [61.52202033, 23.69040985, 272.0, -44.5], [61.52201989, 23.69004024, 272.3, -44.2], [61.5220219, 23.6907785, 269.3, -44.6], [61.52202056, 23.68930249, 272.2, -44.0], [61.52223018, 23.68818169, 38.5, -44.8], [61.52202073, 23.68894585, 272.0, -43.9], [61.52202028, 23.68856209, 272.1, -43.9], [61.52222703, 23.69034954, 91.6, -44.2], [61.52222698, 23.69072631, 91.9, -44.2], [61.52222774, 23.69000364, 91.7, -44.1], [61.5220317, 23.68785924, 272.5, -44.0], [61.52222687, 23.68928398, 91.7, -43.8], [61.52202047, 23.68819198, 272.3, -43.9], [61.52222575, 23.69108744, 91.9, -44.2], [61.52222423, 23.68856156, 92.9, -44.8], [61.52222643, 23.68964352, 91.8, -44.1], [61.52222457, 23.68892363, 91.9, -44.1], [61.52243133, 23.69029891, 272.6, -44.4], [61.52223566, 23.6914076, 91.5, -44.0], [61.52243677, 23.69107851, 325.7, -44.4], [61.52243118, 23.69068637, 271.4, -44.4], [61.52242973, 23.68990848, 272.8, -44.3], [61.52242939, 23.68952098, 272.7, -44.2], [61.52243113, 23.68913375, 272.7, -44.1], [61.52243133, 23.68877256, 272.1, -43.9]];
+const map = L.map("map", {maxZoom: 23});
+const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  {maxNativeZoom: 19, maxZoom: 23, attribution: "Esri World Imagery"}).addTo(map);
+const osm = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxNativeZoom: 19, maxZoom: 23, attribution: "© OpenStreetMap"});
+const camLayer = L.layerGroup(cams.flatMap(([lat, lon, heading, pitch]) => {
+  const oblique = pitch > -75, colour = oblique ? "#ff7edb" : "#36f9f6";
+  const out = [L.circleMarker([lat, lon], {radius: 3, color: colour, weight: 1, fillOpacity: 0.9})];
+  if (oblique) {
+    const r = heading * Math.PI / 180, d = 6 / 111320;
+    out.push(L.polyline([[lat, lon], [lat + d * Math.cos(r), lon + d * Math.sin(r) / Math.cos(lat * Math.PI / 180)]], {color: colour, weight: 1.5}));
+  }
+  return out;
+})).addTo(map);
+L.control.layers({"Satellite": sat, "OpenStreetMap": osm}, {"Set 2 cameras": camLayer}).addTo(map);
+L.control.scale({imperial: false}).addTo(map);
+let pick = {set: "2", layer: "ortho"}, overlay = null;
+function show() {
+  const s = sets[pick.set];
+  if (overlay) overlay.remove();
+  overlay = L.imageOverlay(`${s.dir}${pick.layer === "ortho" ? "ortho-web.webp" : "dsm-web.webp"}`, s.bounds,
+    {opacity: +document.getElementById("op").value}).addTo(map);
+  const range = document.getElementById("range");
+  range.replaceChildren();
+  if (pick.layer === "dsm") {
+    const bar = document.createElement("span"); bar.className = "ramp";
+    range.append(`${s.range[0].toFixed(1)} m `, bar, ` ${s.range[1].toFixed(1)} m (drone GPS heights)`);
+  }
+}
+for (const id of ["set", "layer"]) {
+  document.getElementById(id).addEventListener("click", e => {
+    const v = e.target.dataset?.v; if (!v) return;
+    pick[id] = v;
+    for (const b of document.querySelectorAll(`#${id} button`)) b.classList.toggle("on", b.dataset.v === v);
+    show();
+  });
+}
+document.getElementById("op").oninput = e => overlay && overlay.setOpacity(+e.target.value);
+map.fitBounds(L.latLngBounds([...sets[2].bounds, ...sets[1].bounds]), {padding: [20, 20]});
+show();
+</script>
+</body>
+</html>

@@ -109,11 +109,16 @@ def _add_mesh_options(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--faces", type=int, help="decimate to about N triangles before texturing (default: keep all)")
     group.add_argument("--no-refine", dest="refine", action="store_false", help="skip refining the surface against the photos (the slow, CPU-only stage)")
     group.add_argument("--texture-size", type=int, default=8192, help="largest texture image side (default 8192)")
+    group.add_argument("--no-crop", dest="mesh_crop", action="store_false", help="mesh the whole scene, ignoring the crop box (e.g. for a map wider than the splat)")
 
 
 def _add_map_options(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("map")
     group.add_argument("--resolution", type=float, default=0.03, metavar="M", help="orthophoto and DSM cell size in metres (default 0.03)")
+    group.add_argument(
+        "--source", dest="map_source", choices=("splat", "mesh"), default="splat",
+        help="render the newest splat, or the newest textured mesh (colours straight from the photos: sharper, true ortho)",
+    )
 
 
 def _add_frames_options(parser: argparse.ArgumentParser) -> None:
@@ -209,12 +214,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mesh_options(mesh)
 
     map_ = commands.add_parser(
-        "map", parents=[working], help="orthophoto and DSM GeoTIFFs from the trained splat",
-        description="Render the newest splat straight down into runs/map/<time>/: ortho.tif and dsm.tif in the scene's CRS "
+        "map", parents=[working], help="orthophoto and DSM GeoTIFFs from the splat or the textured mesh",
+        description="Render the newest splat (or, with --source mesh, the newest textured mesh) straight down into "
+        "runs/map/<time>/: ortho.tif and dsm.tif in the scene's CRS "
         "and map.html, the orthophoto over a web map. Needs a model georeferenced from GPS (drone photos, or DJI video "
         "frames with a .SRT subtitle file).",
     )
-    map_.add_argument("source", nargs="?", type=Path, help="splat .ply (default: the newest export)")
+    map_.add_argument("source", nargs="?", type=Path, help="splat .ply or mesh .glb (default: the newest export or mesh)")
     _add_map_options(map_)
 
     train = commands.add_parser(
@@ -379,9 +385,9 @@ def run_step(scene: Scene, name: str, args: argparse.Namespace, source: Path | N
                 scene, source, chunk_count=args.chunk_count, chunk_extent=args.chunk_extent, percentages=_levels(args.levels),
             )
         elif name == "mesh":
-            run = steps.mesh(scene, faces=args.faces, refine=args.refine, texture_size=args.texture_size)
+            run = steps.mesh(scene, faces=args.faces, refine=args.refine, texture_size=args.texture_size, crop=args.mesh_crop)
         elif name == "map":
-            run = mapping.make(scene, source, args.resolution)
+            run = mapping.make(scene, source, args.resolution, args.map_source)
         if run is not None:
             made["run"] = str(run.relative_to(scene.root))
 

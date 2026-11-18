@@ -51,7 +51,8 @@ take <code>--monitor</code>. What the commands are for is on the other pages.</p
                    [--checkpoint-every CHECKPOINT_EVERY]
                    [--chunk-count CHUNK_COUNT] [--chunk-extent CHUNK_EXTENT]
                    [--levels LEVELS] [--faces FACES] [--no-refine]
-                   [--texture-size TEXTURE_SIZE] [--resolution M] [--no-masks]</pre>
+                   [--texture-size TEXTURE_SIZE] [--no-crop] [--resolution M]
+                   [--source {splat,mesh}] [--no-masks]</pre>
 <h3>options</h3><table><tr><th>option</th><th>choices</th><th>default</th><th>meaning</th></tr>
 <tr><td><code>-h, --help</code></td><td></td><td><code></code></td><td>show this help message and exit</td></tr>
 <tr><td><code>-s, --scene</code></td><td></td><td><code>.</code></td><td>scene folder (default: current folder)</td></tr>
@@ -110,9 +111,11 @@ take <code>--monitor</code>. What the commands are for is on the other pages.</p
 <tr><td><code>--faces</code></td><td></td><td><code></code></td><td>decimate to about N triangles before texturing (default: keep all)</td></tr>
 <tr><td><code>--no-refine</code></td><td></td><td><code>True</code></td><td>skip refining the surface against the photos (the slow, CPU-only stage)</td></tr>
 <tr><td><code>--texture-size</code></td><td></td><td><code>8192</code></td><td>largest texture image side (default 8192)</td></tr>
+<tr><td><code>--no-crop</code></td><td></td><td><code>True</code></td><td>mesh the whole scene, ignoring the crop box (e.g. for a map wider than the splat)</td></tr>
 </table>
 <h3>map</h3><table><tr><th>option</th><th>choices</th><th>default</th><th>meaning</th></tr>
 <tr><td><code>--resolution</code></td><td></td><td><code>0.03</code></td><td>orthophoto and DSM cell size in metres (default 0.03)</td></tr>
+<tr><td><code>--source</code></td><td>splat | mesh</td><td><code>splat</code></td><td>render the newest splat, or the newest textured mesh (colours straight from the photos: sharper, true ortho)</td></tr>
 </table>
 </section>
 <section class="command" id="cmd-frames"><h2>gausser frames</h2>
@@ -200,7 +203,7 @@ take <code>--monitor</code>. What the commands are for is on the other pages.</p
 <p>build a textured mesh from the dense cloud with OpenMVS</p>
 <p class="muted">Reconstruct, refine and texture a mesh from dense/ into runs/mesh/&lt;time&gt;/mesh.glb.</p>
 <pre>gausser mesh [-h] [-s SCENE] [--monitor] [--faces FACES] [--no-refine]
-                    [--texture-size TEXTURE_SIZE]</pre>
+                    [--texture-size TEXTURE_SIZE] [--no-crop]</pre>
 <h3>options</h3><table><tr><th>option</th><th>choices</th><th>default</th><th>meaning</th></tr>
 <tr><td><code>-h, --help</code></td><td></td><td><code></code></td><td>show this help message and exit</td></tr>
 <tr><td><code>-s, --scene</code></td><td></td><td><code>.</code></td><td>scene folder (default: current folder)</td></tr>
@@ -210,14 +213,17 @@ take <code>--monitor</code>. What the commands are for is on the other pages.</p
 <tr><td><code>--faces</code></td><td></td><td><code></code></td><td>decimate to about N triangles before texturing (default: keep all)</td></tr>
 <tr><td><code>--no-refine</code></td><td></td><td><code>True</code></td><td>skip refining the surface against the photos (the slow, CPU-only stage)</td></tr>
 <tr><td><code>--texture-size</code></td><td></td><td><code>8192</code></td><td>largest texture image side (default 8192)</td></tr>
+<tr><td><code>--no-crop</code></td><td></td><td><code>True</code></td><td>mesh the whole scene, ignoring the crop box (e.g. for a map wider than the splat)</td></tr>
 </table>
 </section>
 <section class="command" id="cmd-map"><h2>gausser map</h2>
-<p>orthophoto and DSM GeoTIFFs from the trained splat</p>
-<p class="muted">Render the newest splat straight down into runs/map/&lt;time&gt;/: ortho.tif and dsm.tif in the scene&#x27;s CRS and map.html, the orthophoto over a web map. Needs a model georeferenced from GPS (drone photos, or DJI video frames with a .SRT subtitle file).</p>
-<pre>gausser map [-h] [-s SCENE] [--monitor] [--resolution M] [source]</pre>
+<p>orthophoto and DSM GeoTIFFs from the splat or the textured mesh</p>
+<p class="muted">Render the newest splat (or, with --source mesh, the newest textured mesh) straight down into runs/map/&lt;time&gt;/: ortho.tif and dsm.tif in the scene&#x27;s CRS and map.html, the orthophoto over a web map. Needs a model georeferenced from GPS (drone photos, or DJI video frames with a .SRT subtitle file).</p>
+<pre>gausser map [-h] [-s SCENE] [--monitor] [--resolution M]
+                   [--source {splat,mesh}]
+                   [source]</pre>
 <h3>positional arguments</h3><table><tr><th>option</th><th>choices</th><th>default</th><th>meaning</th></tr>
-<tr><td><code>source</code></td><td></td><td><code></code></td><td>splat .ply (default: the newest export)</td></tr>
+<tr><td><code>source</code></td><td></td><td><code></code></td><td>splat .ply or mesh .glb (default: the newest export or mesh)</td></tr>
 </table>
 <h3>options</h3><table><tr><th>option</th><th>choices</th><th>default</th><th>meaning</th></tr>
 <tr><td><code>-h, --help</code></td><td></td><td><code></code></td><td>show this help message and exit</td></tr>
@@ -226,6 +232,7 @@ take <code>--monitor</code>. What the commands are for is on the other pages.</p
 </table>
 <h3>map</h3><table><tr><th>option</th><th>choices</th><th>default</th><th>meaning</th></tr>
 <tr><td><code>--resolution</code></td><td></td><td><code>0.03</code></td><td>orthophoto and DSM cell size in metres (default 0.03)</td></tr>
+<tr><td><code>--source</code></td><td>splat | mesh</td><td><code>splat</code></td><td>render the newest splat, or the newest textured mesh (colours straight from the photos: sharper, true ortho)</td></tr>
 </table>
 </section>
 <section class="command" id="cmd-train"><h2>gausser train</h2>

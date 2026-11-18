@@ -87,6 +87,7 @@ export interface MapRun {
   mtime: number;
   crs: string;
   resolution_m: number;
+  kind?: "splat" | "mesh"; // what was rendered (older runs: splat)
   size: [number, number];
   bounds_latlon: [[number, number], [number, number]];
   dsm_range_m?: [number, number] | null;

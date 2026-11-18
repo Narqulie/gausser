@@ -694,12 +694,12 @@ def dense(scene: Scene, resolution_level: int = 1) -> None:
     print(f"Dense point cloud: {ply.count(scene.dense / 'scene_dense.ply'):,} points in {scene.dense}")
 
 
-def mesh(scene: Scene, *, faces: int | None = None, refine: bool = True, texture_size: int = 8192) -> Path:
+def mesh(scene: Scene, *, faces: int | None = None, refine: bool = True, texture_size: int = 8192, crop: bool = True) -> Path:
     """Mesh and texture dense/ with OpenMVS into a new runs/mesh/<time>/mesh.glb.
 
     ReconstructMesh carves the surface out of the space the cameras see through, RefineMesh moves it
     until the photos agree, and TextureMesh picks a photo per triangle. `faces` decimates the mesh
-    before texturing; `refine=False` skips the slowest stage (CPU only).
+    before texturing; `refine=False` skips the slowest stage (CPU only); `crop=False` ignores the crop box.
     """
     reconstruct = require_tool("ReconstructMesh")
     refiner = require_tool("RefineMesh")
@@ -711,9 +711,9 @@ def mesh(scene: Scene, *, faces: int | None = None, refine: bool = True, texture
     # OpenMVS finds the images relative to the project, so it runs in dense/ and writes into staging.
     run_tool([reconstruct, project, "-p", "scene_dense.ply", "-o", str(staged / "mesh.mvs")], cwd=scene.dense)
     surface = staged / "mesh.ply"
-    crop = cropping.load(scene)
-    if crop is not None:  # before refining: RefineMesh and TextureMesh then only work on the subject
-        kept, total = cropping.crop_mesh(surface, crop)
+    box = cropping.load(scene) if crop else None
+    if box is not None:  # before refining: RefineMesh and TextureMesh then only work on the subject
+        kept, total = cropping.crop_mesh(surface, box)
         print(f"Crop keeps {kept:,} of {total:,} faces")
         if not kept:
             raise GausserError("The crop box holds none of the mesh; check it in `gausser monitor`")

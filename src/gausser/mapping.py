@@ -13,6 +13,7 @@ Local axes are gausser's: x east, y down, z north, in metres from the origin; im
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -140,22 +141,202 @@ def extent(splat: dict[str, Any], margin: float = 0.0) -> tuple[float, float, fl
     return west - margin, east + margin, south - margin, north + margin
 
 
-def make(scene: Scene, source: Path | None = None, resolution: float = 0.03) -> Path:
-    """Write runs/map/<time>/: ortho.tif, dsm.tif (heights in the CRS's vertical frame of the GPS) and map.html."""
+@dataclass
+class MeshPart:
+    """One primitive of a textured mesh: model-coordinate vertices, glTF UVs (origin top left), triangles, texture."""
+
+    vertices: Any
+    uv: Any
+    faces: Any
+    texture: Path
+
+
+def read_mesh(path: Path) -> list[MeshPart]:
+    """The textured primitives of an OpenMVS `.glb` (TextureMesh --export-type glb).
+
+    Vertex data are in model coordinates; the root node's matrix (OpenMVS adds a Y-up turn) is not applied.
+    Buffers live in the BIN chunk or as base64 data URIs; textures are PNGs next to the file.
+    """
+    import base64
+    import struct
+
+    import numpy as np
+
+    data = path.read_bytes()
+    if data[:4] != b"glTF":
+        raise GausserError(f"{path.name} is not a binary glTF file")
+    length, at, gltf, binary = struct.unpack_from("<I", data, 8)[0], 12, None, b""
+    while at < length:
+        size, kind = struct.unpack_from("<I4s", data, at)
+        chunk = data[at + 8:at + 8 + size]
+        if kind == b"JSON":
+            gltf = json.loads(chunk)
+        elif kind == b"BIN\0":
+            binary = chunk
+        at += 8 + size
+    if gltf is None:
+        raise GausserError(f"{path.name} has no glTF JSON chunk")
+    buffers = [
+        base64.b64decode(b["uri"].split(",", 1)[1]) if "uri" in b and b["uri"].startswith("data:")
+        else (path.parent / b["uri"]).read_bytes() if "uri" in b else binary
+        for b in gltf["buffers"]
+    ]
+    types = {5121: np.uint8, 5123: np.uint16, 5125: np.uint32, 5126: np.float32}
+    widths = {"SCALAR": 1, "VEC2": 2, "VEC3": 3}
+
+    def accessor(index: int) -> Any:
+        acc = gltf["accessors"][index]
+        view = gltf["bufferViews"][acc["bufferView"]]
+        dtype, width = np.dtype(types[acc["componentType"]]), widths[acc["type"]]
+        offset = view.get("byteOffset", 0) + acc.get("byteOffset", 0)
+        values = np.frombuffer(buffers[view["buffer"]], dtype=dtype, count=acc["count"] * width, offset=offset)
+        return values.reshape(acc["count"], width) if width > 1 else values
+
+    parts = []
+    for primitive in (p for mesh in gltf["meshes"] for p in mesh["primitives"]):
+        material = gltf["materials"][primitive["material"]]
+        texture = gltf["textures"][material["pbrMetallicRoughness"]["baseColorTexture"]["index"]]
+        image = gltf["images"][texture["source"]]
+        parts.append(MeshPart(
+            accessor(primitive["attributes"]["POSITION"]).astype(np.float64),
+            accessor(primitive["attributes"]["TEXCOORD_0"]),
+            accessor(primitive["indices"]).reshape(-1, 3).astype(np.int64),
+            path.parent / image["uri"],
+        ))
+    return parts
+
+
+def mesh_extent(parts: list[MeshPart]) -> tuple[float, float, float, float]:
+    """West, east, south, north of the mesh vertices (0.5-99.5 percentiles: a stray fringe does not stretch the map)."""
+    import numpy as np
+
+    xyz = np.concatenate([part.vertices for part in parts])
+    west, east = np.percentile(xyz[:, 0], [0.5, 99.5])
+    south, north = np.percentile(xyz[:, 2], [0.5, 99.5])
+    return float(west), float(east), float(south), float(north)
+
+
+def render_mesh(parts: list[MeshPart], west: float, north: float, width: int, height: int, resolution: float,
+                samples: int = 2) -> tuple[Any, Any, Any]:
+    """Orthographic top-down render of a textured mesh: RGB (0-1), coverage (0/1) and the top surface's y per cell.
+
+    Each triangle is rasterised on a grid `samples` times finer than the map (z-buffer: the highest surface wins,
+    y points down), its texture sampled bilinearly, and the samples are averaged into map cells.
+    """
+    import numpy as np
+    from PIL import Image
+
+    step = resolution / samples
+    w, h = width * samples, height * samples
+    best = np.full(w * h, np.inf, dtype=np.float32)  # y of the top surface so far
+    where = np.zeros((w * h, 2), dtype=np.float32)  # its texture coordinates
+    which = np.full(w * h, -1, dtype=np.int16)  # and texture
+    for number, part in enumerate(parts):
+        v = part.vertices[part.faces]  # (n, 3 corners, xyz)
+        col, row = (v[..., 0] - west) / step, (north - v[..., 2]) / step
+        uv = part.uv[part.faces].astype(np.float64)
+        area = (col[:, 1] - col[:, 0]) * (row[:, 2] - row[:, 0]) - (col[:, 2] - col[:, 0]) * (row[:, 1] - row[:, 0])
+        c0 = np.maximum(np.floor(col.min(1) - 0.5), 0).astype(np.int64)
+        c1 = np.minimum(np.ceil(col.max(1) - 0.5), w - 1).astype(np.int64)
+        r0 = np.maximum(np.floor(row.min(1) - 0.5), 0).astype(np.int64)
+        r1 = np.minimum(np.ceil(row.max(1) - 0.5), h - 1).astype(np.int64)
+        bw, bh = c1 - c0 + 1, r1 - r0 + 1
+        ids = np.flatnonzero((np.abs(area) > 1e-9) & (bw > 0) & (bh > 0))  # walls seen edge-on cover nothing
+        sizes = (bw * bh)[ids]
+        starts = np.concatenate([[0], np.cumsum(sizes)])
+        first = 0
+        while first < len(ids):
+            last = max(int(np.searchsorted(starts, starts[first] + MAX_PAIRS, side="right")) - 1, first + 1)
+            tri, counts = ids[first:last], sizes[first:last]
+            owner = np.repeat(tri, counts)
+            local = np.arange(counts.sum()) - np.repeat(starts[first:last] - starts[first], counts)
+            cc, rr = c0[owner] + local % bw[owner], r0[owner] + local // bw[owner]
+            px, py = cc + 0.5, rr + 0.5
+            x0, x1, x2 = (col[owner, k] for k in range(3))
+            y0, y1, y2 = (row[owner, k] for k in range(3))
+            d = area[owner]
+            l1 = ((px - x0) * (y2 - y0) - (x2 - x0) * (py - y0)) / d
+            l2 = ((x1 - x0) * (py - y0) - (px - x0) * (y1 - y0)) / d
+            l0 = 1 - l1 - l2
+            inside = (l0 >= -1e-6) & (l1 >= -1e-6) & (l2 >= -1e-6)
+            owner, cc, rr, l0, l1, l2 = owner[inside], cc[inside], rr[inside], l0[inside], l1[inside], l2[inside]
+            depth = (l0 * v[owner, 0, 1] + l1 * v[owner, 1, 1] + l2 * v[owner, 2, 1]).astype(np.float32)
+            pixel = rr * w + cc
+            order = np.lexsort((depth, pixel))  # per pixel, the highest surface first
+            pixel, depth, owner, l0, l1, l2 = (x[order] for x in (pixel, depth, owner, l0, l1, l2))
+            top = np.r_[True, pixel[1:] != pixel[:-1]]
+            pixel, depth, owner, l0, l1, l2 = (x[top] for x in (pixel, depth, owner, l0, l1, l2))
+            better = depth < best[pixel]
+            pixel, owner = pixel[better], owner[better]
+            best[pixel] = depth[better]
+            weights = np.stack([l0[better], l1[better], l2[better]], 1)
+            where[pixel] = np.einsum("nk,nkj->nj", weights, uv[owner])
+            which[pixel] = number
+            first = last
+    rgb = np.zeros((w * h, 3), dtype=np.float32)
+    for number, part in enumerate(parts):
+        hit = np.flatnonzero(which == number)
+        if not len(hit):
+            continue
+        with Image.open(part.texture) as image:
+            texture = np.asarray(image.convert("RGB"), dtype=np.float32) / 255
+        th, tw = texture.shape[:2]
+        x = np.clip(where[hit, 0] * tw - 0.5, 0, tw - 1)
+        y = np.clip(where[hit, 1] * th - 0.5, 0, th - 1)
+        x0, y0 = np.minimum(x.astype(np.int64), tw - 2), np.minimum(y.astype(np.int64), th - 2)
+        fx, fy = (x - x0)[:, None], (y - y0)[:, None]
+        rgb[hit] = (texture[y0, x0] * (1 - fx) * (1 - fy) + texture[y0, x0 + 1] * fx * (1 - fy)
+                    + texture[y0 + 1, x0] * (1 - fx) * fy + texture[y0 + 1, x0 + 1] * fx * fy)
+    covered = (which >= 0).reshape(height, samples, width, samples)
+    shaped = rgb.reshape(height, samples, width, samples, 3)
+    count = covered.sum((1, 3))
+    colour = shaped.sum((1, 3)) / np.maximum(count, 1)[..., None]
+    top = best.reshape(height, samples, width, samples).min((1, 3))  # inf where nothing was drawn
+    coverage = count / samples**2
+    return colour, coverage, np.where(coverage > 0.5, top, np.nan)
+
+
+def make(scene: Scene, source: Path | None = None, resolution: float = 0.03, kind: str = "splat") -> Path:
+    """Write runs/map/<time>/: ortho.tif, dsm.tif (heights in the CRS's vertical frame of the GPS) and map.html.
+
+    `kind` "splat" renders the newest (or given) splat export; "mesh" the newest (or given) textured OpenMVS
+    mesh, whose colours come straight from the photos (sharper, and a true orthophoto).
+    """
     import numpy as np
 
     record = scene.geo()
     if record is None:
         raise GausserError("The model is not georeferenced (no sparse/geo.json); solve photos or video frames with GPS")
-    source = scene.splat(source)
-    print(f"Reading {source}", flush=True)
-    _, data = ply.read(source)
-    splat = {name: data[name] for name in data.dtype.names}
-    west, east, south, north = extent(splat)
-    width, height = int(np.ceil((east - west) / resolution)), int(np.ceil((north - south) / resolution))
-    print(f"Rendering {width}×{height} cells of {resolution * 100:g} cm ({east - west:.0f} × {north - south:.0f} m) "
-          f"from {len(splat['x']):,} splats", flush=True)
-    rgb, coverage, depth = render(splat, west, north, width, height, resolution)
+    filled = None  # share of cells taken from the splat where the mesh has holes
+    if kind == "mesh":
+        if source is None:
+            meshes = scene.mesh_runs()
+            if not meshes:
+                raise GausserError("No mesh yet; run `gausser mesh` first")
+            source = meshes[-1] / "mesh.glb"
+        print(f"Reading {source}", flush=True)
+        parts = read_mesh(source)
+        west, east, south, north = mesh_extent(parts)
+        width, height = _grid(west, east, south, north, resolution, f"{sum(len(part.faces) for part in parts):,} textured faces")
+        rgb, coverage, depth = render_mesh(parts, west, north, width, height, resolution)
+        holes = coverage <= 0.5
+        if holes.any() and scene.exports():
+            # The mesh has holes (glass, deep shadow, thin structures); the newest splat fills them.
+            splat_source = scene.exports()[-1]
+            print(f"Filling {holes.mean():.0%} of the cells the mesh leaves empty from {splat_source.name}", flush=True)
+            _, data = ply.read(splat_source)
+            fill = render({name: data[name] for name in data.dtype.names}, west, north, width, height, resolution)
+            use = holes & (fill[1] > 0.5)
+            rgb[use], coverage[use], depth[use] = fill[0][use], fill[1][use], fill[2][use]
+            filled = round(float(use.mean()), 4)
+    else:
+        source = scene.splat(source)
+        print(f"Reading {source}", flush=True)
+        _, data = ply.read(source)
+        splat = {name: data[name] for name in data.dtype.names}
+        west, east, south, north = extent(splat)
+        width, height = _grid(west, east, south, north, resolution, f"{len(splat['x']):,} splats")
+        rgb, coverage, depth = render(splat, west, north, width, height, resolution)
     staged = scene.staging("map")
     origin = np.array(record["origin"], dtype=np.float64)
     corner = (origin[0] + west, origin[1] + north)  # the north-west corner in the CRS
@@ -169,13 +350,22 @@ def make(scene: Scene, source: Path | None = None, resolution: float = 0.03) -> 
     cameras = [list(position[:2]) for position in _camera_gps(scene)]
     (staged / "map.json").write_text(json.dumps({
         "crs": record["crs"], "resolution_m": resolution, "north_west": list(corner), "size": [width, height],
-        "source": str(source), "bounds_latlon": bounds, "dsm_range_m": heights,
+        "source": str(source), "kind": kind, "filled_from_splat": filled, "bounds_latlon": bounds, "dsm_range_m": heights,
     }, indent=1))
     (staged / "map.html").write_text(_html(bounds, cameras))
     run = scene.new_run("map")
     replace(staged, run)
     print(f"Orthophoto and DSM in {run}; open {run / 'map.html'}")
     return run
+
+
+def _grid(west: float, east: float, south: float, north: float, resolution: float, what: str) -> tuple[int, int]:
+    import numpy as np
+
+    width, height = int(np.ceil((east - west) / resolution)), int(np.ceil((north - south) / resolution))
+    print(f"Rendering {width}×{height} cells of {resolution * 100:g} cm ({east - west:.0f} × {north - south:.0f} m) "
+          f"from {what}", flush=True)
+    return width, height
 
 
 def _write_geotiff(path: Path, data: Any, corner: tuple[float, float], resolution: float, crs: str) -> None:

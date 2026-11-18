@@ -123,7 +123,7 @@ export function Map({ state }: { state: State }) {
           <>
             <label>run
               <select value={run.path} onChange={(e) => setRunPick(e.target.value)}>
-                {[...maps].reverse().map((m) => <option key={m.path} value={m.path}>{m.path.split("/").pop()}</option>)}
+                {[...maps].reverse().map((m) => <option key={m.path} value={m.path}>{m.path.split("/").pop()} · {m.kind ?? "splat"}</option>)}
               </select>
             </label>
             <span className="segmented">
