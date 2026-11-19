@@ -225,16 +225,26 @@ def test_solve_gives_each_source_video_its_own_camera(tmp_path, tools):
     assert solve_cameras(scene, tools) == {"img0.jpg": 1, "img1.jpg": 1, "img2.jpg": 2, "img3.jpg": 3}
 
 
-def test_solve_gives_each_photo_size_and_lens_its_own_camera(tmp_path, tools):
-    """COLMAP's single camera skipped the 12 MP shots of a set that mixed 48 MP and 12 MP: 17 of 32 registered."""
+def test_solve_shrinks_one_lens_to_one_size_and_gives_each_lens_its_own_camera(tmp_path, tools):
+    """A set mixing 48 MP and 12 MP shots of one lens: single_camera skipped the 12 MP ones (17 of 32 registered),
+    and as two cameras the 12 MP focal came out 2× wrong. A 3× lens is another camera."""
     scene = make_scene(tmp_path, images=0)
     for name, size, focal in (("a.jpg", (16, 12), 6.765), ("b.jpg", (8, 6), 6.765), ("c.jpg", (16, 12), 6.765),
                               ("d.jpg", (16, 12), 15.66)):
         exif = Image.Exif()
         exif.get_ifd(0x8769)[0x920A] = focal  # Exif IFD, FocalLength
+        exif[0x0112] = 6  # Orientation, kept through the shrink
         Image.new("RGB", size).save(scene.images / name, exif=exif)
+    scene.masks.mkdir()
+    Image.new("L", (16, 12), 255).save(scene.masks / "a.png")
 
-    assert solve_cameras(scene, tools) == {"a.jpg": 1, "c.jpg": 1, "b.jpg": 2, "d.jpg": 3}
+    assert solve_cameras(scene, tools) == {"a.jpg": 1, "b.jpg": 1, "c.jpg": 1, "d.jpg": 2}
+    sizes = {path.name: Image.open(path).size for path in scene.image_files()}
+    assert sizes == {"a.jpg": (8, 6), "b.jpg": (8, 6), "c.jpg": (8, 6), "d.jpg": (16, 12)}
+    assert Image.open(scene.images / "a.jpg").getexif()[0x0112] == 6
+    assert Image.open(scene.masks / "a.png").size == (8, 6)
+    assert sorted(path.name for path in scene.images_full.iterdir()) == ["a.jpg", "c.jpg"]
+    assert Image.open(scene.images_full / "a.jpg").size == (16, 12)
 
 
 def test_solve_stops_the_pipeline_when_most_images_are_not_placed(tmp_path, tools):

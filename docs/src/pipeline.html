@@ -73,8 +73,10 @@ a matcher, then the mapper. Separate cameras matter when several phones or lense
 <tr><td><code>sequential</code></td><td>&gt; 200 images</td><td>neighbours in order plus vocabulary-tree loop detection</td></tr>
 <tr><td><code>vocab_tree</code></td><td>never</td><td>large unordered photo sets</td></tr>
 </table>
-<p>Each camera gets its own COLMAP camera model: frames per source video, photos per phone model, image size and
-EXIF focal length (a phone set mixing 48 MP and 12 MP shots, or a 3× lens, would otherwise lose the odd ones out).</p>
+<p>Each camera gets its own COLMAP camera model: frames per source video, photos per phone model and EXIF focal
+length (a 3× lens is another camera). Photos of one lens taken at several sizes (48 MP and 12 MP) are first shrunk to
+the smallest, with their masks; the originals move to <code>images-full/</code>. As two cameras, the 12 MP group's
+focal came out 2× wrong on a one-sided set.</p>
 <p>After mapping, <code>solve</code> moves the model when it knows better: 360° models are levelled (gravity +y),
 iPhone scans are snapped to ARKit (metres), and drone models are georeferenced into EPSG:3067 or UTM
 (<code>sparse/geo.json</code>). The mapper writes about 20 snapshots, which the <a href="monitor.html">monitor</a>

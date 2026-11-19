@@ -293,11 +293,44 @@ def _frame_sources(scene: Scene) -> dict[str, str]:
     return {item["name"]: item["source"] for item in items if (scene.images / item["name"]).is_file()}
 
 
+def _match_sizes(scene: Scene, images: list[Path], sources: dict[str, str]) -> None:
+    """Shrink photos of one lens taken at several sizes (48 MP and 12 MP) to the smallest, with their masks;
+    the originals move to images-full/.
+
+    As two COLMAP cameras, the 12 MP group's focal came out 2× too long on a one-sided phone set and its
+    pass collapsed onto the other; one shared camera solved the same photos at 0.9 px.
+    """
+    lenses: dict[tuple[Any, ...], list[tuple[Path, tuple[int, int]]]] = {}
+    for image in images:
+        with Image.open(image) as opened:
+            exif = opened.getexif()
+            key = (sources.get(image.name), exif.get(ExifTags.Base.Model), exif.get_ifd(ExifTags.IFD.Exif).get(ExifTags.Base.FocalLength))
+            lenses.setdefault(key, []).append((image, opened.size))
+    for members in lenses.values():
+        small = min((size for _, size in members), key=lambda size: size[0] * size[1])
+        for image, size in members:
+            if size == small or size[0] * small[1] != size[1] * small[0]:  # only the same shape scales
+                continue
+            scene.images_full.mkdir(exist_ok=True)
+            original = scene.images_full / image.name
+            shutil.move(image, original)
+            with Image.open(original) as opened:
+                opened.resize(small, Image.Resampling.LANCZOS).save(
+                    image, quality=95, exif=opened.info.get("exif", b""), icc_profile=opened.info.get("icc_profile"))
+            for mask in (scene.masks / f"{image.stem}.png", scene.masks_exclude / f"{image.stem}.png",
+                         scene.colmap_masks / f"{image.name}.png"):
+                if mask.is_file():
+                    with Image.open(mask) as opened:
+                        opened.resize(small, Image.Resampling.NEAREST).save(mask)
+            print(f"{image.name}: {size[0]}×{size[1]} → {small[0]}×{small[1]} like the lens's other photos "
+                  f"(original in {scene.images_full.name}/)", flush=True)
+
+
 def _camera_groups(images: list[Path], sources: dict[str, str]) -> list[list[Path]]:
     """Images that share one COLMAP camera: same source video, phone model, image size and EXIF focal length.
 
-    `--ImageReader.single_camera` skips images of another size (a phone set mixing 48 MP and 12 MP shots
-    registered 17 of 32), and one shared camera blurred crowd captures that mix phones and lenses.
+    `--ImageReader.single_camera` skips images of another size (`_match_sizes` gives one lens one size), and
+    one shared camera blurred crowd captures that mix phones and lenses.
     """
     groups: dict[tuple[Any, ...], list[Path]] = {}
     for image in images:
@@ -357,7 +390,10 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     if poses:  # ARKit's focal length is a better start than COLMAP's guess; bundle adjustment refines it
         extract += ["--ImageReader.camera_model", "SIMPLE_RADIAL", "--ImageReader.camera_params", arkit.camera_params(poses)]
     # One extraction per camera: each run's single_camera makes a new COLMAP camera (and its rig).
-    for group in [images] if rig else _camera_groups(images, _frame_sources(scene)):
+    sources = {} if rig else _frame_sources(scene)
+    if not rig:
+        _match_sizes(scene, images, sources)
+    for group in [images] if rig else _camera_groups(images, sources):
         image_list.write_text("".join(f"{image.name}\n" for image in group))
         run_tool(extract, cwd=staged)
     match = [colmap, f"{matcher}_matcher", "--database_path", str(database), "--FeatureMatching.use_gpu", gpu]

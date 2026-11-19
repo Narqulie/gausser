@@ -119,6 +119,7 @@ class Scene:
         if not self.root.is_dir():
             raise GausserError(f"Scene folder does not exist: {self.root}")
         self.images = self.root / "images"
+        self.images_full = self.root / "images-full"  # photos `solve` shrank to their lens's smallest size
         self.panos = self.root / "panos"  # 360° source frames; images/ then holds their views (pano.py)
         self.masks = self.root / "masks"  # Brush: <stem>.png
         self.masks_exclude = self.root / "masks-exclude"  # Brush: <stem>.png, black = transient objects

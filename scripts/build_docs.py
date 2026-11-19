@@ -166,7 +166,7 @@ def scene_tree() -> str:
     scene = Scene(ROOT)
     attrs = {name: value for name, value in vars(scene).items() if isinstance(value, Path) and name != "root"}
     notes = {
-        "images": "the photos or frames every step reads", "panos": "360° source frames (images/ then holds their views)",
+        "images": "the photos or frames every step reads", "images_full": "full-size originals of photos solve shrank (one lens, two sizes)", "panos": "360° source frames (images/ then holds their views)",
         "masks": "Brush masks, <stem>.png, white = train", "masks_exclude": "black = people, operator, lens edge",
         "colmap_masks": "COLMAP masks, <name><ext>.png", "database": "COLMAP features and matches",
         "sparse": "COLMAP model sparse/0, geo.json, crop.json, no-masks", "crop": "the crop box (gausser crop)",
