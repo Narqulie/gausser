@@ -177,7 +177,7 @@ gausser run --map
 open runs/map/*/map.html</pre>
 <ul>
 <li><b>GPS.</b> Turn on <i>Video Subtitles</i> in DJI Fly. The drone writes <code>DJI_xxxx.SRT</code> next to each video, one position per frame; <code>frames</code> interpolates it into each frame's EXIF.</li>
-<li><b>Georeference.</b> <code>solve</code> fits a similarity from the cameras onto GPS in EPSG:3067 (Finland) or UTM, dropping outliers, and records the CRS and origin in <code>sparse/geo.json</code>. Axes: x east, y down, z north, in metres.</li>
+<li><b>Georeference.</b> <code>solve</code> fits a similarity from the cameras onto GPS in EPSG:3067 (Finland) or UTM, dropping outliers, and records the CRS and origin in <code>sparse/geo.json</code>. Axes: x east, y down, z north, in metres. When that fit tilts the cameras' up more than 10° off gravity (phone GPS along a walk cannot fix the roll about it), it keeps the cameras' up and takes only heading, scale and position from GPS; <code>geo.json</code> records <code>"up": "cameras"</code> and the tilt.</li>
 <li><b>Flying.</b> Parallel lines, 70% side overlap, steady height and speed, camera at −90°, shutter 1/500 s or faster. A crosshatch or −45° pass keeps the model from bending into a bowl. Snow, water and shadows give COLMAP little to match.</li>
 <li><b>DJI Mini 4 Pro + RC 2</b> runs no live mapping apps; only DJI Fly KMZ waypoint missions (≤ 200 waypoints, one battery). In YMapper use Overlap 85 / Sidelap 60 to get a real ~80/70.</li>
 </ul>

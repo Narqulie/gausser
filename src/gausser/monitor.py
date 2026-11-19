@@ -202,18 +202,16 @@ def state(scene: Scene) -> dict[str, Any]:
     }
 
 
-def read_model(model: Path, max_points: int = MAX_POINTS) -> dict[str, Any]:
-    """Cameras, a subsample of the points and statistics of a binary COLMAP model."""
+def read_model(model: Path, up: Any = None, max_points: int = MAX_POINTS) -> dict[str, Any]:
+    """Cameras, a subsample of the points and statistics of a binary COLMAP model; `up` defaults to `orbit.camera_up`."""
     import numpy as np
 
     intrinsics = colmap_model.read_cameras(model)
-    cameras, rights, downs = [], [], []
+    cameras = []
     for image in colmap_model.read_images(model, observations=True):
         camera = intrinsics.get(image.camera_id)
         fx, fy = camera.intrinsics[:2] if camera else (1.0, 1.0)
         r = image.rotation
-        rights.append(r[0])
-        downs.append(r[1])
         cameras.append({
             "name": image.name, "center": np.round(image.centre, 5).tolist(),
             "rotation": np.round(r.T, 5).ravel().tolist(),  # camera to world, OpenCV axes (x right, y down, z forward)
@@ -221,13 +219,14 @@ def read_model(model: Path, max_points: int = MAX_POINTS) -> dict[str, Any]:
             "points": int((image.observations[:, 2] >= 0).sum()),
         })
 
-    up = orbit.level_up(rights, downs).tolist() if rights else [0.0, -1.0, 0.0]
+    if up is None:
+        up = orbit.camera_up(model / "images.bin") if cameras else [0.0, -1.0, 0.0]
     points = colmap_model.read_points(model)
     xyz, rgb, errors, tracks, count = points.xyz, points.rgb, points.errors, points.tracks, len(points.ids)
     keep = np.random.default_rng(0).choice(count, max_points, replace=False) if count > max_points else slice(None)
     lengths, counts = np.unique(np.minimum(tracks, 30), return_counts=True)
     return {
-        "up": up,
+        "up": np.asarray(up, dtype=float).tolist(),
         "cameras": cameras,
         "points": {"xyz": np.round(xyz[keep], 4).ravel().tolist(), "rgb": rgb[keep].ravel().tolist()},
         "stats": {
@@ -394,7 +393,7 @@ class Monitor:
         if not (path / "images.bin").is_file():
             raise FileNotFoundError(rel)
         key = ("model", path, mtime(path / "images.bin"), mtime(path / "points3D.bin"))
-        return self.cached(key, lambda: json.dumps(read_model(path)).encode())  # type: ignore[no-any-return]
+        return self.cached(key, lambda: json.dumps(read_model(path, orbit.scene_up(scene, path))).encode())  # type: ignore[no-any-return]
 
     def geo(self, scene: Scene) -> dict[str, Any]:
         """Cameras (and a sample of points) in latitude/longitude for the map: from the georeferenced model,

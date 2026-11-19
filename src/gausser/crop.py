@@ -1,7 +1,7 @@
 """`gausser crop`: a box around the subject that training and meshing keep to.
 
 The box is axis-aligned in the model's level frame: COLMAP coordinates turned by the shortest rotation
-that takes the model's up (`orbit.camera_up`) onto +y, the same turn the monitor's 3D view makes
+that takes the model's up (`orbit.scene_up`) onto +y, the same turn the monitor's 3D view makes
 (three.js `Quaternion.setFromUnitVectors`). It is stored with the model in sparse/crop.json, so a new
 solve, which replaces sparse/, drops it.
 """
@@ -52,12 +52,12 @@ def load(scene: Scene) -> Crop | None:
 
 def save(scene: Scene, box: list[float], up: list[float] | None = None) -> Crop:
     """Store the box x,y,z,X,Y,Z (level frame); `up` defaults to the model's own."""
-    from .orbit import camera_up
+    from .orbit import scene_up
 
     model = scene.require_model()
     if len(box) != 6 or any(low >= high for low, high in zip(box[:3], box[3:])):
         raise GausserError("--box needs x,y,z,X,Y,Z with each minimum below its maximum")
-    crop = Crop([float(v) for v in (up if up is not None else camera_up(model / "images.bin"))], box[:3], box[3:])
+    crop = Crop([float(v) for v in (up if up is not None else scene_up(scene, model))], box[:3], box[3:])
     scene.crop.write_text(json.dumps({"up": crop.up, "min": crop.min, "max": crop.max}) + "\n")
     return crop
 

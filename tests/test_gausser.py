@@ -28,25 +28,28 @@ def record(calls: list, call: object, result: object) -> object:
 def make_scene(root: Path, images: int = 3) -> Scene:
     (root / "images").mkdir(parents=True)
     for index in range(images):
-        (root / "images" / f"img{index}.jpg").write_bytes(b"jpg")
+        Image.new("RGB", (8, 6)).save(root / "images" / f"img{index}.jpg")
     return Scene(root)
 
 
-def colmap_database(path, scene: Scene, size: int) -> None:
-    """What `colmap feature_extractor --ImageReader.single_camera 1` writes (COLMAP 4): one camera, and
-    each image in its own frame of the one rig whose sensor is that camera."""
-    with closing(sqlite3.connect(path)) as db:
-        db.execute("CREATE TABLE cameras (camera_id, model, width, height, params, prior_focal_length)")
-        db.execute("INSERT INTO cameras VALUES (1, 0, ?, ?, x'00', 1)", (size, size))
-        db.execute("CREATE TABLE images (image_id, name, camera_id)")
-        db.execute("CREATE TABLE rigs (rig_id INTEGER PRIMARY KEY AUTOINCREMENT, ref_sensor_id, ref_sensor_type)")
-        db.execute("CREATE TABLE frames (frame_id, rig_id)")
-        db.execute("CREATE TABLE frame_data (frame_id, data_id, sensor_id, sensor_type)")
-        db.execute("INSERT INTO rigs VALUES (1, 1, 0)")
-        for image_id, name in enumerate(sorted(p.name for p in scene.image_files()), start=1):
-            db.execute("INSERT INTO images VALUES (?, ?, 1)", (image_id, name))
-            db.execute("INSERT INTO frames VALUES (?, 1)", (image_id,))
-            db.execute("INSERT INTO frame_data VALUES (?, ?, 1, 0)", (image_id, image_id))
+def colmap_database(command: list[str], size: int) -> None:
+    """What one `colmap feature_extractor --ImageReader.single_camera 1` run adds (COLMAP 4): a new camera, and
+    each listed image in its own frame of a new rig whose sensor is that camera."""
+    names = Path(command[command.index("--image_list_path") + 1]).read_text().split()
+    with closing(sqlite3.connect(command[command.index("--database_path") + 1])) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS cameras (camera_id, model, width, height, params, prior_focal_length)")
+        db.execute("CREATE TABLE IF NOT EXISTS images (image_id, name, camera_id)")
+        db.execute("CREATE TABLE IF NOT EXISTS rigs (rig_id INTEGER PRIMARY KEY AUTOINCREMENT, ref_sensor_id, ref_sensor_type)")
+        db.execute("CREATE TABLE IF NOT EXISTS frames (frame_id, rig_id)")
+        db.execute("CREATE TABLE IF NOT EXISTS frame_data (frame_id, data_id, sensor_id, sensor_type)")
+        ((camera,),) = db.execute("SELECT count(*) + 1 FROM cameras").fetchall()
+        ((first,),) = db.execute("SELECT count(*) + 1 FROM images").fetchall()
+        db.execute("INSERT INTO cameras VALUES (?, 0, ?, ?, x'00', 1)", (camera, size, size))
+        db.execute("INSERT INTO rigs VALUES (?, ?, 0)", (camera, camera))
+        for image_id, name in enumerate(names, start=first):
+            db.execute("INSERT INTO images VALUES (?, ?, ?)", (image_id, name, camera))
+            db.execute("INSERT INTO frames VALUES (?, ?)", (image_id, camera))
+            db.execute("INSERT INTO frame_data VALUES (?, ?, ?, 0)", (image_id, image_id, camera))
         db.commit()
 
 
@@ -188,34 +191,50 @@ def test_solve_gives_colmap_only_the_real_images_not_appledouble_sidecars(tmp_pa
     assert listed == ["img0.jpg", "img1.jpg", "img2.jpg"]
 
 
-def test_solve_gives_each_source_video_its_own_camera(tmp_path, tools):
-    """A crowd capture mixes phones; one shared camera model blurred every multi-contributor scene."""
-    scene = make_scene(tmp_path, images=4)
-    sources = {"img0.jpg": "anna.mp4", "img1.jpg": "anna.mp4", "img2.jpg": "bert.mp4"}  # img3 added by hand
-    (scene.images / "frames.json").write_text(json.dumps({"items": [{"name": n, "source": s} for n, s in sources.items()]}))
+def solve_cameras(scene: Scene, tools) -> dict[str, int]:
+    """Run solve with a fake COLMAP; image name → COLMAP camera id, checking each camera has its own rig."""
     cameras: dict[str, int] = {}
 
     def fake_colmap(command):
         database = command[command.index("--database_path") + 1]
         if command[1] == "feature_extractor":
-            colmap_database(database, scene, 16)
+            colmap_database(command, 16)
         if command[1] == "exhaustive_matcher":
             with sqlite3.connect(database) as db:
                 cameras.update(db.execute("SELECT name, camera_id FROM images").fetchall())
-                assert db.execute("SELECT count(*) FROM cameras").fetchone() == (2,)
                 # COLMAP 4's mapper aborts unless each image's frame belongs to a rig of its own camera
                 rigs = db.execute(
                     "SELECT DISTINCT i.camera_id, d.sensor_id, r.ref_sensor_id FROM images i JOIN frame_data d ON d.data_id = i.image_id "
                     "JOIN frames f ON f.frame_id = d.frame_id JOIN rigs r ON r.rig_id = f.rig_id"
                 ).fetchall()
-                assert sorted(rigs) == [(1, 1, 1), (2, 2, 2)]
+                assert all(len(set(rig)) == 1 for rig in rigs)
         if command[1] == "mapper":
-            write_model(Path(command[command.index("--output_path") + 1]) / "0", 4)
+            write_model(Path(command[command.index("--output_path") + 1]) / "0", len(scene.image_files()))
 
     tools.on_run(fake_colmap)
     steps.solve(scene)
+    return cameras
 
-    assert cameras == {"img0.jpg": 1, "img1.jpg": 1, "img2.jpg": 2, "img3.jpg": 1}
+
+def test_solve_gives_each_source_video_its_own_camera(tmp_path, tools):
+    """A crowd capture mixes phones; one shared camera model blurred every multi-contributor scene."""
+    scene = make_scene(tmp_path, images=4)
+    sources = {"img0.jpg": "anna.mp4", "img1.jpg": "anna.mp4", "img2.jpg": "bert.mp4"}  # img3 added by hand
+    (scene.images / "frames.json").write_text(json.dumps({"items": [{"name": n, "source": s} for n, s in sources.items()]}))
+
+    assert solve_cameras(scene, tools) == {"img0.jpg": 1, "img1.jpg": 1, "img2.jpg": 2, "img3.jpg": 3}
+
+
+def test_solve_gives_each_photo_size_and_lens_its_own_camera(tmp_path, tools):
+    """COLMAP's single camera skipped the 12 MP shots of a set that mixed 48 MP and 12 MP: 17 of 32 registered."""
+    scene = make_scene(tmp_path, images=0)
+    for name, size, focal in (("a.jpg", (16, 12), 6.765), ("b.jpg", (8, 6), 6.765), ("c.jpg", (16, 12), 6.765),
+                              ("d.jpg", (16, 12), 15.66)):
+        exif = Image.Exif()
+        exif.get_ifd(0x8769)[0x920A] = focal  # Exif IFD, FocalLength
+        Image.new("RGB", size).save(scene.images / name, exif=exif)
+
+    assert solve_cameras(scene, tools) == {"a.jpg": 1, "c.jpg": 1, "b.jpg": 2, "d.jpg": 3}
 
 
 def test_solve_stops_the_pipeline_when_most_images_are_not_placed(tmp_path, tools):
@@ -273,7 +292,7 @@ def test_360_frames_become_rig_views_that_colmap_solves_as_one_rig(tmp_path, too
 
     def fake_tools(command):
         if command[1] == "feature_extractor":
-            colmap_database(command[command.index("--database_path") + 1], scene, 16)
+            colmap_database(command, 16)
         elif command[1] == "rig_configurator":
             with sqlite3.connect(command[command.index("--database_path") + 1]) as db:
                 cameras = db.execute("SELECT camera_id, group_concat(substr(name, 5)) FROM images GROUP BY camera_id").fetchall()
@@ -366,7 +385,7 @@ def test_qoocam_video_becomes_per_lens_views_solved_as_a_calibrated_two_lens_rig
 
     def fake_tools(command):
         if command[1] == "feature_extractor":
-            colmap_database(command[command.index("--database_path") + 1], scene, 32)
+            colmap_database(command, 32)
         elif command[1] == "rig_configurator":
             rig_config.extend(json.loads(Path(command[command.index("--rig_config_path") + 1]).read_text())[0]["cameras"])
         elif command[1] == "mapper":
@@ -1251,7 +1270,8 @@ def test_solve_with_gps_matches_spatially_maps_globally_and_georeferences(tmp_pa
     scene = make_scene(tmp_path)
     positions = {f"img{i}.jpg": (61.52 + i * 1e-4, 23.69 + (i % 2) * 2e-4, 350.0) for i in range(3)}
     monkeypatch.setattr(steps.geo, "image_positions", lambda images: positions)
-    monkeypatch.setattr(steps.geo, "georeference", lambda images_bin, found: ("1 1 0 0 0 0 0 0\n", {"crs": "EPSG:3067"}, "ok"))
+    monkeypatch.setattr(steps.orbit, "camera_up", lambda images_bin, images: None)
+    monkeypatch.setattr(steps.geo, "georeference", lambda images_bin, found, up: ("1 1 0 0 0 0 0 0\n", {"crs": "EPSG:3067"}, "ok"))
 
     def fake_colmap(command):
         if command[1] == "feature_extractor":

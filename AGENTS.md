@@ -23,7 +23,7 @@ src/gausser/
 ├── pano.py    360° frames: 14 pinhole views per equirect (pycolmap.panorama's 12 + zenith/nadir) or per dual fisheye (7 per lens), partition masks, COLMAP rig
 ├── qoocam.py  QooCam 8K raw .MOV: reads the kfix LENS calibration into panos/lenses.json form
 ├── arkit.py   iPhone LiDAR scans (Stray Scanner folder): arkit/ poses, depth maps and LiDAR points; solve's snap to metres
-├── geo.py     GPS: DJI .SRT subtitle tracks → EXIF GPS in frames; solve's georeference (similarity onto GPS in EPSG:3067/UTM)
+├── geo.py     GPS: DJI .SRT subtitle tracks → EXIF GPS in frames; solve's georeference (similarity onto GPS in EPSG:3067/UTM; keeps the cameras' up when GPS would tilt it > 10°)
 ├── mapping.py `gausser map`: orthographic top-down render of the splat, of the OpenMVS textured mesh (`--source mesh`: own .glb reader + z-buffer rasteriser), or the photos on the mesh surface (`--source photos`: best visible photo per spot, `--photos` full-res copies) → ortho.tif, dsm.tif (COG, rasterio), web previews, map.html (Leaflet)
 ├── crop.py    `gausser crop`: box in the level frame (sparse/crop.json); crops Brush's start points, exports and the OpenMVS mesh
 ├── colmap_model.py the one reader of binary COLMAP models (cameras.bin, images.bin, points3D.bin); writes Brush's start points3D.bin
@@ -31,7 +31,7 @@ src/gausser/
 ├── msplat.py  experimental Msplat trainer with checkpoint resume; masks via black compositing
 ├── align.py   `gausser align`: fits a similarity (multi-start trimmed ICP) of a splat onto a published one; splat-transform applies it
 ├── view.py    `gausser view`: serves a SuperSplat build plus one splat on 127.0.0.1 (`serve()` is shared with orbit)
-├── orbit.py   `gausser orbit`: camera path and up from sparse/0 (cameras' level right axes); runs orbit.mjs with node
+├── orbit.py   `gausser orbit`: camera path from sparse/0; `scene_up`: gravity for levelled models, else the EXIF-upright cameras' level right axes, the ground plane, or the photos' mean up; runs orbit.mjs with node
 ├── orbit.mjs  Playwright driver: sets camera keys in SuperSplat and saves its `render.video` download
 ├── monitor.py `gausser monitor` / `--monitor`: read-only HTTP JSON API + the built page in web/ (gitignored)
 web/           the monitor page: Vite + React + three/R3F + Spark (splats) + GLTFLoader (OpenMVS meshes: COLMAP-coordinate vertices, the GLB's Y-up node matrix is dropped; textures fetched through `api/file`) + recharts + Leaflet (Map tab: `api/geo` cameras/points in lat/lon, the map run's ortho-web/dsm-web.webp); `npm run build` → src/gausser/web/

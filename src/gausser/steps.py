@@ -10,9 +10,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import ExifTags, Image
 
-from . import arkit, colmap_model, crop as cropping, geo, keyframes, pano, ply, qoocam
+from . import arkit, colmap_model, crop as cropping, geo, keyframes, orbit, pano, ply, qoocam
 from .scene import (
     GEO_FILE, GausserError, Scene, is_image, is_video, read_json, registered_images, remove, replace, require_tool, run_tool,
 )
@@ -293,6 +293,22 @@ def _frame_sources(scene: Scene) -> dict[str, str]:
     return {item["name"]: item["source"] for item in items if (scene.images / item["name"]).is_file()}
 
 
+def _camera_groups(images: list[Path], sources: dict[str, str]) -> list[list[Path]]:
+    """Images that share one COLMAP camera: same source video, phone model, image size and EXIF focal length.
+
+    `--ImageReader.single_camera` skips images of another size (a phone set mixing 48 MP and 12 MP shots
+    registered 17 of 32), and one shared camera blurred crowd captures that mix phones and lenses.
+    """
+    groups: dict[tuple[Any, ...], list[Path]] = {}
+    for image in images:
+        with Image.open(image) as opened:
+            exif = opened.getexif()
+            focal = exif.get_ifd(ExifTags.IFD.Exif).get(ExifTags.Base.FocalLength)
+            key = (sources.get(image.name), exif.get(ExifTags.Base.Model), opened.size, focal)
+        groups.setdefault(key, []).append(image)
+    return list(groups.values())
+
+
 def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     """Run COLMAP structure-from-motion into database.db and sparse/0; `no_masks` ignores colmap/masks/.
 
@@ -315,7 +331,6 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     # COLMAP would otherwise try every file in images/, including AppleDouble `._*` sidecars on exFAT.
     # The mapper reads only what is in the database, so it needs no list.
     image_list = staged / "images.txt"
-    image_list.write_text("".join(f"{image.name}\n" for image in images))
     extract = [
         colmap, "feature_extractor",
         "--database_path", str(database),
@@ -340,13 +355,10 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     poses = None if rig else scene.arkit_poses()
     if poses:  # ARKit's focal length is a better start than COLMAP's guess; bundle adjustment refines it
         extract += ["--ImageReader.camera_model", "SIMPLE_RADIAL", "--ImageReader.camera_params", arkit.camera_params(poses)]
-    run_tool(extract, cwd=staged)
-    sources = {} if rig else _frame_sources(scene)
-    if len(set(sources.values())) > 1:
-        # Frames of different videos get their own camera: a crowd capture mixes phones, and a phone
-        # switches lenses between clips. Photos added by hand share the first camera.
-        videos = sorted(set(sources.values()))
-        colmap_model.split_cameras(database, lambda name: videos.index(sources[name]) if name in sources else 0)
+    # One extraction per camera: each run's single_camera makes a new COLMAP camera (and its rig).
+    for group in [images] if rig else _camera_groups(images, _frame_sources(scene)):
+        image_list.write_text("".join(f"{image.name}\n" for image in group))
+        run_tool(extract, cwd=staged)
     match = [colmap, f"{matcher}_matcher", "--database_path", str(database), "--FeatureMatching.use_gpu", gpu]
     mapper = [colmap, "mapper", "--database_path", str(database), "--image_path", str(scene.images), "--output_path", str(sparse)]
     if rig:
@@ -414,7 +426,8 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         if error > 0.1:
             print("warning: COLMAP and ARKit disagree by more than 10 cm; check the model before training", flush=True)
     elif len(positions) >= 3:  # drone GPS: move the model into a map projection (geo.py)
-        text, record, note = geo.georeference(model / "images.bin", positions)
+        up = orbit.camera_up(model / "images.bin", scene.images)
+        text, record, note = geo.georeference(model / "images.bin", positions, up)
         transform(text)
         (final / GEO_FILE).write_text(json.dumps(record, indent=1))
         print(f"Georeferenced: {note}")

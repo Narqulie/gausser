@@ -28,6 +28,7 @@ _LAT = re.compile(r"latitude\s*:\s*(-?[\d.]+)", re.I)
 _LON = re.compile(r"longitude\s*:\s*(-?[\d.]+)", re.I)
 _ABS = re.compile(r"abs_alt\s*:\s*(-?[\d.]+)", re.I)
 _REL = re.compile(r"rel_alt\s*:\s*(-?[\d.]+)", re.I)
+MAX_TILT = 10.0  # degrees between the GPS fit's up and the cameras' before georeference keeps the cameras'
 _GPS = re.compile(r"GPS\s*\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)")  # older DJI: GPS(lon, lat, alt)
 
 
@@ -150,11 +151,32 @@ def similarity(source: Any, target: Any) -> tuple[float, Any, Any]:
     return s, r, mu_t - s * np.einsum("ij,j->i", r, mu_s)
 
 
-def georeference(images_bin: Path, positions: dict[str, tuple[float, float, float]]) -> tuple[str, dict[str, Any], str]:
+def level_similarity(source: Any, target: Any, up: Any) -> tuple[float, Any, Any]:
+    """Similarity that turns the model's `up` onto gravity (-y) and fits only heading, scale and position."""
+    import numpy as np
+
+    from .crop import level_rotation
+
+    level = level_rotation(-np.asarray(up, dtype=float))  # takes up onto -y
+    a = np.einsum("ij,nj->ni", level, source)
+    a0, b0 = a - a.mean(0), target - target.mean(0)
+    cross = float((a0[:, 0] * b0[:, 2] - a0[:, 2] * b0[:, 0]).sum())
+    dot = float((a0[:, 0] * b0[:, 0] + a0[:, 2] * b0[:, 2]).sum())
+    c, s_ = np.cos(np.arctan2(cross, dot)), np.sin(np.arctan2(cross, dot))
+    r = np.array([[c, 0.0, -s_], [0.0, 1.0, 0.0], [s_, 0.0, c]]) @ level
+    s = float(np.hypot(cross, dot) / (a0[:, [0, 2]] ** 2).sum())
+    return s, r, target.mean(0) - s * np.einsum("ij,j->i", r, source.mean(0))
+
+
+def georeference(
+    images_bin: Path, positions: dict[str, tuple[float, float, float]], up: Any = None,
+) -> tuple[str, dict[str, Any], str]:
     """`colmap model_transformer` similarity from a model onto its images' GPS, the geo.json record, and a log line.
 
     Images whose GPS disagrees with the model by more than 3× the median (or 1 m) are left out of the fit,
-    twice over, so a few bad fixes do not tilt the model.
+    twice over, so a few bad fixes do not tilt the model. When the full fit tilts the model's `up` (from its
+    cameras) more than MAX_TILT off gravity, the fit keeps that up and takes only heading, scale and position
+    from GPS: a phone's GPS along a walk cannot fix the roll about the walk (37° off on a 14 × 2 m walk).
     """
     import numpy as np
     from scipy.spatial.transform import Rotation
@@ -173,12 +195,24 @@ def georeference(images_bin: Path, positions: dict[str, tuple[float, float, floa
     target = to_local(enh, origin)
     if np.ptp(target[:, [0, 2]], axis=0).max() < 5:
         raise GausserError("The GPS positions span less than 5 m; too little to georeference")
-    keep = np.ones(len(source), dtype=bool)
-    s, r, t = similarity(source, target)
-    for _ in range(2):
-        error = np.linalg.norm(s * np.einsum("ij,nj->ni", r, source) + t - target, axis=1)
-        keep = error <= max(1.0, 3 * float(np.median(error)))
-        s, r, t = similarity(source[keep], target[keep])
+
+    def robust(fit: Any) -> tuple[float, Any, Any, Any]:
+        keep = np.ones(len(source), dtype=bool)
+        s, r, t = fit(source, target)
+        for _ in range(2):
+            error = np.linalg.norm(s * np.einsum("ij,nj->ni", r, source) + t - target, axis=1)
+            keep = error <= max(1.0, 3 * float(np.median(error)))
+            s, r, t = fit(source[keep], target[keep])
+        return s, r, t, keep
+
+    s, r, t, keep = robust(similarity)
+    tilt, up_source = None, "gps"
+    if up is not None:
+        fitted = np.einsum("ij,j->i", r, up) / np.linalg.norm(up)
+        tilt = float(np.degrees(np.arccos(np.clip(-fitted[1], -1.0, 1.0))))
+        if tilt > MAX_TILT:
+            s, r, t, keep = robust(lambda a, b: level_similarity(a, b, up))
+            up_source = "cameras"
     residual = s * np.einsum("ij,nj->ni", r, source[keep]) + t - target[keep]
     horizontal = float(np.sqrt(np.mean(residual[:, 0] ** 2 + residual[:, 2] ** 2)))
     vertical = float(np.sqrt(np.mean(residual[:, 1] ** 2)))
@@ -187,11 +221,14 @@ def georeference(images_bin: Path, positions: dict[str, tuple[float, float, floa
     record = {
         "crs": crs, "origin": origin.tolist(), "axes": "x east, y down, z north; metres from origin (east, north, height)",
         "images": int(keep.sum()), "rms_horizontal_m": round(horizontal, 3), "rms_vertical_m": round(vertical, 3),
+        "up": up_source, "gps_tilt_deg": None if tilt is None else round(tilt, 1),
     }
     note = (
         f"{crs}, {int(keep.sum())}/{len(pairs)} cameras within {horizontal:.2f} m horizontally and "
         f"{vertical:.2f} m vertically RMS of their GPS"
     )
+    if up_source == "cameras":
+        note += f"; kept the cameras' up (GPS alone tilted the model {tilt:.0f}°)"
     return text, record, note
 
 

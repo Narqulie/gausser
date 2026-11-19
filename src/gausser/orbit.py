@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .colmap_model import read_images
+from .colmap_model import read_images, read_points
 from .scene import GausserError, Scene, replace, require_tool, run_tool
 from .view import serve
 
@@ -49,27 +49,90 @@ def read_cameras(images_bin: Path) -> tuple[Any, Any, Any, list[str]]:
     )
 
 
-def camera_up(images_bin: Path) -> Any:
-    """Unit up vector of a COLMAP model; see `level_up`."""
-    _, _, axes, _ = read_cameras(images_bin)
-    return level_up(axes[:, 0], axes[:, 1])
+# Upright camera right/down axes from the stored photo's, per EXIF orientation: a portrait shot's stored
+# x axis points up or down.
+_UPRIGHT = {3: [[-1, 0], [0, -1]], 6: [[0, -1], [1, 0]], 8: [[0, 1], [-1, 0]]}
+
+
+def scene_up(scene: Scene, model: Path | None = None) -> Any:
+    """Unit up vector of the scene's model: -y when `solve` levelled it (360° rig, ARKit, GPS), else `camera_up`."""
+    import numpy as np
+
+    if scene.is_pano() or scene.arkit_poses() or scene.geo():
+        return np.array([0.0, -1.0, 0.0])
+    return camera_up((model or scene.require_model()) / "images.bin", scene.images)
+
+
+def camera_up(images_bin: Path, images: Path | None = None) -> Any:
+    """Unit up vector of a COLMAP model from its cameras, turned upright by each photo's EXIF orientation
+    (in `images`): `level_up`; for handheld sets, whose right axes are not level enough, the ground
+    (`ground_up`) or else the photos' mean up.
+    """
+    import numpy as np
+    from PIL import Image
+
+    centres, _, axes, names = read_cameras(images_bin)
+    if images is not None:
+        for index, name in enumerate(names):
+            if (images / name).is_file():
+                with Image.open(images / name) as opened:
+                    turn = _UPRIGHT.get(opened.getexif().get(0x0112, 1))  # Orientation
+                if turn:
+                    axes[index] = np.einsum("ij,jk->ik", np.array(turn, dtype=float), axes[index])
+    up = level_up(axes[:, 0], axes[:, 1])
+    if up is not None:
+        return up
+    mean_up = -axes[:, 1].mean(0)
+    mean_up /= np.linalg.norm(mean_up)
+    ground = ground_up(read_points(images_bin.parent).xyz, centres, mean_up)
+    return mean_up if ground is None else ground
 
 
 def level_up(rights: Any, downs: Any) -> Any:
-    """Normal to the cameras' (level) right axes, on the side image-up points to.
+    """Normal to the cameras' (level) right axes, on the side image-up points to; None when they are not level.
 
     Brush's `Vertical axis` guess can be far off when many frames look straight down (72° on a
     drone set with top-down passes); a stabilised gimbal keeps every camera's right axis level.
-    When the right axes are not level (the tilted views of a fisheye rig), -y: `solve` turns
-    360° models so that gravity is +y.
+    Handheld photos of one side of a subject, and the tilted views of a fisheye rig, are not level enough.
     """
     import numpy as np
 
     _, spread, vt = np.linalg.svd(np.asarray(rights), full_matrices=False)
     if len(rights) < 3 or spread[2] > 0.3 * spread[1]:
-        return np.array([0.0, -1.0, 0.0])
+        return None
     up = vt[-1]
     return up if up @ -np.asarray(downs).mean(0) > 0 else -up
+
+
+def ground_up(xyz: Any, centres: Any, near: Any, max_angle: float = 15.0, share: float = 0.3) -> Any:
+    """Normal (on the side of `near`) of the dominant plane of the points within `max_angle`° of `near`:
+    cobblestones, a lawn, a floor. None when under `share` of the points lie on one plane.
+
+    Handheld photos' mean up carries the phones' average pitch; the ground does not (4.3° apart on a
+    set of a market hut, where 73% of the points were cobblestones).
+    """
+    import numpy as np
+
+    xyz = np.asarray(xyz, dtype=float)
+    if len(xyz) < 3:
+        return None
+    tolerance = 0.005 * np.percentile(np.linalg.norm(xyz - np.mean(centres, 0), axis=1), 90)  # 4 cm at 8 m
+    rng = np.random.default_rng(0)
+    best, count = None, 0
+    for _ in range(500):
+        a, b, c = xyz[rng.choice(len(xyz), 3, replace=False)]
+        normal = np.cross(b - a, c - a)
+        length = np.linalg.norm(normal)
+        if length == 0 or abs(float(np.dot(normal, near))) < np.cos(np.radians(max_angle)) * length:
+            continue
+        inliers = np.abs(np.einsum("nj,j->n", xyz - a, normal / length)) < tolerance
+        if inliers.sum() > count:
+            best, count = inliers, int(inliers.sum())
+    if best is None or count < share * len(xyz):
+        return None
+    plane = xyz[best]
+    normal = np.linalg.svd(plane - plane.mean(0), full_matrices=False)[2][-1]
+    return normal if np.dot(normal, near) > 0 else -normal
 
 
 def orbit_params(images_bin: Path, up: Any, zoom: float = 1.3, drop: float = 0.35) -> dict[str, Any]:
@@ -169,7 +232,7 @@ def orbit(
         raise GausserError(f"playwright-core not found in {node_dir()}; run scripts/install-macos.sh")
     model = scene.require_model()
     splat = scene.splat(source)
-    up = camera_up(model / "images.bin")
+    up = scene_up(scene, model)
     params = orbit_params(model / "images.bin", up, zoom, drop)
     if target is not None:
         params["target"] = [t - drop * u for t, u in zip(target, up.tolist())]

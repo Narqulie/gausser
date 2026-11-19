@@ -20,7 +20,9 @@ gausser orbit --target 0.1 -0.4 2.0 --radius 3 --height 1 -o statue.mp4</pre>
 (<code>orbit.mjs</code>); leave the window alone while it renders. The path comes from the COLMAP model: the camera
 circles the point nearest all viewing axes, at the median camera distance × <code>--zoom</code>, aimed
 <code>--drop</code> below it, with "up" normal to the cameras' level right axes (Brush's own up guess can be far off on
-drone sets). <code>--background</code> takes <code>#rrggbb</code>, <code>jutaka</code> or a CSS
+drone sets). Portrait photos are turned upright by their EXIF orientation first; when handheld right axes are not
+level enough, up is the normal of the ground (the dominant plane of the points within 15° of the photos' mean up),
+else the photos' mean up. Levelled models (360°, ARKit, GPS) use gravity, −y. <code>--background</code> takes <code>#rrggbb</code>, <code>jutaka</code> or a CSS
 <code>linear-gradient(…)</code>; a gradient renders twice (over black and white) and ffmpeg recovers alpha to blend it.
 Output: <code>runs/orbit/&lt;time&gt;/orbit.mp4</code>.</p>
 

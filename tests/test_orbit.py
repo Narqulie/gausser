@@ -261,3 +261,40 @@ def test_orbit_target_and_radius_override_the_camera_centre(orbit_scene, monkeyp
     assert seen["params"]["target"] == pytest.approx([3.0, 3.0, 0.0])
     assert seen["params"]["radius"] == pytest.approx(2.0)
     assert seen["params"]["height"] == pytest.approx(0.5)
+
+
+def test_camera_up_of_handheld_portrait_photos_is_the_ground_not_their_pitch(tmp_path):
+    """Phone photos of one side of a market hut: portrait (EXIF 6), pitched 12° down, rolled by hand. Their
+    right axes are not level enough and their mean up carries the pitch; the cobblestones do not."""
+    from PIL import Image
+
+    from gausser import colmap_model
+
+    rng = np.random.default_rng(3)
+    model, images = tmp_path / "sparse", tmp_path / "images"
+    model.mkdir()
+    images.mkdir()
+    exif = Image.Exif()
+    exif[0x0112] = 6  # Orientation: stored landscape, shown rotated 90° clockwise
+    turn = np.array([[0.0, -1, 0], [1, 0, 0], [0, 0, 1]])  # stored camera axes → upright ones
+    with (model / "images.bin").open("wb") as f:
+        f.write(struct.pack("<Q", 12))
+        for i in range(12):
+            centre = np.array([i * 1.0, -1.5, 0.0])  # world: y down, ground at y = 0
+            yaw, pitch, roll = np.radians([rng.uniform(-20, 20), 12, rng.normal(0, 5)])
+            forward = np.array([np.sin(yaw) * np.cos(pitch), np.sin(pitch), np.cos(yaw) * np.cos(pitch)])
+            right = np.cross(forward, [0, -1.0, 0])
+            right /= np.linalg.norm(right)
+            down = np.cross(forward, right)
+            upright = np.array([np.cos(roll) * right + np.sin(roll) * down, np.cos(roll) * down - np.sin(roll) * right, forward])
+            stored = turn.T @ upright
+            f.write(struct.pack("<idddddddi", i, *quaternion(stored), *(-stored @ centre), 1))
+            f.write(f"img{i}.jpg\0".encode() + struct.pack("<Q", 0))
+            Image.new("RGB", (8, 6)).save(images / f"img{i}.jpg", exif=exif)
+    ground = np.c_[rng.uniform(-2, 14, 700), np.zeros(700), rng.uniform(2, 8, 700)]
+    clutter = rng.uniform([-2, -3, 2], [14, 0, 8], (300, 3))
+    colmap_model.write_points3d(model / "points3D.bin", np.vstack([ground, clutter]), np.zeros((1000, 3), np.uint8))
+
+    up = orbit.camera_up(model / "images.bin", images)
+
+    assert np.degrees(np.arccos(up @ [0, -1.0, 0])) < 0.5

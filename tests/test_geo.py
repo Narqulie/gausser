@@ -78,3 +78,34 @@ def test_georeference_recovers_a_similarity_onto_gps_and_ignores_a_bad_fix(tmp_p
     assert record["crs"] == "EPSG:3067" and record["images"] == len(grid) - 1
     assert np.abs(moved[good] - local[good]).max() < 0.3
     assert s == pytest.approx(20, rel=0.01)
+
+
+def test_georeference_keeps_the_cameras_up_when_phone_gps_along_a_walk_would_tilt_the_model(tmp_path, monkeypatch):
+    """Handheld photos on two passes 3 m apart along a market hut (37° tilt on the real set): the phone's GPS
+    put both passes on one line, the second 1.5 m higher, and nothing else fixes the roll about the walk."""
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+
+    rng = np.random.default_rng(2)
+    crs = geo.crs_for(61.498, 23.76)
+    from pyproj import Transformer
+
+    e0, n0 = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(23.76, 61.498)
+    along = np.r_[np.linspace(0, 14, 16), np.linspace(14, 2, 15)]
+    second = np.arange(31) >= 16
+    walk = np.c_[along, np.where(second, 3.0, 0.0)]  # metres east, north
+    gps = np.c_[along, np.zeros(31)] + rng.normal(0, 0.3, (31, 2))
+    lon, lat = Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform(e0 + gps[:, 0], n0 + gps[:, 1])
+    positions = {f"f{i}.jpg": (lat[i], lon[i], 90.0 + 1.5 * second[i] + rng.normal(0, 0.3)) for i in range(31)}
+    true = np.stack([walk[:, 0], np.full(31, -1.5), walk[:, 1]], 1)  # x east, y down, z north
+    r = Rotation.from_euler("xyz", [20, -35, 70], degrees=True).as_matrix()
+    model = (true - true.mean(0)) @ r.T / 20 + [3, -1, 2]
+    monkeypatch.setattr("gausser.orbit.read_cameras", lambda _: (model, None, None, list(positions)))
+
+    text, record, note = geo.georeference(tmp_path / "images.bin", positions, up=r @ [0, -1.0, 0])
+
+    s, qw, qx, qy, qz, *_ = map(float, text.split())
+    up = Rotation.from_quat([qx, qy, qz, qw]).as_matrix() @ r @ [0, -1.0, 0]
+    assert record["up"] == "cameras" and record["gps_tilt_deg"] > 10 and "kept the cameras' up" in note
+    assert up == pytest.approx([0, -1.0, 0], abs=1e-9)
+    assert s == pytest.approx(20, rel=0.15)  # the GPS merged the passes, so the walk looks narrower
