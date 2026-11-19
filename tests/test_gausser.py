@@ -1286,3 +1286,30 @@ def test_solve_with_gps_matches_spatially_maps_globally_and_georeferences(tmp_pa
 
     assert [command[1] for command in tools.commands] == ["feature_extractor", "spatial_matcher", "global_mapper", "model_transformer"]
     assert scene.geo() == {"crs": "EPSG:3067"}
+
+
+def test_solve_with_phone_gps_matches_and_maps_as_without_gps_then_georeferences(tmp_path, tools, monkeypatch):
+    """The global mapper merged two passes 3 m apart of a handheld phone set into one line (2.1 px vs 0.9 px)."""
+    scene = make_scene(tmp_path, images=0)
+    exif = Image.Exif()
+    exif[0x010F] = "Apple"  # Make
+    for i in range(3):
+        Image.new("RGB", (8, 6)).save(scene.images / f"img{i}.jpg", exif=exif)
+    positions = {f"img{i}.jpg": (61.498 + i * 5e-5, 23.76, 90.0) for i in range(3)}
+    monkeypatch.setattr(steps.geo, "image_positions", lambda images: positions)
+    monkeypatch.setattr(steps.orbit, "camera_up", lambda images_bin, images: None)
+    monkeypatch.setattr(steps.geo, "georeference", lambda images_bin, found, up: ("1 1 0 0 0 0 0 0\n", {"crs": "EPSG:3067"}, "ok"))
+
+    def fake_colmap(command):
+        if command[1] == "feature_extractor":
+            Path(command[command.index("--database_path") + 1]).write_bytes(b"db")
+        if command[1] == "mapper":
+            write_model(Path(command[command.index("--output_path") + 1]) / "0", 3)
+        if command[1] == "model_transformer":
+            copy_model(command)
+
+    tools.on_run(fake_colmap)
+    steps.solve(scene)
+
+    assert [command[1] for command in tools.commands] == ["feature_extractor", "exhaustive_matcher", "mapper", "model_transformer"]
+    assert scene.geo() == {"crs": "EPSG:3067"}

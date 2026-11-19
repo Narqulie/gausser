@@ -148,7 +148,7 @@ gausser sets it.</p>
 a matcher, then the mapper. Separate cameras matter when several phones or lenses filmed one subject. The largest model becomes <code>sparse/0</code>; <code>database.db</code> records which images it used.</p>
 <table>
 <tr><th>--matcher</th><th>chosen by auto when</th><th>notes</th></tr>
-<tr><td><code>spatial</code></td><td>most images have GPS (drone)</td><td>pairs images with their GPS neighbours; the global mapper (GLOMAP) is used</td></tr>
+<tr><td><code>spatial</code></td><td>most images have drone GPS (DJI photos, frames from a DJI .SRT)</td><td>pairs images with their GPS neighbours; the global mapper (GLOMAP) is used. Phone GPS only georeferences: it is metres off and on one handheld set GLOMAP merged two passes 3 m apart</td></tr>
 <tr><td><code>exhaustive</code></td><td>≤ 200 images</td><td>every pair; hours on 500+ images</td></tr>
 <tr><td><code>sequential</code></td><td>&gt; 200 images</td><td>neighbours in order plus vocabulary-tree loop detection</td></tr>
 <tr><td><code>vocab_tree</code></td><td>never</td><td>large unordered photo sets</td></tr>

@@ -238,6 +238,14 @@ def image_positions(images: list[Path]) -> dict[str, tuple[float, float, float]]
     return {name: position for name, position in found.items() if position}
 
 
+def from_drone(image: Path) -> bool:
+    """A DJI photo, or a video frame `frames` gave GPS from a DJI .SRT (no EXIF Make): not a phone photo."""
+    from PIL import ExifTags, Image
+
+    with Image.open(image) as opened:
+        return str(opened.getexif().get(ExifTags.Base.Make, "DJI")).strip().upper().startswith("DJI")
+
+
 def read_gps(image: Path) -> tuple[float, float, float] | None:
     """Latitude, longitude and altitude from an image's EXIF GPS tags, if it has them."""
     from PIL import ExifTags, Image

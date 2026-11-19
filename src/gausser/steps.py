@@ -318,12 +318,13 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
     colmap = require_tool("colmap")
     images = scene.require_images()
     rig = scene.is_pano()
-    positions = {} if rig else geo.image_positions(images)  # drone photos and DJI video frames carry GPS
+    positions = {} if rig else geo.image_positions(images)  # drone photos, DJI video frames and phone photos carry GPS
+    # Phone GPS (metres off, a walk not a grid) only georeferences the model; it does not pick matcher or mapper.
+    drone = sum(geo.from_drone(image) for image in images if image.name in positions) * 2 > len(images)
     if matcher == "auto":
-        # With GPS (drone photos and frames), COLMAP pairs each image with its neighbours on the ground,
-        # which also links the strips of a mapping flight. Exhaustive matching is quadratic; it takes hours
-        # on hundreds of images.
-        matcher = "spatial" if len(positions) * 2 > len(images) else "exhaustive" if len(images) <= 200 else "sequential"
+        # With drone GPS, COLMAP pairs each image with its neighbours on the ground, which also links the
+        # strips of a mapping flight. Exhaustive matching is quadratic; it takes hours on hundreds of images.
+        matcher = "spatial" if drone else "exhaustive" if len(images) <= 200 else "sequential"
     gpu = "0" if sys.platform == "darwin" else "1"  # Homebrew COLMAP on macOS has no CUDA.
 
     staged = scene.staging("solve")
@@ -381,9 +382,10 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         match += ["--SequentialMatching.loop_detection", "1"]
     run_tool(match, cwd=staged)
     sparse.mkdir()
-    if positions:
+    if drone:
         # A nadir mapping flight is close to a plane seen from one side; on one, the incremental mapper placed
         # 41 of 81 frames in 10 min and the global mapper (GLOMAP) all 81 in 1.5 min, 0.3 m RMS from their GPS.
+        # On 32 handheld phone photos it merged two passes 3 m apart into one line (2.1 px vs 0.9 px).
         mapper[1] = "global_mapper"
     else:
         # Snapshots of the growing model, about 20 per solve, for `gausser monitor`.
@@ -425,7 +427,7 @@ def solve(scene: Scene, matcher: str = "auto", no_masks: bool = False) -> None:
         print(f"Snapped to ARKit: {note}; camera centres within {error * 100:.1f} cm RMS of ARKit's")
         if error > 0.1:
             print("warning: COLMAP and ARKit disagree by more than 10 cm; check the model before training", flush=True)
-    elif len(positions) >= 3:  # drone GPS: move the model into a map projection (geo.py)
+    elif len(positions) >= 3:  # drone or phone GPS: move the model into a map projection (geo.py)
         up = orbit.camera_up(model / "images.bin", scene.images)
         text, record, note = geo.georeference(model / "images.bin", positions, up)
         transform(text)
